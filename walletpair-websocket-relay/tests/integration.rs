@@ -4,7 +4,7 @@
 //! clients, and verifies protocol behavior end-to-end.
 
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -43,12 +43,12 @@ async fn start_server() -> (String, tokio::sync::broadcast::Sender<()>) {
     let config = Arc::new(config);
 
     let metrics = walletpair_websocket_relay::metrics::Metrics::new();
-    let store = walletpair_websocket_relay::store::ChannelStore::new(&config);
+    let store = walletpair_websocket_relay::store::ShardedStore::new(&config);
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
     let app_state = walletpair_websocket_relay::http::AppState {
-        store: Arc::new(Mutex::new(store)),
+        store: Arc::new(store),
         config: config.clone(),
         metrics,
         shutdown_tx: shutdown_tx.clone(),
@@ -1347,12 +1347,13 @@ async fn start_server_with_config(
     let cleanup_interval = config.cleanup_interval_secs;
     let config = std::sync::Arc::new(config);
     let metrics = walletpair_websocket_relay::metrics::Metrics::new();
-    let store = walletpair_websocket_relay::store::ChannelStore::new(&config);
+    let store = walletpair_websocket_relay::store::ShardedStore::new(&config);
+    let store = std::sync::Arc::new(store);
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
     let app_state = walletpair_websocket_relay::http::AppState {
-        store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+        store: store.clone(),
         config: config.clone(),
         metrics: metrics.clone(),
         shutdown_tx: shutdown_tx.clone(),
@@ -1361,7 +1362,7 @@ async fn start_server_with_config(
 
     // Background cleanup task (mirrors main.rs)
     {
-        let store = app_state.store.clone();
+        let store = store.clone();
         let mut shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut ticker =
@@ -1369,8 +1370,7 @@ async fn start_server_with_config(
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        let mut s = store.lock().unwrap();
-                        s.cleanup_expired(&metrics);
+                        store.cleanup_all(&metrics);
                     }
                     _ = shutdown_rx.recv() => break,
                 }
@@ -1970,8 +1970,9 @@ async fn relay_restart_with_persistence_allows_reconnect() {
     let config_b = std::sync::Arc::new(config_b);
     let (shutdown_tx_b, _) = tokio::sync::broadcast::channel(1);
 
+    let sharded_b = walletpair_websocket_relay::store::ShardedStore::from_single(store_b, &config_b);
     let app_state_b = walletpair_websocket_relay::http::AppState {
-        store: std::sync::Arc::new(std::sync::Mutex::new(store_b)),
+        store: std::sync::Arc::new(sharded_b),
         config: config_b.clone(),
         metrics: metrics_b,
         shutdown_tx: shutdown_tx_b.clone(),

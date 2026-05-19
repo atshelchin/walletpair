@@ -17,8 +17,12 @@ use crate::store::ChannelStore;
 /// Result of processing a single message.
 #[must_use]
 pub enum ProcessResult {
-    /// Message processed. Any responses were sent via channels.
+    /// Message processed normally.
     Ok,
+    /// A new channel was created — caller should increment the global counter.
+    OkCreated,
+    /// A channel was removed — caller should decrement the global counter.
+    OkRemoved,
     /// Reject the sender: send this close JSON, then disconnect.
     Reject(String),
 }
@@ -40,6 +44,8 @@ fn try_send(sender: &mpsc::Sender<String>, msg: String, metrics: &Metrics) -> bo
 ///
 /// `raw_text` is the original JSON text for forwarding.
 /// `sender` is the outbound channel for the connection that sent this message.
+/// `at_capacity` indicates whether the global channel limit has been reached
+/// (checked by the caller against the sharded total, not per-shard count).
 pub fn process_message(
     store: &mut ChannelStore,
     conn_id: u64,
@@ -47,11 +53,12 @@ pub fn process_message(
     raw_text: &str,
     msg: ClientMessage,
     metrics: &Metrics,
+    at_capacity: bool,
 ) -> ProcessResult {
     match msg {
         ClientMessage::Create {
             ch, from, resume, ..
-        } => handle_create(store, conn_id, sender, &ch, &from, resume, metrics),
+        } => handle_create(store, conn_id, sender, &ch, &from, resume, metrics, at_capacity),
 
         ClientMessage::Join {
             ch, from, resume, ..
@@ -89,6 +96,7 @@ pub fn process_message(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_create(
     store: &mut ChannelStore,
     conn_id: u64,
@@ -97,6 +105,7 @@ fn handle_create(
     from: &PeerId,
     resume: Option<String>,
     metrics: &Metrics,
+    at_capacity: bool,
 ) -> ProcessResult {
     // Reconnect path
     if let Some(token) = resume {
@@ -121,8 +130,8 @@ fn handle_create(
         return ProcessResult::Reject(build_close(ch, CloseReason::ChannelExists));
     }
 
-    // Channel limit
-    if store.channel_count() >= store.max_channels {
+    // Global channel limit (checked by caller across all shards)
+    if at_capacity {
         metrics
             .messages_rejected_total
             .with_label_values(&["max_channels"])
@@ -149,7 +158,7 @@ fn handle_create(
     let _ = try_send(sender, ready, metrics);
 
     tracing::info!(ch = %ch, peer = %from, "channel created");
-    ProcessResult::Ok
+    ProcessResult::OkCreated
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -470,7 +479,7 @@ fn handle_close(
     store.remove_channel(ch, metrics, close_reason);
 
     tracing::info!(ch = %ch, reason = %reason, "channel closed by peer");
-    ProcessResult::Ok
+    ProcessResult::OkRemoved
 }
 
 #[allow(clippy::too_many_arguments)]

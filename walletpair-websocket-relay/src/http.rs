@@ -1,7 +1,7 @@
 //! HTTP routes and WebSocket upgrade handler.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::State;
@@ -16,12 +16,12 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use crate::config::Config;
 use crate::metrics::Metrics;
 use crate::session;
-use crate::store::ChannelStore;
+use crate::store::ShardedStore;
 
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState {
-    pub store: Arc<Mutex<ChannelStore>>,
+    pub store: Arc<ShardedStore>,
     pub config: Arc<Config>,
     pub metrics: Metrics,
     pub shutdown_tx: broadcast::Sender<()>,
@@ -85,9 +85,7 @@ async fn healthz() -> &'static str {
 }
 
 async fn readyz(State(state): State<AppState>) -> Response {
-    let store = state.store.lock().unwrap();
-    let channels = store.channel_count();
-    drop(store);
+    let channels = state.store.total_channels();
 
     if channels < state.config.max_channels {
         (StatusCode::OK, "ready").into_response()

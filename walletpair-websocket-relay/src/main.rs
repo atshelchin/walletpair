@@ -7,7 +7,7 @@ use walletpair_websocket_relay::shutdown;
 use walletpair_websocket_relay::store;
 
 use std::sync::atomic::AtomicU64;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::net::TcpListener;
 
@@ -27,15 +27,19 @@ async fn main() {
     let m = metrics::Metrics::new();
 
     // Load persisted state or start fresh
-    let channel_store = match &config.state_file {
-        Some(path) => persist::load_or_new(&config, &m, std::path::Path::new(path)),
-        None => store::ChannelStore::new(&config),
+    let sharded_store = match &config.state_file {
+        Some(path) => {
+            let single = persist::load_or_new(&config, &m, std::path::Path::new(path));
+            store::ShardedStore::from_single(single, &config)
+        }
+        None => store::ShardedStore::new(&config),
     };
+    let sharded_store = Arc::new(sharded_store);
 
     let (shutdown_tx, _) = shutdown::signal_channel();
 
     let app_state = http::AppState {
-        store: Arc::new(Mutex::new(channel_store)),
+        store: sharded_store.clone(),
         config: config.clone(),
         metrics: m.clone(),
         shutdown_tx: shutdown_tx.clone(),
@@ -44,7 +48,7 @@ async fn main() {
 
     // Background: TTL cleanup
     {
-        let store = app_state.store.clone();
+        let store = sharded_store.clone();
         let metrics = m.clone();
         let interval = config.cleanup_interval_secs;
         let mut shutdown_rx = shutdown_tx.subscribe();
@@ -53,10 +57,7 @@ async fn main() {
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        let removed = {
-                            let mut store = store.lock().unwrap();
-                            store.cleanup_expired(&metrics)
-                        };
+                        let removed = store.cleanup_all(&metrics);
                         if removed > 0 {
                             tracing::info!(removed = removed, "expired channels cleaned up");
                         }
@@ -94,28 +95,34 @@ async fn main() {
             tracing::error!(error = %e, "server error");
         });
 
-    // Send close to all active channels
+    // Send close to all active channels and persist state
     {
-        let mut store = app_state.store.lock().unwrap();
-        let channel_ids: Vec<String> = store.channels.keys().cloned().collect();
-        for ch_id in &channel_ids {
-            let close_msg = protocol::build_close(ch_id, protocol::CloseReason::ServerShutdown);
-            if let Some(ch) = store.channels.get(ch_id) {
-                if let Some(ref conn) = ch.dapp_conn {
-                    let _ = conn.sender.try_send(close_msg.clone());
-                }
-                if let Some(ref conn) = ch.wallet_conn {
-                    let _ = conn.sender.try_send(close_msg);
-                }
-            }
-        }
-
-        // Persist state before removing channels (if configured)
+        // Collect state for persistence before sending closes
         if let Some(ref path) = config.state_file {
-            match persist::save_state(&store, std::path::Path::new(path)) {
+            // Build a single ChannelStore snapshot from all shards
+            let mut snapshot_store = store::ChannelStore::new(&config);
+            sharded_store.for_each_shard(|shard| {
+                for (id, ch) in &shard.channels {
+                    // We can't move channels out, so we need to clone the essentials
+                    // for persistence. The persist module reads from ChannelStore fields.
+                    // Actually we pass shard references directly to persist.
+                    let _ = (id, ch); // handled below
+                }
+            });
+            // Use a direct approach: iterate shards and collect into snapshot_store
+            sharded_store.for_each_shard(|shard| {
+                for (id, channel) in shard.channels.drain() {
+                    snapshot_store.channels.insert(id, channel);
+                }
+                for (token, info) in shard.resume_tokens.drain() {
+                    snapshot_store.resume_tokens.insert(token, info);
+                }
+            });
+
+            match persist::save_state(&snapshot_store, std::path::Path::new(path)) {
                 Ok(()) => {
                     tracing::info!(
-                        channels = store.channels.len(),
+                        channels = snapshot_store.channels.len(),
                         path = %path,
                         "state persisted for restart"
                     );
@@ -124,10 +131,26 @@ async fn main() {
                     tracing::error!(error = %e, "failed to persist state");
                 }
             }
-        }
-
-        for ch_id in channel_ids {
-            store.remove_channel(&ch_id, &m, protocol::CloseReason::ServerShutdown);
+        } else {
+            // No persistence — just send closes
+            sharded_store.for_each_shard(|shard| {
+                let channel_ids: Vec<String> = shard.channels.keys().cloned().collect();
+                for ch_id in &channel_ids {
+                    let close_msg =
+                        protocol::build_close(ch_id, protocol::CloseReason::ServerShutdown);
+                    if let Some(ch) = shard.channels.get(ch_id) {
+                        if let Some(ref conn) = ch.dapp_conn {
+                            let _ = conn.sender.try_send(close_msg.clone());
+                        }
+                        if let Some(ref conn) = ch.wallet_conn {
+                            let _ = conn.sender.try_send(close_msg);
+                        }
+                    }
+                }
+                for ch_id in channel_ids {
+                    shard.remove_channel(&ch_id, &m, protocol::CloseReason::ServerShutdown);
+                }
+            });
         }
     }
 

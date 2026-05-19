@@ -3,7 +3,7 @@
 //! Each WebSocket connection is handled by a single task. The connection is
 //! bound to at most one channel (established by the first create/join message).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::{SinkExt, StreamExt};
@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::metrics::Metrics;
 use crate::protocol::{self, ClientMessage};
 use crate::relay::{self, ProcessResult};
-use crate::store::ChannelStore;
+use crate::store::ShardedStore;
 
 /// Binding established by the first message on this connection.
 struct SessionBinding {
@@ -24,7 +24,7 @@ struct SessionBinding {
 pub async fn handle_ws(
     ws: WebSocket,
     conn_id: u64,
-    store: Arc<Mutex<ChannelStore>>,
+    store: Arc<ShardedStore>,
     config: Arc<Config>,
     metrics: Metrics,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
@@ -173,14 +173,17 @@ pub async fn handle_ws(
             }
         }
 
-        // Process message through relay
+        // Process message through relay — lock only the relevant shard
+        let at_capacity = store.at_capacity();
         let result = {
-            let mut store = store.lock().unwrap();
-            relay::process_message(&mut store, conn_id, &tx, &raw_text, msg, &metrics)
+            let mut shard = store.lock_shard(msg.channel_id());
+            relay::process_message(&mut shard, conn_id, &tx, &raw_text, msg, &metrics, at_capacity)
         };
 
         match result {
             ProcessResult::Ok => {}
+            ProcessResult::OkCreated => store.inc_total(),
+            ProcessResult::OkRemoved => store.dec_total(),
             ProcessResult::Reject(close_json) => {
                 let _ = tx.try_send(close_json);
                 break;
@@ -190,8 +193,8 @@ pub async fn handle_ws(
 
     // Cleanup: disconnect this peer from its channel
     if let Some(ref b) = binding {
-        let mut store = store.lock().unwrap();
-        store.disconnect_peer(&b.channel_id, conn_id);
+        let mut shard = store.lock_shard(&b.channel_id);
+        shard.disconnect_peer(&b.channel_id, conn_id);
     }
 
     // Wait for write task to finish (with timeout)

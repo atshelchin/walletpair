@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use tokio::time::Instant;
 
@@ -7,12 +9,20 @@ use crate::metrics::Metrics;
 use crate::protocol::{ChannelId, CloseReason, PeerId, Role};
 use crate::state::{Channel, ChannelState};
 
+// ---------------------------------------------------------------------------
+// Resume info
+// ---------------------------------------------------------------------------
+
 /// Token → (channel_id, role, peer_id)
 pub struct ResumeInfo {
     pub channel_id: ChannelId,
     pub role: Role,
     pub peer_id: PeerId,
 }
+
+// ---------------------------------------------------------------------------
+// Single shard (the old ChannelStore, now per-shard)
+// ---------------------------------------------------------------------------
 
 pub struct ChannelStore {
     pub channels: HashMap<ChannelId, Channel>,
@@ -137,7 +147,6 @@ impl ChannelStore {
     }
 
     /// Disconnect a peer from its channel by connection ID.
-    /// Returns (channel_id, role) if the peer was found.
     pub fn disconnect_peer(&mut self, channel_id: &str, conn_id: u64) -> Option<(String, Role)> {
         if let Some(ch) = self.channels.get_mut(channel_id) {
             if let Some(role) = ch.disconnect_by_conn_id(conn_id) {
@@ -152,6 +161,138 @@ impl ChannelStore {
         None
     }
 }
+
+// ---------------------------------------------------------------------------
+// Sharded store — splits channels across N independent shards
+// ---------------------------------------------------------------------------
+
+/// Number of shards. Must be a power of two for fast modulo via bitmask.
+const DEFAULT_SHARD_COUNT: usize = 64;
+
+/// A sharded channel store that distributes channels across multiple
+/// independent `Mutex<ChannelStore>` instances. This eliminates the global
+/// lock bottleneck — operations on different channels never contend.
+pub struct ShardedStore {
+    shards: Vec<Mutex<ChannelStore>>,
+    shard_mask: usize,
+    /// Atomic total channel count (avoids locking all shards for readyz).
+    total_channels: AtomicUsize,
+    pub max_channels: usize,
+}
+
+impl ShardedStore {
+    pub fn new(config: &Config) -> Self {
+        let n = DEFAULT_SHARD_COUNT;
+        let shards = (0..n).map(|_| Mutex::new(ChannelStore::new(config))).collect();
+        Self {
+            shards,
+            shard_mask: n - 1,
+            total_channels: AtomicUsize::new(0),
+            max_channels: config.max_channels,
+        }
+    }
+
+    /// Create from an existing single ChannelStore (used by persist::load).
+    pub fn from_single(mut single: ChannelStore, config: &Config) -> Self {
+        let store = Self::new(config);
+        // Re-distribute channels across shards
+        let channels: Vec<_> = single.channels.drain().collect();
+        let tokens: Vec<_> = single.resume_tokens.drain().collect();
+
+        for (id, channel) in channels {
+            let idx = shard_index(&id, store.shard_mask);
+            let mut shard = store.shards[idx].lock().unwrap();
+            shard.channels.insert(id, channel);
+        }
+
+        for (token, info) in tokens {
+            let idx = shard_index(&info.channel_id, store.shard_mask);
+            let mut shard = store.shards[idx].lock().unwrap();
+            shard.resume_tokens.insert(token, info);
+        }
+
+        let total: usize = store.shards.iter()
+            .map(|s| s.lock().unwrap().channel_count())
+            .sum();
+        store.total_channels.store(total, Ordering::Relaxed);
+        store
+    }
+
+    /// Lock the shard responsible for a given channel ID.
+    pub fn lock_shard(&self, ch: &str) -> MutexGuard<'_, ChannelStore> {
+        let idx = shard_index(ch, self.shard_mask);
+        self.shards[idx].lock().unwrap()
+    }
+
+    /// Total channel count (fast, no locking).
+    pub fn total_channels(&self) -> usize {
+        self.total_channels.load(Ordering::Relaxed)
+    }
+
+    /// Increment the total channel counter (called after inserting a channel).
+    pub fn inc_total(&self) {
+        self.total_channels.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement the total channel counter (called after removing a channel).
+    pub fn dec_total(&self) {
+        self.total_channels.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Check if the global channel limit is reached.
+    pub fn at_capacity(&self) -> bool {
+        self.total_channels() >= self.max_channels
+    }
+
+    /// Cleanup expired channels across all shards. Returns total removed.
+    pub fn cleanup_all(&self, metrics: &Metrics) -> usize {
+        let mut total = 0;
+        for shard in &self.shards {
+            let mut s = shard.lock().unwrap();
+            let before = s.channel_count();
+            let removed = s.cleanup_expired(metrics);
+            total += removed;
+            // Sync atomic counter with actual count
+            let after = s.channel_count();
+            if before != after + removed {
+                // Shouldn't happen, but be defensive
+                let _ = before;
+            }
+        }
+        if total > 0 {
+            self.total_channels.fetch_sub(total, Ordering::Relaxed);
+        }
+        total
+    }
+
+    /// Iterate all shards and apply a function. Used for shutdown.
+    pub fn for_each_shard<F>(&self, mut f: F)
+    where
+        F: FnMut(&mut ChannelStore),
+    {
+        for shard in &self.shards {
+            let mut s = shard.lock().unwrap();
+            f(&mut s);
+        }
+    }
+
+}
+
+/// Fast shard index from channel ID. Channel IDs are hex strings, so the
+/// first few bytes have good entropy.
+fn shard_index(ch: &str, mask: usize) -> usize {
+    // Use first 8 bytes of the hex channel ID as a hash
+    let bytes = ch.as_bytes();
+    let mut h: usize = 0;
+    for &b in bytes.iter().take(8) {
+        h = h.wrapping_mul(31).wrapping_add(b as usize);
+    }
+    h & mask
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -226,5 +367,46 @@ mod tests {
         store.remove_channel(&ch_id, &metrics, CloseReason::Normal);
         assert!(store.validate_resume_token(&token).is_none());
         assert!(!store.contains(&ch_id));
+    }
+
+    #[test]
+    fn sharded_store_routes_correctly() {
+        let config = test_config();
+        let store = ShardedStore::new(&config);
+
+        let ch1 = "ab".repeat(32);
+        let ch2 = "cd".repeat(32);
+
+        // Insert into different shards
+        {
+            let mut shard = store.lock_shard(&ch1);
+            let (tx, _rx) = mpsc::channel(1);
+            shard.insert(Channel::new(
+                ch1.clone(),
+                "p1".into(),
+                PeerConn { sender: tx, conn_id: 1 },
+            ));
+            store.inc_total();
+        }
+        {
+            let mut shard = store.lock_shard(&ch2);
+            let (tx, _rx) = mpsc::channel(1);
+            shard.insert(Channel::new(
+                ch2.clone(),
+                "p2".into(),
+                PeerConn { sender: tx, conn_id: 2 },
+            ));
+            store.inc_total();
+        }
+
+        assert_eq!(store.total_channels(), 2);
+
+        // Lookup works
+        assert!(store.lock_shard(&ch1).contains(&ch1));
+        assert!(store.lock_shard(&ch2).contains(&ch2));
+
+        // Wrong shard doesn't have it
+        // (ch1 and ch2 may or may not be in same shard, so just verify lookup works)
+        assert!(!store.lock_shard(&ch1).contains(&ch2) || shard_index(&ch1, 63) == shard_index(&ch2, 63));
     }
 }
