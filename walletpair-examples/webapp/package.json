@@ -44,7 +44,11 @@
 	"dependencies": {
 		"@noble/curves": "^2.2.0",
 		"@noble/hashes": "^2.2.0",
+		"@tanstack/query-core": "^5.100.11",
+		"@tanstack/svelte-query": "^6.1.30",
+		"@wagmi/core": "^3.4.12",
 		"qrcode": "^1.5.4",
+		"viem": "^2.50.4",
 		"walletpair-sdk": "file:../../walletpair-sdk"
 	}
 }

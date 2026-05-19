@@ -20,6 +20,7 @@ import { DAppSession } from '../dapp-session.js';
 import { WalletPairProvider } from './eip1193.js';
 import { WebSocketTransport } from '../ws-transport.js';
 import { evmNumericChainId } from '../types.js';
+import type { Transport } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Wagmi types (minimal subset to avoid hard dependency)
@@ -82,8 +83,10 @@ type CreateConnectorFn = (config: ConnectorConfig) => {
 // ---------------------------------------------------------------------------
 
 export interface WalletPairConnectorOptions {
-  /** WebSocket relay URL. */
-  relayUrl: string;
+  /** WebSocket relay URL. Used when `transport` is not provided. */
+  relayUrl?: string | undefined;
+  /** Custom transport instance. Overrides relayUrl when provided. */
+  transport?: Transport | undefined;
   /** DApp display name. */
   name?: string | undefined;
   /** Request timeout in ms. */
@@ -106,7 +109,7 @@ export function walletPair(options: WalletPairConnectorOptions): CreateConnector
 
   function getOrCreateSession(): DAppSession {
     if (!session) {
-      const transport = new WebSocketTransport(options.relayUrl);
+      const transport = options.transport ?? new WebSocketTransport(options.relayUrl!);
       session = new DAppSession({
         transport,
         name: options.name,

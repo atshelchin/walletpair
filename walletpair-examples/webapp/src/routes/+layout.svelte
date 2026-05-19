@@ -13,6 +13,7 @@
 
 <nav>
 	<a href="/dapp" class:active={page.url.pathname === '/dapp'}>dApp</a>
+	<a href="/dapp-wagmi" class:active={page.url.pathname === '/dapp-wagmi'}>dApp (wagmi)</a>
 	<a href="/wallet" class:active={page.url.pathname === '/wallet'}>Wallet</a>
 </nav>
 
