@@ -53,8 +53,9 @@ Those belong to upper-layer protocols or deployment configurations.
 
 1. **Zero registration.** A relay must not require API keys, project IDs, or
    account signup. Any developer can deploy a relay and use it immediately.
-2. **Self-hostable.** The relay is a stateless message router. A single binary
-   or container is all that is needed.
+2. **Self-hostable.** The relay is a lightweight message router with only
+   ephemeral in-memory state. No persistent storage is required. A single
+   binary or container is all that is needed.
 3. **Relay-blind.** All request parameters, response results, and event data
    are end-to-end encrypted. The relay sees only routing metadata.
 4. **Transport independent.** The protocol works over any ordered bidirectional
@@ -131,7 +132,8 @@ verify that `from` equals `pubkey` in those messages.
 Field: `id`
 
 The dApp generates a unique request ID for every `req`. The wallet must copy
-the same `id` into the matching `res`.
+the same `id` into the matching `res`. The request ID should be a UUID v4 or
+another random string with sufficient entropy to avoid collisions.
 
 ## 5. Message Format
 
@@ -158,7 +160,7 @@ Common fields:
 | `pubkey` | `create`, `join` | Alias of `from`. Present for handshake clarity. |
 | `id` | `req`, `res`, optional in `evt` | Request or event ID. |
 | `method` | `req` | Wallet method name (plaintext, visible to relay). |
-| `sealed` | `req`, `res` (when payload exists), `evt` (when data exists) | Encrypted payload, base64url. See Section 7.4. |
+| `sealed` | `req`, `res`, `evt` (when encrypted payload exists) | Encrypted payload, base64url. See Section 7.4. |
 | `ok` | `res` | Boolean. Whether the request succeeded. |
 | `event` | `evt` | Event name (plaintext, visible to relay). |
 | `capabilities` | `join` | Wallet capabilities object. See Section 8. |
@@ -172,10 +174,10 @@ Common fields:
 | `reason` | `close` | Close or rejection reason. |
 | `ts` | optional in `ping`, `pong` | Timestamp in milliseconds. |
 
-Note: The old `params`, `result`, `error`, and `data` fields do not appear on
-the wire after `ready.connected`. Their content is encrypted into the `sealed`
-field. The receiver decrypts `sealed` to recover the original JSON value. See
-Section 7.4 for the mapping.
+Note: The plaintext fields `params`, `result`, `error`, and `data` never
+appear on the wire. Their content is encrypted into the `sealed` field. The
+receiver decrypts `sealed` to recover the original JSON value. See Section 7.4
+for the mapping.
 
 ## 6. Message Types
 
@@ -222,7 +224,7 @@ session_key   = HKDF-SHA256(
                   ikm  = shared_secret,
                   salt = channel_id_bytes,   // 32 bytes, decoded from hex
                   info = "walletpair-v1"
-                )
+                )[0:32]                      // 32 bytes output
 ```
 
 The session key is 32 bytes and is used for all subsequent encryption.
@@ -236,7 +238,7 @@ code_bytes   = HKDF-SHA256(
                  ikm  = session_key,
                  salt = channel_id_bytes,
                  info = "walletpair-pairing-code"
-               )[0..4]                         // first 4 bytes
+               )[0:4]                          // first 4 bytes (indices 0,1,2,3)
 code_uint32  = big-endian uint32(code_bytes)
 pairing_code = code_uint32 mod 1000000         // zero-pad to 6 digits
 ```
@@ -259,24 +261,32 @@ Mapping:
 |---|---|---|
 | `req` | `params` | yes, if params exist |
 | `res` with `ok=true` | `result` | yes, if result exists |
-| `res` with `ok=false` | `error` | yes |
+| `res` with `ok=false` | `error` | yes, always required |
 | `evt` | `data` | yes, if data exists |
+
+A `req` with no params, or an `evt` with no data, may omit `sealed`. A `res`
+with `ok=false` must always include `sealed` (the encrypted error object).
 
 Encryption uses ChaCha20-Poly1305:
 
 ```text
-nonce    = first 12 bytes of: HMAC-SHA256(session_key, seq_bytes)
+nonce    = HMAC-SHA256(session_key, seq_bytes)[0:12]   // first 12 bytes
 sealed   = AEAD_encrypt(session_key, nonce, plaintext_json_utf8, aad=channel_id_bytes)
 envelope = base64url_no_pad(seq_bytes || ciphertext || tag)
 ```
 
 Where `seq_bytes` is a 4-byte big-endian sequence number. Each peer maintains
-its own send counter, starting at 0 and incrementing by 1 for each encrypted
-message sent. The receiver tracks the remote peer's expected sequence number
-and must reject any message whose sequence number is not strictly incrementing.
+its own send counter, starting at 0 and incrementing by 1 for each message
+that carries a `sealed` field. Messages without `sealed` (e.g., a `req` with
+no params) do not consume a sequence number.
 
-This deterministic nonce derivation avoids the birthday-bound collision risk
-of random nonces and makes replay detection trivial.
+The receiver tracks the remote peer's sequence counter. On receiving a message
+with `sealed`, the receiver reads the 4-byte sequence prefix and must reject
+the message if the sequence number is not strictly equal to the expected next
+value (last accepted + 1). This makes replay and reorder detection trivial.
+
+Sequence counters are persisted across reconnects and never reset. See
+Section 14 for details.
 
 Example `req` with encrypted params:
 
@@ -291,8 +301,6 @@ Example `req` with encrypted params:
   "sealed": "base64url-of-seq-ciphertext-tag"
 }
 ```
-
-A `req` with no params, or an `evt` with no data, may omit `sealed`.
 
 The `method` and `event` fields are plaintext so the relay can optionally log
 them for debugging. If method-name privacy is needed, use a generic method
@@ -445,7 +453,25 @@ The wallet scans the pairing URI, connects to the relay, and sends:
 }
 ```
 
-The relay forwards this `join` message to the dApp.
+The relay does two things:
+
+1. Forwards the `join` message to the dApp.
+2. Sends `ready.waiting` back to the wallet:
+
+```json
+{
+  "v": 1,
+  "t": "ready",
+  "ch": "aabb01...eeff",
+  "state": "waiting",
+  "role": "wallet",
+  "self": "base64url-wallet-pubkey",
+  "resume": "wallet-waiting-resume-token"
+}
+```
+
+This gives the wallet a `resume` token so it can reconnect if the transport
+drops during the waiting phase.
 
 At this point:
 
@@ -508,6 +534,7 @@ Wallet receives:
 ```
 
 From this point on, both sides must encrypt payloads using the session key.
+Both peers initialize their send and receive sequence counters to 0.
 
 ## 10. Request and Response
 
@@ -556,7 +583,8 @@ Failed response:
 }
 ```
 
-The decrypted `sealed` in a failed response is an error object:
+The decrypted `sealed` in a failed response is an error object with required
+fields `code` (string) and `message` (string):
 
 ```json
 {
@@ -627,7 +655,8 @@ The receiver replies with `pong`.
 }
 ```
 
-Heartbeat messages are not encrypted (they carry no sensitive payload).
+Heartbeat messages are not encrypted (they carry no sensitive payload) and
+do not consume sequence numbers.
 
 Recommended timing:
 
@@ -685,6 +714,7 @@ Close reasons:
 | `payload_too_large` | Message exceeds 64 KB. |
 | `protocol_error` | Malformed or unsupported message. |
 | `unsupported_version` | Peer sent a `v` value the receiver does not support. |
+| `decryption_failed` | Receiver could not decrypt `sealed` (bad seq, tampered data). |
 
 A `close` may be sent by either peer or by the transport adapter. When the
 adapter sends `close`, the `from` field is omitted.
@@ -724,10 +754,21 @@ Wallet reconnects by sending `join` with `resume`:
 Reconnect messages must include `from` and `pubkey` so the relay can verify
 the peer identity matches the original channel participant.
 
-If the token is valid, the relay restores the previous state and sends
-`ready.connected` without requiring a new `accept`. The previously negotiated
-session key remains valid. Both peers must reset their encryption sequence
-counters to 0 upon reconnect.
+If the token is valid, the relay restores the previous state without requiring
+a new `accept`. If the other peer is still connected, the relay immediately
+sends `ready.connected` to the reconnecting peer. If the other peer is also
+disconnected, the relay sends `ready.waiting` and will send `ready.connected`
+to both once the other peer also reconnects.
+
+The previously negotiated session key remains valid. Peers must persist their
+send and receive sequence counters across reconnects and continue from the
+persisted values. **Sequence counters must never be reset**, because doing so
+would cause nonce reuse and break AEAD security.
+
+After reconnect, the receiver must accept any sequence number that is greater
+than the last accepted value (allowing gaps, because in-flight messages may
+have been lost when the transport dropped). This is the only case where
+non-consecutive sequence numbers are valid.
 
 If the token is invalid, the relay rejects with:
 
@@ -748,7 +789,8 @@ Recommended reconnect backoff:
 
 After reconnect:
 
-1. The dApp may retry pending requests with the same `req.id`.
+1. The dApp may retry pending requests with the same `req.id` (using new
+   sequence numbers for encryption).
 2. The wallet should deduplicate duplicate request IDs within a short window.
 3. The dApp should refresh state by calling a method like `wallet_getAccounts`
    if missed events matter.
@@ -777,7 +819,9 @@ connected
   -> receive close ------------------------------> closed
   -> transport disconnected ---------------------> disconnected
 disconnected
-  -> send create with resume --------------------> waiting (reconnect)
+  -> send create with resume --------------------> waiting
+     (relay may respond with ready.waiting or
+      ready.connected depending on other peer)
   -> give up ------------------------------------> closed
 closed
   (terminal state)
@@ -801,7 +845,9 @@ connected
   -> receive close ------------------------------> closed
   -> transport disconnected ---------------------> disconnected
 disconnected
-  -> send join with resume ----------------------> waiting_accept (reconnect)
+  -> send join with resume ----------------------> waiting_accept
+     (relay may respond with ready.waiting or
+      ready.connected depending on other peer)
   -> give up ------------------------------------> closed
 closed
   (terminal state)
@@ -824,6 +870,8 @@ closed
 12. A peer should have at most 32 pending (unanswered) requests per channel.
 13. If a peer receives a message with an unsupported `v` value, it must reply
     with `close` reason `unsupported_version`.
+14. Encryption sequence counters must never be reset. They persist across
+    reconnects for the lifetime of the channel.
 
 ## 17. Transport Requirements
 
@@ -833,7 +881,8 @@ A transport adapter must provide:
 2. Ordered delivery while connected.
 3. Channel creation by the dApp.
 4. Wallet join delivery to the dApp.
-5. Generation of `ready` messages to the appropriate peer.
+5. Generation of `ready` messages to both peers (including `ready.waiting` to
+   the wallet after a valid `join`).
 6. State enforcement per Section 15.
 7. Role enforcement per Section 3.
 8. Heartbeat timeout handling.
@@ -875,8 +924,10 @@ The relay must:
 
 1. Accept WalletPair JSON messages over WebSocket text frames.
 2. Track channel state in memory (no persistent storage required).
-3. Create a channel when it receives `create` from a dApp.
-4. Forward `join` to the dApp.
+3. Create a channel when it receives `create` from a dApp. Reply with
+   `ready.waiting` to the dApp.
+4. When it receives `join` from a wallet: forward the `join` to the dApp and
+   reply with `ready.waiting` to the wallet.
 5. Upon receiving `accept` from the dApp, send `ready.connected` to both peers.
 6. Forward `req` to the wallet only after `ready.connected`.
 7. Forward `res` and `evt` to the dApp only after `ready.connected`.
@@ -961,11 +1012,12 @@ Service UUID: to be assigned
 1. DApp creates `ch` and exposes pairing URI via QR, NFC, or BLE advertisement.
 2. Wallet discovers the pairing URI and obtains the dApp's public key.
 3. Wallet connects via BLE and sends `join` with public key and capabilities.
-4. Both sides compute session key and display pairing code.
-5. User confirms. DApp sends `accept`.
-6. BLE stack locally generates `ready.connected` for both sides.
-7. DApp sends `req`. Wallet sends `res` and optional `evt`.
-8. All payloads are encrypted with the session key.
+4. BLE stack sends `ready.waiting` to both sides.
+5. Both sides compute session key and display pairing code.
+6. User confirms. DApp sends `accept`.
+7. BLE stack locally generates `ready.connected` for both sides.
+8. DApp sends `req`. Wallet sends `res` and optional `evt`.
+9. All payloads are encrypted with the session key.
 
 ### 19.5 Message Framing
 
@@ -973,7 +1025,7 @@ Bluetooth MTU is typically small (23-517 bytes). Messages larger than MTU
 must be fragmented. Recommended framing for each BLE write/notification:
 
 ```text
-[1 byte flags] [2 bytes total length, big-endian] [payload fragment]
+[1 byte flags] [2 bytes total length, big-endian unsigned] [payload fragment]
 
 flags:
   bit 0: 1 = first fragment
@@ -1017,8 +1069,9 @@ The relay operator, network attacker, or eavesdropper should not be able to:
 3. `resume` is secret and must be stored like a session token.
 4. User confirmation of pairing code proves absence of MITM, not identity.
 5. Ephemeral key pairs must be generated per channel.
-6. Implementations must reject messages with out-of-order sequence numbers.
+6. Implementations must reject messages with unexpected sequence numbers.
 7. The relay must not log or store `sealed` content beyond delivery.
+8. Sequence counters must never be reset for a given session key.
 
 ### 20.4 Privacy Considerations
 
@@ -1091,6 +1144,20 @@ walletpair:?ch=aabb01...eeff&pubkey=dGhpcyBpcyBh...&relay=wss%3A%2F%2Frelay.exam
 }
 ```
 
+### Relay confirms wallet joined (new)
+
+```json
+{
+  "v": 1,
+  "t": "ready",
+  "ch": "aabb01...eeff",
+  "state": "waiting",
+  "role": "wallet",
+  "self": "base64url-wallet-pubkey",
+  "resume": "opaque-resume-token-2"
+}
+```
+
 ### Both sides display pairing code
 
 ```text
@@ -1124,7 +1191,7 @@ DApp receives:
   "role": "dapp",
   "self": "base64url-dapp-pubkey",
   "remote": "base64url-wallet-pubkey",
-  "resume": "opaque-resume-token-2"
+  "resume": "opaque-resume-token-3"
 }
 ```
 
@@ -1139,7 +1206,7 @@ Wallet receives:
   "role": "wallet",
   "self": "base64url-wallet-pubkey",
   "remote": "base64url-dapp-pubkey",
-  "resume": "opaque-resume-token-3"
+  "resume": "opaque-resume-token-4"
 }
 ```
 
