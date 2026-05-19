@@ -15,4 +15,4 @@ export {
   BLE_NOTIFY_CHAR_UUID,
 } from './framing.js';
 
-export { WebBleCentralTransport } from './web-ble-transport.js';
+export { WebBleCentralTransport, isWebBleSupported } from './web-ble-transport.js';
