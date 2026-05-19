@@ -27,5 +27,24 @@
     "dist",
     "src"
   ],
-  "dependencies": {}
+  "exports": {
+    ".": "./src/index.ts",
+    "./evm": "./src/evm/index.ts",
+    "./evm/eip1193": "./src/evm/eip1193.ts",
+    "./evm/wagmi": "./src/evm/wagmi.ts",
+    "./ble": "./src/ble/index.ts"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^1.2.1",
+    "@noble/curves": "^1.8.1",
+    "@noble/hashes": "^1.7.1"
+  },
+  "peerDependencies": {
+    "@wagmi/core": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@wagmi/core": {
+      "optional": true
+    }
+  }
 }
