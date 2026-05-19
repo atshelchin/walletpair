@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WalletPair — dApp</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3;
+  --muted: #8b949e; --green: #3fb950; --amber: #d29922; --red: #f85149; --blue: #58a6ff;
+  --font: system-ui, -apple-system, sans-serif; --mono: 'SF Mono', 'Fira Code', monospace;
+  --radius: 8px;
+}
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px; }
+main { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+header { font-size: 20px; font-weight: 600; padding-bottom: 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; }
+label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+input, textarea, select {
+  width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); padding: 8px 10px; font-family: var(--mono); font-size: 13px; resize: vertical;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--blue); }
+textarea { min-height: 56px; }
+button {
+  background: var(--border); color: var(--text); border: none; border-radius: 6px;
+  padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 500; transition: background 0.15s;
+}
+button:hover:not(:disabled) { background: var(--muted); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--blue); color: #fff; }
+button.primary:hover:not(:disabled) { background: #79c0ff; }
+button.danger { background: var(--red); color: #fff; }
+.row { display: flex; gap: 8px; align-items: center; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.dot.waiting { background: var(--amber); }
+.dot.connected { background: var(--green); }
+.dot.closed { background: var(--red); }
+.dot.reconnecting { background: var(--amber); animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.code { font-family: var(--mono); font-size: 32px; letter-spacing: 0.2em; font-weight: 700; text-align: center; padding: 16px 0; }
+.uri-box { font-family: var(--mono); font-size: 11px; word-break: break-all; background: var(--bg); padding: 10px; border-radius: 6px; margin-bottom: 8px; color: var(--muted); max-height: 80px; overflow-y: auto; }
+#log { max-height: 320px; overflow-y: auto; }
+.log-entry { font-family: var(--mono); font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+.log-entry .dir { flex-shrink: 0; width: 14px; text-align: center; }
+.log-entry .dir.out { color: var(--blue); }
+.log-entry .dir.in { color: var(--green); }
+.log-entry .dir.err { color: var(--red); }
+.log-entry .body { word-break: break-all; color: var(--muted); }
+.log-entry .type { color: var(--text); font-weight: 500; }
+.hidden { display: none !important; }
+.mt { margin-top: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span>WalletPair &mdash; dApp</span>
+    <span class="status"><span class="dot" id="dot"></span><span id="statusText">Idle</span></span>
+  </header>
+
+  <section>
+    <h3>Relay Connection</h3>
+    <div class="row">
+      <input id="relayUrl" value="ws://localhost:8080/v1" placeholder="ws://...">
+      <button id="btnConnect" class="primary">Connect</button>
+      <button id="btnReset" class="danger hidden">Reset</button>
+    </div>
+  </section>
+
+  <section id="secPairing">
+    <h3>Pairing</h3>
+    <label>Pairing URI (share with wallet)</label>
+    <div class="uri-box" id="pairingUri">--</div>
+    <button id="btnCopy" disabled>Copy URI</button>
+    <div id="pairingCodeWrap" class="hidden">
+      <label class="mt">Pairing Code (verify with wallet)</label>
+      <div class="code" id="pairingCode">------</div>
+      <div class="row mt">
+        <button id="btnAccept" class="primary" disabled>Accept Wallet</button>
+        <button id="btnReject" class="danger" disabled>Reject</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="secRequest" class="hidden">
+    <h3>Send Request</h3>
+    <label>Method</label>
+    <select id="method">
+      <option value="wallet_getAccounts">wallet_getAccounts</option>
+      <option value="wallet_signMessage">wallet_signMessage</option>
+      <option value="custom">custom...</option>
+    </select>
+    <label class="mt">Params (JSON)</label>
+    <textarea id="params">{}</textarea>
+    <div class="row mt">
+      <button id="btnSend" class="primary">Send Request</button>
+      <button id="btnPing">Ping</button>
+      <button id="btnClose" class="danger">Close</button>
+    </div>
+  </section>
+
+  <section>
+    <h3>Message Log</h3>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script type="module">
+// ---------------------------------------------------------------------------
+// Crypto imports (noble libraries — minimal, audited, zero-dependency)
+// ---------------------------------------------------------------------------
+import { x25519 } from 'https://esm.sh/@noble/curves@1.8.1/ed25519';
+import { hkdf } from 'https://esm.sh/@noble/hashes@1.7.1/hkdf';
+import { sha256 } from 'https://esm.sh/@noble/hashes@1.7.1/sha256';
+import { hmac } from 'https://esm.sh/@noble/hashes@1.7.1/hmac';
+import { chacha20poly1305 } from 'https://esm.sh/@noble/ciphers@1.2.1/chacha';
+import { bytesToHex, hexToBytes, utf8ToBytes, concatBytes } from 'https://esm.sh/@noble/hashes@1.7.1/utils';
+
+// ---------------------------------------------------------------------------
+// Base64url helpers
+// ---------------------------------------------------------------------------
+function b64urlEncode(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+function b64urlDecode(str) {
+  const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)), c => c.charCodeAt(0));
+}
+
+// ---------------------------------------------------------------------------
+// WalletPair crypto (implements protocol Section 7)
+// ---------------------------------------------------------------------------
+function deriveSessionKey(sharedSecret, channelIdHex) {
+  return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1', 32);
+}
+function computePairingCode(sessionKey, channelIdHex) {
+  const codeBytes = hkdf(sha256, sessionKey, hexToBytes(channelIdHex), 'walletpair-pairing-code', 4);
+  const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
+  return (view.getUint32(0) % 1000000).toString().padStart(6, '0');
+}
+function sealPayload(sessionKey, channelIdHex, seq, data) {
+  const seqBytes = new Uint8Array(4);
+  new DataView(seqBytes.buffer).setUint32(0, seq);
+  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
+  const plaintext = utf8ToBytes(JSON.stringify(data));
+  const ciphertext = chacha20poly1305(sessionKey, nonce, hexToBytes(channelIdHex)).encrypt(plaintext);
+  return b64urlEncode(concatBytes(seqBytes, ciphertext));
+}
+function unsealPayload(sessionKey, channelIdHex, sealed) {
+  const bytes = b64urlDecode(sealed);
+  const seqBytes = bytes.slice(0, 4);
+  const ciphertext = bytes.slice(4);
+  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
+  const plaintext = chacha20poly1305(sessionKey, nonce, hexToBytes(channelIdHex)).decrypt(ciphertext);
+  const seq = new DataView(seqBytes.buffer, seqBytes.byteOffset, 4).getUint32(0);
+  return { seq, data: JSON.parse(new TextDecoder().decode(plaintext)) };
+}
+
+// ---------------------------------------------------------------------------
+// State persistence (sessionStorage)
+// ---------------------------------------------------------------------------
+const STORE_KEY = 'wp_dapp';
+function saveState() {
+  const data = {
+    channelId:     S.channelId,
+    privKey:       S.privKey ? bytesToHex(S.privKey) : null,
+    pubKeyB64:     S.pubKeyB64,
+    remotePubKeyB64: S.remotePubKey ? b64urlEncode(S.remotePubKey) : null,
+    sessionKey:    S.sessionKey ? bytesToHex(S.sessionKey) : null,
+    sendSeq:       S.sendSeq,
+    resumeToken:   S.resumeToken,
+    relayUrl:      relayUrlEl.value,
+    reqCounter:    S.reqCounter,
+    paired:        S.paired,
+  };
+  sessionStorage.setItem(STORE_KEY, JSON.stringify(data));
+}
+function loadState() {
+  try {
+    const raw = sessionStorage.getItem(STORE_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    if (!d.channelId || !d.privKey) return false;
+    S.channelId = d.channelId;
+    S.privKey = hexToBytes(d.privKey);
+    S.pubKey = x25519.getPublicKey(S.privKey);
+    S.pubKeyB64 = d.pubKeyB64;
+    S.remotePubKey = d.remotePubKeyB64 ? b64urlDecode(d.remotePubKeyB64) : null;
+    S.sessionKey = d.sessionKey ? hexToBytes(d.sessionKey) : null;
+    S.sendSeq = d.sendSeq || 0;
+    S.resumeToken = d.resumeToken;
+    S.reqCounter = d.reqCounter || 0;
+    S.paired = d.paired || false;
+    relayUrlEl.value = d.relayUrl || relayUrlEl.value;
+    return true;
+  } catch { return false; }
+}
+function clearState() {
+  sessionStorage.removeItem(STORE_KEY);
+}
+
+// ---------------------------------------------------------------------------
+// App State
+// ---------------------------------------------------------------------------
+const S = {
+  ws: null,
+  channelId: null,
+  privKey: null,        // Uint8Array X25519 private key
+  pubKey: null,         // Uint8Array X25519 public key
+  pubKeyB64: null,      // base64url
+  remotePubKey: null,   // Uint8Array remote public key
+  sessionKey: null,     // Uint8Array 32-byte session key
+  sendSeq: 0,
+  resumeToken: null,
+  phase: 'idle',
+  reqCounter: 0,
+  paired: false,        // true after first successful accept (enables auto-accept)
+  intentionalClose: false,
+};
+
+const BACKOFF = [1000, 2000, 5000, 10000, 30000];
+
+// ---------------------------------------------------------------------------
+// UI references
+// ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const relayUrlEl = $('relayUrl');
+const btnConnect = $('btnConnect');
+const btnReset = $('btnReset');
+const dot = $('dot');
+const statusText = $('statusText');
+const pairingUriEl = $('pairingUri');
+const btnCopy = $('btnCopy');
+const pairingCodeEl = $('pairingCode');
+const pairingCodeWrap = $('pairingCodeWrap');
+const btnAccept = $('btnAccept');
+const btnReject = $('btnReject');
+const secRequest = $('secRequest');
+const methodSel = $('method');
+const paramsEl = $('params');
+const btnSend = $('btnSend');
+const btnPing = $('btnPing');
+const btnClose = $('btnClose');
+const logEl = $('log');
+
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+function setPhase(phase) {
+  S.phase = phase;
+  const dotClass = { connected: 'connected', closed: 'closed', idle: '', reconnecting: 'reconnecting' };
+  dot.className = 'dot ' + (dotClass[phase] ?? 'waiting');
+  statusText.textContent = phase.charAt(0).toUpperCase() + phase.slice(1).replace('_', ' ');
+  btnAccept.disabled = phase !== 'pending_accept';
+  btnReject.disabled = phase !== 'pending_accept';
+  btnCopy.disabled = !S.channelId;
+  secRequest.classList.toggle('hidden', phase !== 'connected');
+  pairingCodeWrap.classList.toggle('hidden', phase !== 'pending_accept');
+  btnReset.classList.toggle('hidden', phase === 'idle');
+  btnConnect.classList.toggle('hidden', phase !== 'idle');
+}
+
+function log(dir, type, detail = '') {
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  const arrow = dir === 'out' ? '→' : dir === 'in' ? '←' : '✕';
+  const cls = dir === 'out' ? 'out' : dir === 'in' ? 'in' : 'err';
+  entry.innerHTML = `<span class="dir ${cls}">${arrow}</span><span class="type">${type}</span><span class="body">${detail}</span>`;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket connection (handles both fresh connect and reconnect)
+// ---------------------------------------------------------------------------
+function openWs(onOpen) {
+  const url = relayUrlEl.value;
+  const ws = new WebSocket(url, ['walletpair.v1']);
+
+  ws.onopen = () => onOpen(ws);
+
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    handleMessage(msg, ws);
+  };
+
+  ws.onclose = () => {
+    if (S.intentionalClose) return;
+    if (S.phase === 'closed') return;
+    log('err', 'ws_close', 'transport disconnected');
+    startReconnect();
+  };
+
+  ws.onerror = () => {};
+  return ws;
+}
+
+function sendRaw(msg) {
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+  S.ws.send(JSON.stringify(msg));
+  const type = msg.t;
+  const detail = type === 'req' ? `id=${msg.id} method=${msg.method}` : type === 'close' ? `reason=${msg.reason}` : '';
+  log('out', type, detail);
+}
+
+// ---------------------------------------------------------------------------
+// Fresh connect (first time)
+// ---------------------------------------------------------------------------
+function freshConnect() {
+  S.intentionalClose = false;
+  S.privKey = x25519.utils.randomPrivateKey();
+  S.pubKey = x25519.getPublicKey(S.privKey);
+  S.pubKeyB64 = b64urlEncode(S.pubKey);
+  S.channelId = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+  S.sendSeq = 0;
+  S.remotePubKey = null;
+  S.sessionKey = null;
+  S.reqCounter = 0;
+  S.paired = false;
+  S.resumeToken = null;
+
+  S.ws = openWs(() => {
+    setPhase('waiting');
+    sendRaw({ v: 1, t: 'create', ch: S.channelId, from: S.pubKeyB64, pubkey: S.pubKeyB64 });
+    const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+    pairingUriEl.textContent = uri;
+    saveState();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reconnect loop: resume → fallback fresh create (same channel + keys)
+// ---------------------------------------------------------------------------
+let reconnectTimer = null;
+
+function startReconnect() {
+  setPhase('reconnecting');
+  let attempt = 0;
+
+  function tryOnce() {
+    if (S.intentionalClose || S.phase === 'closed') return;
+    const delay = BACKOFF[Math.min(attempt, BACKOFF.length - 1)];
+    log('in', 'reconnect', `attempt ${attempt + 1} in ${delay}ms`);
+    reconnectTimer = setTimeout(() => doAttempt(attempt++), delay);
+  }
+
+  function doAttempt(n) {
+    if (S.intentionalClose || S.phase === 'closed') return;
+    const useResume = n === 0 && S.resumeToken; // first attempt: try resume
+
+    S.ws = openWs(() => {
+      if (useResume) {
+        // Try resume
+        sendRaw({ v: 1, t: 'create', ch: S.channelId, from: S.pubKeyB64, pubkey: S.pubKeyB64, resume: S.resumeToken });
+      } else {
+        // Fresh create with same channel & keys (relay forgot us)
+        sendRaw({ v: 1, t: 'create', ch: S.channelId, from: S.pubKeyB64, pubkey: S.pubKeyB64 });
+      }
+    });
+
+    // If WS fails to connect, the onclose handler will be called.
+    // We override onclose temporarily for this attempt:
+    const origOnclose = S.ws.onclose;
+    S.ws.onclose = () => {
+      if (S.intentionalClose || S.phase === 'closed') return;
+      // Connection failed, retry
+      tryOnce();
+    };
+    // Once we get any message, restore normal onclose
+    const origOnmessage = S.ws.onmessage;
+    S.ws.onmessage = (event) => {
+      S.ws.onclose = origOnclose;     // restore normal onclose
+      S.ws.onmessage = origOnmessage; // restore normal onmessage
+      origOnmessage(event);            // process this message normally
+
+      // Check if reconnect succeeded
+      const msg = JSON.parse(event.data);
+      if (msg.t === 'close' && msg.reason === 'invalid_resume') {
+        // Resume failed (relay restarted). Retry immediately without resume.
+        log('in', 'reconnect', 'resume rejected, re-creating channel');
+        S.resumeToken = null;
+        S.ws.onclose = () => {}; // suppress close handler
+        S.ws.close();
+        doAttempt(1); // force no-resume path
+      } else if (msg.t === 'close' && msg.reason === 'channel_exists') {
+        // Race condition: our old connection might still be lingering.
+        // Wait and retry.
+        tryOnce();
+      }
+      // If we got ready.waiting or ready.connected, reconnect is done!
+      // The normal message handler already processes it.
+    };
+  }
+
+  tryOnce();
+}
+
+function stopReconnect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+}
+
+// ---------------------------------------------------------------------------
+// Message handling
+// ---------------------------------------------------------------------------
+function handleMessage(msg, ws) {
+  switch (msg.t) {
+    case 'ready':
+      S.resumeToken = msg.resume;
+      stopReconnect();
+      if (msg.state === 'waiting') {
+        setPhase('waiting');
+        log('in', 'ready', 'state=waiting');
+        // Show pairing URI (in case of reconnect, re-display it)
+        const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+        pairingUriEl.textContent = uri;
+      } else if (msg.state === 'connected') {
+        log('in', 'ready', `state=connected remote=${msg.remote?.slice(0, 12)}...`);
+        setPhase('connected');
+      }
+      saveState();
+      break;
+
+    case 'join': {
+      const joinPubKey = msg.from;
+      log('in', 'join', `peer=${joinPubKey?.slice(0, 12)}... chains=${JSON.stringify(msg.capabilities?.chains || [])}`);
+
+      // Derive session key from the wallet's public key
+      const remoteBytes = b64urlDecode(joinPubKey);
+
+      // Check: is this the same wallet we already paired with?
+      const knownWallet = S.paired && S.remotePubKey && b64urlEncode(S.remotePubKey) === joinPubKey;
+
+      S.remotePubKey = remoteBytes;
+      const shared = x25519.getSharedSecret(S.privKey, S.remotePubKey);
+      S.sessionKey = deriveSessionKey(shared, S.channelId);
+
+      if (knownWallet) {
+        // Auto-accept: same wallet reconnected after relay restart
+        log('in', 'auto_accept', 'known wallet, skipping pairing code');
+        sendRaw({ v: 1, t: 'accept', ch: S.channelId, from: S.pubKeyB64, target: joinPubKey });
+      } else {
+        // First time: show pairing code for manual verification
+        const code = computePairingCode(S.sessionKey, S.channelId);
+        pairingCodeEl.textContent = code;
+        setPhase('pending_accept');
+      }
+      saveState();
+      break;
+    }
+
+    case 'res': {
+      let detail = `id=${msg.id} ok=${msg.ok}`;
+      if (msg.sealed && S.sessionKey) {
+        try {
+          const { data } = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          detail += ` ${JSON.stringify(data)}`;
+        } catch { detail += ' (decrypt failed)'; }
+      }
+      log('in', 'res', detail);
+      break;
+    }
+
+    case 'evt': {
+      let detail = `event=${msg.event}`;
+      if (msg.sealed && S.sessionKey) {
+        try {
+          const { data } = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          detail += ` ${JSON.stringify(data)}`;
+        } catch { detail += ' (decrypt failed)'; }
+      }
+      log('in', 'evt', detail);
+      break;
+    }
+
+    case 'ping':
+      log('in', 'ping', `ts=${msg.ts}`);
+      sendRaw({ v: 1, t: 'pong', ch: S.channelId, from: S.pubKeyB64, ts: Date.now() });
+      break;
+
+    case 'pong':
+      log('in', 'pong', `ts=${msg.ts}`);
+      break;
+
+    case 'close':
+      log('err', 'close', `reason=${msg.reason}`);
+      // Don't set closed if we're in reconnect flow handling
+      if (S.phase !== 'reconnecting') {
+        setPhase('closed');
+        S.intentionalClose = true;
+      }
+      break;
+
+    default:
+      log('in', msg.t || '?', JSON.stringify(msg).slice(0, 120));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Actions
+// ---------------------------------------------------------------------------
+function doAccept() {
+  if (S.phase !== 'pending_accept' || !S.remotePubKey) return;
+  S.paired = true;
+  sendRaw({ v: 1, t: 'accept', ch: S.channelId, from: S.pubKeyB64, target: b64urlEncode(S.remotePubKey) });
+  saveState();
+}
+
+function doReject() {
+  if (!S.remotePubKey) return;
+  sendRaw({ v: 1, t: 'close', ch: S.channelId, from: S.pubKeyB64, target: b64urlEncode(S.remotePubKey), reason: 'user_rejected' });
+  doFullClose();
+}
+
+function doSendRequest() {
+  if (S.phase !== 'connected') return;
+  const method = methodSel.value === 'custom' ? prompt('Method name:') : methodSel.value;
+  if (!method) return;
+  let params;
+  try { params = JSON.parse(paramsEl.value); } catch { alert('Invalid JSON params'); return; }
+  const id = `req-${++S.reqCounter}`;
+  const msg = { v: 1, t: 'req', ch: S.channelId, id, from: S.pubKeyB64, method };
+  if (Object.keys(params).length > 0) {
+    msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, params);
+  }
+  sendRaw(msg);
+  saveState();
+}
+
+function doPing() {
+  if (S.phase !== 'connected') return;
+  sendRaw({ v: 1, t: 'ping', ch: S.channelId, from: S.pubKeyB64, ts: Date.now() });
+}
+
+function doFullClose() {
+  S.intentionalClose = true;
+  stopReconnect();
+  if (S.ws && S.ws.readyState === WebSocket.OPEN) {
+    sendRaw({ v: 1, t: 'close', ch: S.channelId, from: S.pubKeyB64, reason: 'normal' });
+  }
+  setPhase('closed');
+  clearState();
+}
+
+function doReset() {
+  doFullClose();
+  S.channelId = null;
+  S.paired = false;
+  setPhase('idle');
+  pairingUriEl.textContent = '--';
+}
+
+// ---------------------------------------------------------------------------
+// Event bindings
+// ---------------------------------------------------------------------------
+btnConnect.onclick = freshConnect;
+btnReset.onclick = doReset;
+btnCopy.onclick = () => { navigator.clipboard.writeText(pairingUriEl.textContent); btnCopy.textContent = 'Copied!'; setTimeout(() => btnCopy.textContent = 'Copy URI', 1500); };
+btnAccept.onclick = doAccept;
+btnReject.onclick = doReject;
+btnSend.onclick = doSendRequest;
+btnPing.onclick = doPing;
+btnClose.onclick = doFullClose;
+methodSel.onchange = () => {
+  if (methodSel.value === 'wallet_signMessage') paramsEl.value = '{"message": "Hello WalletPair!"}';
+  else paramsEl.value = '{}';
+};
+
+// ---------------------------------------------------------------------------
+// On page load: restore session if available
+// ---------------------------------------------------------------------------
+if (loadState()) {
+  log('in', 'restore', `restored session ch=${S.channelId.slice(0, 12)}... paired=${S.paired}`);
+  pairingUriEl.textContent = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+  // Auto-reconnect
+  startReconnect();
+}
+</script>
+</body>
+</html>

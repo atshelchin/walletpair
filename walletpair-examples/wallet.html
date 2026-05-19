@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WalletPair — Wallet</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3;
+  --muted: #8b949e; --green: #3fb950; --amber: #d29922; --red: #f85149; --blue: #58a6ff;
+  --font: system-ui, -apple-system, sans-serif; --mono: 'SF Mono', 'Fira Code', monospace;
+  --radius: 8px;
+}
+body { font-family: var(--font); background: var(--bg); color: var(--text); min-height: 100vh; padding: 24px; }
+main { max-width: 640px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+header { font-size: 20px; font-weight: 600; padding-bottom: 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+section { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 12px; }
+label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
+input, textarea, select {
+  width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); padding: 8px 10px; font-family: var(--mono); font-size: 13px; resize: vertical;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--blue); }
+textarea { min-height: 56px; }
+button {
+  background: var(--border); color: var(--text); border: none; border-radius: 6px;
+  padding: 8px 16px; font-size: 13px; cursor: pointer; font-weight: 500; transition: background 0.15s;
+}
+button:hover:not(:disabled) { background: var(--muted); }
+button:disabled { opacity: 0.4; cursor: default; }
+button.primary { background: var(--blue); color: #fff; }
+button.primary:hover:not(:disabled) { background: #79c0ff; }
+button.danger { background: var(--red); color: #fff; }
+button.success { background: var(--green); color: #fff; }
+.row { display: flex; gap: 8px; align-items: center; }
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+.dot.waiting { background: var(--amber); }
+.dot.connected { background: var(--green); }
+.dot.closed { background: var(--red); }
+.dot.reconnecting { background: var(--amber); animation: pulse 1s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.code { font-family: var(--mono); font-size: 32px; letter-spacing: 0.2em; font-weight: 700; text-align: center; padding: 16px 0; }
+.addr { font-family: var(--mono); font-size: 14px; color: var(--green); word-break: break-all; padding: 8px 0; }
+#log { max-height: 280px; overflow-y: auto; }
+.log-entry { font-family: var(--mono); font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--border); display: flex; gap: 8px; }
+.log-entry .dir { flex-shrink: 0; width: 14px; text-align: center; }
+.log-entry .dir.out { color: var(--blue); }
+.log-entry .dir.in { color: var(--green); }
+.log-entry .dir.err { color: var(--red); }
+.log-entry .body { word-break: break-all; color: var(--muted); }
+.log-entry .type { color: var(--text); font-weight: 500; }
+.hidden { display: none !important; }
+.mt { margin-top: 10px; }
+.req-card {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px; margin-bottom: 8px;
+}
+.req-card .method { font-family: var(--mono); font-weight: 600; margin-bottom: 6px; }
+.req-card .params { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 8px; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span>WalletPair &mdash; Wallet</span>
+    <span class="status"><span class="dot" id="dot"></span><span id="statusText">Idle</span></span>
+  </header>
+
+  <section>
+    <h3>EOA Wallet</h3>
+    <label>Private Key (hex, 32 bytes)</label>
+    <div class="row">
+      <input id="ethKey" placeholder="paste or generate...">
+      <button id="btnGenKey">Generate</button>
+    </div>
+    <div class="addr" id="ethAddr">--</div>
+  </section>
+
+  <section>
+    <h3>Pairing</h3>
+    <label>Paste Pairing URI from dApp</label>
+    <div class="row">
+      <input id="pairingUri" placeholder="walletpair:?ch=...&pubkey=...&relay=...">
+      <button id="btnJoin" class="primary" disabled>Join</button>
+      <button id="btnReset" class="danger hidden">Reset</button>
+    </div>
+    <div id="pairingCodeWrap" class="hidden">
+      <label class="mt">Pairing Code (verify with dApp)</label>
+      <div class="code" id="pairingCode">------</div>
+    </div>
+  </section>
+
+  <section id="secRequests" class="hidden">
+    <h3>Incoming Requests</h3>
+    <div id="requests"><span style="color:var(--muted);font-size:13px">No pending requests</span></div>
+  </section>
+
+  <section id="secEvents" class="hidden">
+    <h3>Push Event</h3>
+    <div class="row">
+      <select id="eventName" style="width:auto; flex:1">
+        <option value="accountsChanged">accountsChanged</option>
+        <option value="chainChanged">chainChanged</option>
+      </select>
+      <button id="btnPushEvent" class="primary">Push</button>
+      <button id="btnClose" class="danger">Close</button>
+    </div>
+  </section>
+
+  <section>
+    <h3>Message Log</h3>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script type="module">
+// ---------------------------------------------------------------------------
+// Crypto imports
+// ---------------------------------------------------------------------------
+import { x25519 } from 'https://esm.sh/@noble/curves@1.8.1/ed25519';
+import { secp256k1 } from 'https://esm.sh/@noble/curves@1.8.1/secp256k1';
+import { hkdf } from 'https://esm.sh/@noble/hashes@1.7.1/hkdf';
+import { sha256 } from 'https://esm.sh/@noble/hashes@1.7.1/sha256';
+import { hmac } from 'https://esm.sh/@noble/hashes@1.7.1/hmac';
+import { keccak_256 } from 'https://esm.sh/@noble/hashes@1.7.1/sha3';
+import { chacha20poly1305 } from 'https://esm.sh/@noble/ciphers@1.2.1/chacha';
+import { bytesToHex, hexToBytes, utf8ToBytes, concatBytes } from 'https://esm.sh/@noble/hashes@1.7.1/utils';
+
+// ---------------------------------------------------------------------------
+// Base64url helpers
+// ---------------------------------------------------------------------------
+function b64urlEncode(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+function b64urlDecode(str) {
+  const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
+  return Uint8Array.from(atob(b64 + '='.repeat((4 - b64.length % 4) % 4)), c => c.charCodeAt(0));
+}
+
+// ---------------------------------------------------------------------------
+// WalletPair crypto
+// ---------------------------------------------------------------------------
+function deriveSessionKey(sharedSecret, channelIdHex) {
+  return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1', 32);
+}
+function computePairingCode(sessionKey, channelIdHex) {
+  const codeBytes = hkdf(sha256, sessionKey, hexToBytes(channelIdHex), 'walletpair-pairing-code', 4);
+  const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
+  return (view.getUint32(0) % 1000000).toString().padStart(6, '0');
+}
+function sealPayload(sessionKey, channelIdHex, seq, data) {
+  const seqBytes = new Uint8Array(4);
+  new DataView(seqBytes.buffer).setUint32(0, seq);
+  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
+  const plaintext = utf8ToBytes(JSON.stringify(data));
+  const ciphertext = chacha20poly1305(sessionKey, nonce, hexToBytes(channelIdHex)).encrypt(plaintext);
+  return b64urlEncode(concatBytes(seqBytes, ciphertext));
+}
+function unsealPayload(sessionKey, channelIdHex, sealed) {
+  const bytes = b64urlDecode(sealed);
+  const seqBytes = bytes.slice(0, 4);
+  const ciphertext = bytes.slice(4);
+  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
+  const plaintext = chacha20poly1305(sessionKey, nonce, hexToBytes(channelIdHex)).decrypt(ciphertext);
+  const seq = new DataView(seqBytes.buffer, seqBytes.byteOffset, 4).getUint32(0);
+  return { seq, data: JSON.parse(new TextDecoder().decode(plaintext)) };
+}
+
+// ---------------------------------------------------------------------------
+// Ethereum helpers
+// ---------------------------------------------------------------------------
+function privateKeyToAddress(privKeyHex) {
+  const pubKey = secp256k1.getPublicKey(hexToBytes(privKeyHex), false);
+  return '0x' + bytesToHex(keccak_256(pubKey.slice(1)).slice(-20));
+}
+function personalSign(privKeyHex, message) {
+  const msgBytes = typeof message === 'string' ? utf8ToBytes(message) : message;
+  const prefix = utf8ToBytes(`\x19Ethereum Signed Message:\n${msgBytes.length}`);
+  const hash = keccak_256(concatBytes(prefix, msgBytes));
+  const sig = secp256k1.sign(hash, hexToBytes(privKeyHex));
+  const r = sig.r.toString(16).padStart(64, '0');
+  const s = sig.s.toString(16).padStart(64, '0');
+  const v = (sig.recovery + 27).toString(16).padStart(2, '0');
+  return '0x' + r + s + v;
+}
+
+// ---------------------------------------------------------------------------
+// State persistence (sessionStorage)
+// ---------------------------------------------------------------------------
+const STORE_KEY = 'wp_wallet';
+function saveState() {
+  const data = {
+    channelId:     S.channelId,
+    privKey:       S.privKey ? bytesToHex(S.privKey) : null,
+    pubKeyB64:     S.pubKeyB64,
+    remotePubKeyB64: S.remotePubKey ? b64urlEncode(S.remotePubKey) : null,
+    sessionKey:    S.sessionKey ? bytesToHex(S.sessionKey) : null,
+    sendSeq:       S.sendSeq,
+    resumeToken:   S.resumeToken,
+    relayUrl:      S.relayUrl,
+    ethKey:        S.ethKey,
+  };
+  sessionStorage.setItem(STORE_KEY, JSON.stringify(data));
+}
+function loadState() {
+  try {
+    const raw = sessionStorage.getItem(STORE_KEY);
+    if (!raw) return false;
+    const d = JSON.parse(raw);
+    if (!d.channelId || !d.privKey || !d.sessionKey) return false;
+    S.channelId = d.channelId;
+    S.privKey = hexToBytes(d.privKey);
+    S.pubKey = x25519.getPublicKey(S.privKey);
+    S.pubKeyB64 = d.pubKeyB64;
+    S.remotePubKey = d.remotePubKeyB64 ? b64urlDecode(d.remotePubKeyB64) : null;
+    S.sessionKey = hexToBytes(d.sessionKey);
+    S.sendSeq = d.sendSeq || 0;
+    S.resumeToken = d.resumeToken;
+    S.relayUrl = d.relayUrl;
+    S.ethKey = d.ethKey;
+    if (S.ethKey) {
+      S.ethAddr = privateKeyToAddress(S.ethKey);
+      ethKeyEl.value = S.ethKey;
+      ethAddrEl.textContent = S.ethAddr;
+    }
+    return true;
+  } catch { return false; }
+}
+function clearState() {
+  sessionStorage.removeItem(STORE_KEY);
+}
+
+// ---------------------------------------------------------------------------
+// App State
+// ---------------------------------------------------------------------------
+const S = {
+  ws: null,
+  channelId: null,
+  privKey: null,
+  pubKey: null,
+  pubKeyB64: null,
+  remotePubKey: null,
+  sessionKey: null,
+  sendSeq: 0,
+  ethKey: null,
+  ethAddr: null,
+  resumeToken: null,
+  relayUrl: null,
+  phase: 'idle',
+  pendingReqs: [],
+  intentionalClose: false,
+};
+
+const BACKOFF = [1000, 2000, 5000, 10000, 30000];
+
+// ---------------------------------------------------------------------------
+// UI references
+// ---------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const ethKeyEl = $('ethKey');
+const ethAddrEl = $('ethAddr');
+const btnGenKey = $('btnGenKey');
+const pairingUriEl = $('pairingUri');
+const btnJoin = $('btnJoin');
+const btnReset = $('btnReset');
+const pairingCodeEl = $('pairingCode');
+const pairingCodeWrap = $('pairingCodeWrap');
+const dot = $('dot');
+const statusText = $('statusText');
+const secRequests = $('secRequests');
+const requestsEl = $('requests');
+const secEvents = $('secEvents');
+const eventNameEl = $('eventName');
+const btnPushEvent = $('btnPushEvent');
+const btnClose = $('btnClose');
+const logEl = $('log');
+
+// ---------------------------------------------------------------------------
+// UI helpers
+// ---------------------------------------------------------------------------
+function setPhase(phase) {
+  S.phase = phase;
+  const dotClass = { connected: 'connected', closed: 'closed', idle: '', reconnecting: 'reconnecting' };
+  dot.className = 'dot ' + (dotClass[phase] ?? 'waiting');
+  statusText.textContent = phase.charAt(0).toUpperCase() + phase.slice(1).replace('_', ' ');
+  secRequests.classList.toggle('hidden', phase !== 'connected');
+  secEvents.classList.toggle('hidden', phase !== 'connected');
+  btnReset.classList.toggle('hidden', phase === 'idle');
+  btnJoin.classList.toggle('hidden', phase !== 'idle');
+}
+
+function log(dir, type, detail = '') {
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  const arrow = dir === 'out' ? '→' : dir === 'in' ? '←' : '✕';
+  const cls = dir === 'out' ? 'out' : dir === 'in' ? 'in' : 'err';
+  entry.innerHTML = `<span class="dir ${cls}">${arrow}</span><span class="type">${type}</span><span class="body">${detail}</span>`;
+  logEl.appendChild(entry);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function renderRequests() {
+  if (S.pendingReqs.length === 0) {
+    requestsEl.innerHTML = '<span style="color:var(--muted);font-size:13px">No pending requests</span>';
+    return;
+  }
+  requestsEl.innerHTML = '';
+  for (const req of S.pendingReqs) {
+    const card = document.createElement('div');
+    card.className = 'req-card';
+    card.innerHTML = `
+      <div class="method">${req.method} <span style="color:var(--muted);font-weight:400">#${req.id}</span></div>
+      <div class="params">${JSON.stringify(req.params)}</div>
+      <div class="row">
+        <button class="success" data-id="${req.id}" data-action="approve">Approve</button>
+        <button class="danger" data-id="${req.id}" data-action="reject">Reject</button>
+      </div>`;
+    requestsEl.appendChild(card);
+  }
+  requestsEl.querySelectorAll('button[data-id]').forEach(btn => {
+    btn.onclick = () => handleRequestAction(btn.dataset.id, btn.dataset.action);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ETH Key Management
+// ---------------------------------------------------------------------------
+function updateEthKey() {
+  const hex = ethKeyEl.value.replace(/^0x/, '').trim();
+  if (hex.length !== 64 || !/^[0-9a-fA-F]+$/.test(hex)) {
+    ethAddrEl.textContent = 'Invalid key (need 32 hex bytes)';
+    S.ethKey = null; S.ethAddr = null; btnJoin.disabled = true;
+    return;
+  }
+  S.ethKey = hex.toLowerCase();
+  S.ethAddr = privateKeyToAddress(S.ethKey);
+  ethAddrEl.textContent = S.ethAddr;
+  btnJoin.disabled = !pairingUriEl.value;
+}
+
+function generateEthKey() {
+  ethKeyEl.value = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
+  updateEthKey();
+}
+
+// ---------------------------------------------------------------------------
+// Parse Pairing URI
+// ---------------------------------------------------------------------------
+function parsePairingUri(uri) {
+  const params = new URLSearchParams(uri.replace(/^walletpair:\?/, ''));
+  const ch = params.get('ch'), pubkey = params.get('pubkey'), relay = params.get('relay');
+  if (!ch || !pubkey || !relay) throw new Error('Invalid pairing URI');
+  return { ch, pubkey, relay };
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket connection
+// ---------------------------------------------------------------------------
+function openWs(url, onOpen) {
+  const ws = new WebSocket(url, ['walletpair.v1']);
+  ws.onopen = () => onOpen(ws);
+  ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
+  ws.onclose = () => {
+    if (S.intentionalClose || S.phase === 'closed') return;
+    log('err', 'ws_close', 'transport disconnected');
+    startReconnect();
+  };
+  ws.onerror = () => {};
+  return ws;
+}
+
+function sendRaw(msg) {
+  if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
+  S.ws.send(JSON.stringify(msg));
+  const type = msg.t;
+  const detail = type === 'res' ? `id=${msg.id} ok=${msg.ok}` : type === 'evt' ? `event=${msg.event}` : '';
+  log('out', type, detail);
+}
+
+// ---------------------------------------------------------------------------
+// Fresh join (first time)
+// ---------------------------------------------------------------------------
+function freshJoin() {
+  if (!S.ethKey) { alert('Generate or enter an ETH private key first'); return; }
+  let parsed;
+  try { parsed = parsePairingUri(pairingUriEl.value); } catch { alert('Invalid pairing URI'); return; }
+
+  S.intentionalClose = false;
+  S.channelId = parsed.ch;
+  S.remotePubKey = b64urlDecode(parsed.pubkey);
+  S.relayUrl = parsed.relay;
+  S.sendSeq = 0;
+  S.pendingReqs = [];
+
+  // Generate X25519 key pair
+  S.privKey = x25519.utils.randomPrivateKey();
+  S.pubKey = x25519.getPublicKey(S.privKey);
+  S.pubKeyB64 = b64urlEncode(S.pubKey);
+
+  // Derive session key (we already have dApp's pubkey from URI)
+  const shared = x25519.getSharedSecret(S.privKey, S.remotePubKey);
+  S.sessionKey = deriveSessionKey(shared, S.channelId);
+
+  // Show pairing code
+  pairingCodeEl.textContent = computePairingCode(S.sessionKey, S.channelId);
+  pairingCodeWrap.classList.remove('hidden');
+
+  connectAndJoin(false);
+}
+
+function connectAndJoin(useResume) {
+  S.ws = openWs(S.relayUrl, () => {
+    const msg = {
+      v: 1, t: 'join', ch: S.channelId,
+      from: S.pubKeyB64, pubkey: S.pubKeyB64,
+      capabilities: {
+        methods: ['wallet_getAccounts', 'wallet_signMessage'],
+        events: ['accountsChanged', 'chainChanged'],
+        chains: ['eip155:1'],
+      },
+      meta: { name: 'WalletPair EOA Wallet', address: S.ethAddr },
+    };
+    if (useResume && S.resumeToken) msg.resume = S.resumeToken;
+    setPhase('waiting');
+    sendRaw(msg);
+    saveState();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Reconnect loop
+// ---------------------------------------------------------------------------
+let reconnectTimer = null;
+
+function startReconnect() {
+  setPhase('reconnecting');
+  let attempt = 0;
+
+  function tryOnce() {
+    if (S.intentionalClose || S.phase === 'closed') return;
+    const delay = BACKOFF[Math.min(attempt, BACKOFF.length - 1)];
+    log('in', 'reconnect', `attempt ${attempt + 1} in ${delay}ms`);
+    reconnectTimer = setTimeout(() => doAttempt(attempt++), delay);
+  }
+
+  function doAttempt(n) {
+    if (S.intentionalClose || S.phase === 'closed') return;
+    const useResume = n === 0 && S.resumeToken;
+
+    // Override close handler for this attempt (retry on failure)
+    const ws = openWs(S.relayUrl, () => {
+      const msg = {
+        v: 1, t: 'join', ch: S.channelId,
+        from: S.pubKeyB64, pubkey: S.pubKeyB64,
+        capabilities: {
+          methods: ['wallet_getAccounts', 'wallet_signMessage'],
+          events: ['accountsChanged', 'chainChanged'],
+          chains: ['eip155:1'],
+        },
+      };
+      if (useResume) msg.resume = S.resumeToken;
+      setPhase('waiting');
+      sendRaw(msg);
+    });
+    S.ws = ws;
+
+    // Patch onclose for this attempt to retry
+    ws.onclose = () => {
+      if (S.intentionalClose || S.phase === 'closed' || S.phase === 'connected') return;
+      tryOnce();
+    };
+  }
+
+  tryOnce();
+}
+
+function stopReconnect() {
+  if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+}
+
+// ---------------------------------------------------------------------------
+// Message handling
+// ---------------------------------------------------------------------------
+function handleMessage(msg) {
+  switch (msg.t) {
+    case 'ready':
+      S.resumeToken = msg.resume;
+      stopReconnect();
+      if (msg.state === 'waiting') {
+        setPhase('waiting');
+        log('in', 'ready', 'state=waiting (awaiting dApp accept)');
+      } else if (msg.state === 'connected') {
+        log('in', 'ready', `state=connected remote=${msg.remote?.slice(0, 12)}...`);
+        setPhase('connected');
+      }
+      saveState();
+      break;
+
+    case 'req': {
+      let params = {};
+      if (msg.sealed && S.sessionKey) {
+        try { params = unsealPayload(S.sessionKey, S.channelId, msg.sealed).data; }
+        catch { log('err', 'decrypt', `failed to decrypt req ${msg.id}`); }
+      }
+      log('in', 'req', `id=${msg.id} method=${msg.method}`);
+      S.pendingReqs.push({ id: msg.id, method: msg.method, params });
+      renderRequests();
+      break;
+    }
+
+    case 'ping':
+      log('in', 'ping', `ts=${msg.ts}`);
+      sendRaw({ v: 1, t: 'pong', ch: S.channelId, from: S.pubKeyB64, ts: Date.now() });
+      break;
+
+    case 'pong':
+      log('in', 'pong', `ts=${msg.ts}`);
+      break;
+
+    case 'close':
+      log('err', 'close', `reason=${msg.reason}`);
+      if (msg.reason === 'invalid_resume' && S.phase !== 'closed') {
+        // Resume rejected (relay restarted). Retry without resume.
+        log('in', 'reconnect', 'resume rejected, re-joining without resume');
+        S.resumeToken = null;
+        S.ws.onclose = () => {};
+        S.ws.close();
+        connectAndJoin(false);
+      } else if (msg.reason === 'channel_not_found' && S.phase !== 'closed') {
+        // Channel gone (relay restarted, dApp hasn't re-created yet). Retry.
+        log('in', 'reconnect', 'channel not found, waiting for dApp to re-create');
+        S.ws.onclose = () => {};
+        S.ws.close();
+        startReconnect();
+      } else if (S.phase !== 'reconnecting') {
+        setPhase('closed');
+        S.intentionalClose = true;
+      }
+      break;
+
+    default:
+      log('in', msg.t || '?', JSON.stringify(msg).slice(0, 120));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Handle request approve/reject
+// ---------------------------------------------------------------------------
+function handleRequestAction(reqId, action) {
+  const req = S.pendingReqs.find(r => r.id === reqId);
+  if (!req) return;
+
+  if (action === 'approve') {
+    let result;
+    switch (req.method) {
+      case 'wallet_getAccounts':
+        result = [S.ethAddr];
+        break;
+      case 'wallet_signMessage': {
+        const message = req.params.message || '';
+        result = { signature: personalSign(S.ethKey, message), address: S.ethAddr };
+        break;
+      }
+      default:
+        result = { status: 'approved' };
+    }
+    const msg = { v: 1, t: 'res', ch: S.channelId, id: req.id, from: S.pubKeyB64, ok: true };
+    msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, result);
+    sendRaw(msg);
+  } else {
+    const error = { code: 'user_rejected', message: 'User rejected the request' };
+    const msg = { v: 1, t: 'res', ch: S.channelId, id: req.id, from: S.pubKeyB64, ok: false };
+    msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, error);
+    sendRaw(msg);
+  }
+  S.pendingReqs = S.pendingReqs.filter(r => r.id !== reqId);
+  renderRequests();
+  saveState();
+}
+
+// ---------------------------------------------------------------------------
+// Push events
+// ---------------------------------------------------------------------------
+function pushEvent() {
+  if (S.phase !== 'connected') return;
+  const event = eventNameEl.value;
+  const data = event === 'accountsChanged' ? { accounts: [S.ethAddr] } : { chainId: 'eip155:1' };
+  const msg = { v: 1, t: 'evt', ch: S.channelId, from: S.pubKeyB64, event };
+  msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, data);
+  sendRaw(msg);
+  saveState();
+}
+
+function doFullClose() {
+  S.intentionalClose = true;
+  stopReconnect();
+  if (S.ws && S.ws.readyState === WebSocket.OPEN) {
+    sendRaw({ v: 1, t: 'close', ch: S.channelId, from: S.pubKeyB64, reason: 'normal' });
+  }
+  setPhase('closed');
+  clearState();
+}
+
+function doReset() {
+  doFullClose();
+  S.channelId = null;
+  pairingCodeWrap.classList.add('hidden');
+  setPhase('idle');
+}
+
+// ---------------------------------------------------------------------------
+// Event bindings
+// ---------------------------------------------------------------------------
+btnGenKey.onclick = generateEthKey;
+ethKeyEl.oninput = updateEthKey;
+pairingUriEl.oninput = () => { btnJoin.disabled = !pairingUriEl.value || !S.ethKey; };
+btnJoin.onclick = freshJoin;
+btnReset.onclick = doReset;
+btnPushEvent.onclick = pushEvent;
+btnClose.onclick = doFullClose;
+
+// ---------------------------------------------------------------------------
+// On page load: restore session if available
+// ---------------------------------------------------------------------------
+if (loadState()) {
+  log('in', 'restore', `restored session ch=${S.channelId.slice(0, 12)}... addr=${S.ethAddr}`);
+  pairingCodeEl.textContent = computePairingCode(S.sessionKey, S.channelId);
+  pairingCodeWrap.classList.remove('hidden');
+  startReconnect();
+}
+</script>
+</body>
+</html>

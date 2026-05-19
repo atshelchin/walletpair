@@ -15,6 +15,7 @@ use crate::state::{Channel, ChannelState, PeerConn};
 use crate::store::ChannelStore;
 
 /// Result of processing a single message.
+#[must_use]
 pub enum ProcessResult {
     /// Message processed. Any responses were sent via channels.
     Ok,
@@ -202,17 +203,8 @@ fn handle_join(
         return ProcessResult::Reject(build_close(ch, reason));
     }
 
-    // Get dApp sender for forwarding
-    let dapp_sender = match channel.dapp_conn {
-        Some(ref conn) => conn.sender.clone(),
-        None => {
-            // dApp disconnected before wallet joined — unusual but possible.
-            // Still register wallet, dApp can reconnect later.
-            // Actually, if dApp disconnected, we may still want to proceed.
-            // Let's proceed with registering the wallet.
-            mpsc::channel(1).0 // dummy — won't actually send
-        }
-    };
+    // Get dApp sender for forwarding (may be disconnected)
+    let dapp_sender = channel.dapp_conn.as_ref().map(|c| c.sender.clone());
 
     // Register wallet
     let channel = store.get_mut(ch).unwrap();
@@ -224,10 +216,13 @@ fn handle_join(
     channel.state = ChannelState::PendingAccept;
     metrics.channels_joined_total.inc();
 
-    // Forward join to dApp (raw message)
-    let forwarded = try_send(&dapp_sender, raw_text.to_string(), metrics);
-    if !forwarded {
-        tracing::warn!(ch = %ch, "failed to forward join to dApp (slow/disconnected)");
+    // Forward join to dApp (raw message) — skip if dApp is disconnected
+    if let Some(ref dapp_tx) = dapp_sender {
+        if !try_send(dapp_tx, raw_text.to_string(), metrics) {
+            tracing::warn!(ch = %ch, "failed to forward join to dApp (slow consumer)");
+        }
+    } else {
+        tracing::debug!(ch = %ch, "dApp disconnected, join will be delivered on reconnect");
     }
     metrics
         .messages_forwarded_total
@@ -395,6 +390,19 @@ fn handle_data(
                 "slow consumer, message dropped"
             );
             metrics.slow_consumer_closes_total.inc();
+            // Notify the slow consumer with a close reason before dropping.
+            // The queue is full, so we spawn a direct send on the cloned sender.
+            let close_msg = build_close(ch, CloseReason::SlowConsumer);
+            let slow_sender = other_sender.clone();
+            tokio::spawn(async move {
+                // Use send() (not try_send) so it waits for one slot.
+                // If still stuck after a short while, give up.
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    slow_sender.send(close_msg),
+                )
+                .await;
+            });
             // Drop the slow consumer's connection
             let channel = store.get_mut(ch).unwrap();
             match role {
@@ -449,11 +457,15 @@ fn handle_close(
         .with_label_values(&["close"])
         .inc();
 
-    // Close the channel
+    // Close the channel — map peer-provided reason string to enum for metrics
     let close_reason = match reason {
         "normal" => CloseReason::Normal,
         "user_rejected" => CloseReason::UserRejected,
-        _ => CloseReason::Normal,
+        "unsupported_capability" => CloseReason::UnsupportedCapability,
+        "timeout" => CloseReason::Timeout,
+        "protocol_error" => CloseReason::ProtocolError,
+        "decryption_failed" => CloseReason::DecryptionFailed,
+        _ => CloseReason::Normal, // unknown peer reasons treated as normal close
     };
     store.remove_channel(ch, metrics, close_reason);
 
@@ -506,8 +518,10 @@ fn handle_reconnect(
     };
 
     let other_connected = channel.is_other_connected(expected_role);
-    let was_connected =
-        channel.state == ChannelState::Connected || channel.state == ChannelState::PendingAccept;
+    // Only send ready.connected if the channel was fully accepted.
+    // PendingAccept means the accept step hasn't happened yet — sending
+    // ready.connected would bypass pairing code verification (MITM risk).
+    let was_connected = channel.state == ChannelState::Connected;
 
     // Reconnect: restore connection
     let channel = store.get_mut(ch).unwrap();

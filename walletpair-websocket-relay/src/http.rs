@@ -11,6 +11,7 @@ use axum::routing::get;
 use axum::Router;
 use prometheus::Encoder;
 use tokio::sync::broadcast;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::Config;
 use crate::metrics::Metrics;
@@ -29,11 +30,25 @@ pub struct AppState {
 
 pub fn router(state: AppState) -> Router {
     let ws_path = state.config.websocket_path.clone();
+
+    // Build CORS layer from config
+    let cors = match &state.config.allowed_origins {
+        Some(origins) if !origins.is_empty() => {
+            let parsed: Vec<axum::http::HeaderValue> = origins
+                .iter()
+                .filter_map(|o| o.parse().ok())
+                .collect();
+            CorsLayer::new().allow_origin(AllowOrigin::list(parsed))
+        }
+        _ => CorsLayer::permissive(),
+    };
+
     Router::new()
         .route(&ws_path, get(ws_upgrade))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
+        .layer(cors)
         .with_state(state)
 }
 
@@ -44,7 +59,7 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
 
-    // Negotiate subprotocol
+    // Negotiate subprotocol — require walletpair.v1
     let ws = ws.protocols(["walletpair.v1"]);
 
     let conn_id = state.conn_counter.fetch_add(1, Ordering::Relaxed);

@@ -1,6 +1,7 @@
 use walletpair_websocket_relay::config;
 use walletpair_websocket_relay::http;
 use walletpair_websocket_relay::metrics;
+use walletpair_websocket_relay::persist;
 use walletpair_websocket_relay::protocol;
 use walletpair_websocket_relay::shutdown;
 use walletpair_websocket_relay::store;
@@ -24,7 +25,12 @@ async fn main() {
 
     let config = Arc::new(config);
     let m = metrics::Metrics::new();
-    let channel_store = store::ChannelStore::new(&config);
+
+    // Load persisted state or start fresh
+    let channel_store = match &config.state_file {
+        Some(path) => persist::load_or_new(&config, &m, std::path::Path::new(path)),
+        None => store::ChannelStore::new(&config),
+    };
 
     let (shutdown_tx, _) = shutdown::signal_channel();
 
@@ -103,6 +109,23 @@ async fn main() {
                 }
             }
         }
+
+        // Persist state before removing channels (if configured)
+        if let Some(ref path) = config.state_file {
+            match persist::save_state(&store, std::path::Path::new(path)) {
+                Ok(()) => {
+                    tracing::info!(
+                        channels = store.channels.len(),
+                        path = %path,
+                        "state persisted for restart"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to persist state");
+                }
+            }
+        }
+
         for ch_id in channel_ids {
             store.remove_channel(&ch_id, &m, protocol::CloseReason::ServerShutdown);
         }

@@ -61,6 +61,14 @@
 # to disable the endpoint entirely (returns 404).
 # metrics_enabled = true
 
-# Optional list of allowed CORS origins. If omitted, no CORS headers are
-# set. Specify origins to allow browser-based dApps to connect directly.
+# Optional list of allowed CORS origins. If omitted, permissive CORS is
+# used (all origins allowed). Specify origins to restrict browser-based
+# dApp connections to known domains only.
 # allowed_origins = ["https://app.example.com", "http://localhost:3000"]
+
+# Path to persist channel state on shutdown. When set, the relay saves all
+# channel metadata and resume tokens to this file during graceful shutdown
+# and restores them on the next startup. This allows peers to reconnect
+# with their saved resume tokens after a relay restart without re-pairing.
+# Omit or leave unset to disable persistence (pure in-memory mode).
+# state_file = "/var/lib/walletpair/state.json"
