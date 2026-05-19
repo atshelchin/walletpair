@@ -74,6 +74,9 @@ button.danger { background: var(--red); color: #fff; }
   <section id="secPairing">
     <h3>Pairing</h3>
     <label>Pairing URI (share with wallet)</label>
+    <div style="text-align:center;padding:12px 0">
+      <canvas id="qrCanvas" width="200" height="200" style="border-radius:8px;display:none"></canvas>
+    </div>
     <div class="uri-box" id="pairingUri">--</div>
     <button id="btnCopy" disabled>Copy URI</button>
     <div id="pairingCodeWrap" class="hidden">
@@ -119,6 +122,7 @@ import { sha256 } from 'https://esm.sh/@noble/hashes@1.7.1/sha256';
 import { hmac } from 'https://esm.sh/@noble/hashes@1.7.1/hmac';
 import { chacha20poly1305 } from 'https://esm.sh/@noble/ciphers@1.2.1/chacha';
 import { bytesToHex, hexToBytes, utf8ToBytes, concatBytes } from 'https://esm.sh/@noble/hashes@1.7.1/utils';
+import QRCode from 'https://esm.sh/qrcode@1.5.4';
 
 // ---------------------------------------------------------------------------
 // Base64url helpers
@@ -234,6 +238,7 @@ const btnReset = $('btnReset');
 const dot = $('dot');
 const statusText = $('statusText');
 const pairingUriEl = $('pairingUri');
+const qrCanvas = $('qrCanvas');
 const btnCopy = $('btnCopy');
 const pairingCodeEl = $('pairingCode');
 const pairingCodeWrap = $('pairingCodeWrap');
@@ -272,6 +277,16 @@ function log(dir, type, detail = '') {
   entry.innerHTML = `<span class="dir ${cls}">${arrow}</span><span class="type">${type}</span><span class="body">${detail}</span>`;
   logEl.appendChild(entry);
   logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function renderQR(text) {
+  try {
+    await QRCode.toCanvas(qrCanvas, text, {
+      width: 200, margin: 2,
+      color: { dark: '#e6edf3', light: '#161b22' },
+    });
+    qrCanvas.style.display = 'block';
+  } catch { qrCanvas.style.display = 'none'; }
 }
 
 // ---------------------------------------------------------------------------
@@ -328,6 +343,7 @@ function freshConnect() {
     sendRaw({ v: 1, t: 'create', ch: S.channelId, from: S.pubKeyB64, pubkey: S.pubKeyB64 });
     const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
     pairingUriEl.textContent = uri;
+    renderQR(uri);
     saveState();
   });
 }
@@ -417,6 +433,7 @@ function handleMessage(msg, ws) {
         // Show pairing URI (in case of reconnect, re-display it)
         const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
         pairingUriEl.textContent = uri;
+        renderQR(uri);
       } else if (msg.state === 'connected') {
         log('in', 'ready', `state=connected remote=${msg.remote?.slice(0, 12)}...`);
         setPhase('connected');
@@ -574,7 +591,9 @@ methodSel.onchange = () => {
 // ---------------------------------------------------------------------------
 if (loadState()) {
   log('in', 'restore', `restored session ch=${S.channelId.slice(0, 12)}... paired=${S.paired}`);
-  pairingUriEl.textContent = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+  const restoredUri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+  pairingUriEl.textContent = restoredUri;
+  renderQR(restoredUri);
   // Auto-reconnect
   startReconnect();
 }
