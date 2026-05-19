@@ -46,6 +46,11 @@ export interface MethodMapper {
   mapResponse(method: string, result: unknown): unknown;
 }
 
+/** Convert hex chainId "0x89" to CAIP-2 "eip155:137". */
+function hexChainToCaip2(hex: string): string {
+  return `eip155:${Number.parseInt(hex, 16)}`;
+}
+
 const defaultMapper: MethodMapper = {
   mapRequest(method, params) {
     switch (method) {
@@ -53,30 +58,76 @@ const defaultMapper: MethodMapper = {
       case 'eth_accounts':
         return { method: 'wallet_getAccounts' };
       case 'personal_sign': {
+        // personal_sign params: [message, address]
         const p = params as [string, string] | undefined;
         return { method: 'wallet_signMessage', params: { message: p?.[0], address: p?.[1] } };
       }
       case 'eth_signTypedData_v4': {
+        // params: [address, typedDataJSON]
         const p = params as [string, string] | undefined;
-        return { method: 'wallet_signTypedData', params: { address: p?.[0], data: p?.[1] } };
+        let typedData: unknown;
+        try { typedData = typeof p?.[1] === 'string' ? JSON.parse(p[1]) : p?.[1]; }
+        catch { typedData = p?.[1]; }
+        return { method: 'wallet_signTypedData', params: { address: p?.[0], typedData } };
       }
       case 'eth_sendTransaction': {
-        const p = params as [unknown] | undefined;
-        return { method: 'wallet_signTransaction', params: p?.[0] };
+        // params: [txObject] — maps to wallet_sendTransaction (sign + broadcast)
+        const p = params as [Record<string, unknown>] | undefined;
+        const tx = p?.[0];
+        return { method: 'wallet_sendTransaction', params: { address: tx?.from, tx } };
+      }
+      case 'eth_signTransaction': {
+        // params: [txObject] — maps to wallet_signTransaction (sign only)
+        const p = params as [Record<string, unknown>] | undefined;
+        const tx = p?.[0];
+        return { method: 'wallet_signTransaction', params: { address: tx?.from, tx } };
       }
       case 'wallet_switchEthereumChain': {
+        // params: [{ chainId: "0x89" }] — convert hex to CAIP-2
         const p = params as [{ chainId: string }] | undefined;
-        return { method: 'wallet_switchChain', params: { chainId: p?.[0]?.chainId } };
+        const hexId = p?.[0]?.chainId;
+        return { method: 'wallet_switchChain', params: { chain: hexId ? hexChainToCaip2(hexId) : undefined } };
       }
       case 'wallet_addEthereumChain': {
-        const p = params as [unknown] | undefined;
-        return { method: 'wallet_addChain', params: p?.[0] };
+        const p = params as [Record<string, unknown>] | undefined;
+        const raw = p?.[0];
+        return {
+          method: 'wallet_addChain',
+          params: raw ? {
+            chain: raw.chainId ? hexChainToCaip2(raw.chainId as string) : undefined,
+            chainName: raw.chainName,
+            nativeCurrency: raw.nativeCurrency,
+            rpcUrls: raw.rpcUrls,
+            blockExplorerUrls: raw.blockExplorerUrls,
+            iconUrls: raw.iconUrls,
+          } : undefined,
+        };
       }
       default:
         return { method, params };
     }
   },
-  mapResponse(_method, result) {
+  mapResponse(method, result) {
+    // Unwrap wallet_getAccounts result to EIP-1193 format (string[])
+    if (method === 'eth_requestAccounts' || method === 'eth_accounts') {
+      const r = result as { accounts?: { address: string }[] } | undefined;
+      if (r?.accounts) return r.accounts.map((a) => a.address);
+    }
+    // Unwrap wallet_sendTransaction result
+    if (method === 'eth_sendTransaction') {
+      const r = result as { txHash?: string } | undefined;
+      if (r?.txHash) return r.txHash;
+    }
+    // Unwrap wallet_signTransaction result
+    if (method === 'eth_signTransaction') {
+      const r = result as { signedTx?: string } | undefined;
+      if (r?.signedTx) return r.signedTx;
+    }
+    // Unwrap signature results
+    if (method === 'personal_sign' || method === 'eth_signTypedData_v4') {
+      const r = result as { signature?: string } | undefined;
+      if (r?.signature) return r.signature;
+    }
     return result;
   },
 };
@@ -118,24 +169,22 @@ export class WalletPairProvider implements EIP1193Provider {
 
     this.session.on('event', ({ event, data }) => {
       if (event === 'accountsChanged') {
-        const accts = (data as { accounts?: string[] })?.accounts ?? (data as string[]);
-        if (Array.isArray(accts)) {
-          this.accounts = accts;
-          this.emitter.emit('accountsChanged', accts);
+        // Sub-protocol format: { accounts: [{ address, chains }] }
+        const payload = data as { accounts?: { address: string; chains?: string[] }[] };
+        if (payload?.accounts && Array.isArray(payload.accounts)) {
+          this.accounts = payload.accounts.map((a) => a.address);
+          this.emitter.emit('accountsChanged', this.accounts);
         }
       } else if (event === 'chainChanged') {
-        const raw = (data as { chainId?: string | number })?.chainId ?? data;
-        let newChainId: number;
-        if (typeof raw === 'string' && raw.startsWith('eip155:')) {
-          newChainId = evmNumericChainId(raw) ?? this.chainId;
-        } else if (typeof raw === 'string') {
-          newChainId = Number.parseInt(raw, raw.startsWith('0x') ? 16 : 10);
-        } else {
-          newChainId = raw as number;
-        }
-        if (newChainId !== this.chainId) {
-          this.chainId = newChainId;
-          this.emitter.emit('chainChanged', `0x${newChainId.toString(16)}`);
+        // Sub-protocol format: { chain: "eip155:137" }
+        const payload = data as { chain?: string };
+        const caip2 = payload?.chain;
+        if (caip2 && typeof caip2 === 'string') {
+          const newChainId = evmNumericChainId(caip2) ?? this.chainId;
+          if (newChainId !== this.chainId) {
+            this.chainId = newChainId;
+            this.emitter.emit('chainChanged', `0x${newChainId.toString(16)}`);
+          }
         }
       }
     });
