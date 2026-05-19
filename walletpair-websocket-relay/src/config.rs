@@ -34,7 +34,7 @@ impl Default for Config {
             websocket_path: "/v1".to_string(),
             max_connections: 10_000,
             max_channels: 50_000,
-            max_message_bytes: 65_536,
+            max_message_bytes: 2_097_152, // 2 MB — supports contract call data up to ~500KB after encryption + base64
             outbound_queue_size: 64,
             pending_request_limit: 32,
             unpaired_channel_ttl_secs: 300,

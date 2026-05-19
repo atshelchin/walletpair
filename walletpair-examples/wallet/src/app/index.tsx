@@ -181,6 +181,20 @@ export default function WalletScreen() {
           catch { addLog('err', 'decrypt', `failed to decrypt req ${msg.id}`); }
         }
         addLog('in', 'req', `${msg.method} #${msg.id}`);
+
+        // Auto-echo for benchmark: respond immediately with same-size payload
+        if (msg.method === 'benchmark_echo' && s.sessionKey) {
+          // Respond with confirmation only (not the full payload) to measure BLE send throughput
+          const receivedSize = typeof params.data === 'string' ? params.data.length : 0;
+          const echo = { echo: true, receivedBytes: receivedSize, ts: Date.now() };
+          const res: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: msg.id, from: s.pubKeyB64, ok: true };
+          res.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, echo);
+          sendRaw(res);
+          addLog('out', 'res', `benchmark: received ${(receivedSize / 1024).toFixed(0)} KB, echoed confirmation`);
+          saveSessionData();
+          break;
+        }
+
         setRequests(prev => [...prev, { id: msg.id, method: msg.method, params }]);
         break;
       }
@@ -372,9 +386,18 @@ export default function WalletScreen() {
       handleMessage(JSON.stringify(msg));
     });
 
+    let bleHasJoined = false; // true after first join sent; distinguishes first connect from reconnect
+
     ble.onConnected(() => {
+      if (bleHasJoined) {
+        // BLE reconnect — already paired, skip join, go straight to connected
+        addLog('in', 'ble', 'dApp reconnected');
+        updatePhase('connected');
+        return;
+      }
+      bleHasJoined = true;
       addLog('in', 'ble', 'dApp connected');
-      // Send join to dApp
+      // First connection — send join to dApp
       const s = session.current!;
       const joinMsg: Record<string, unknown> = {
         v: 1, t: 'join', ch: s.channelId,
@@ -391,8 +414,9 @@ export default function WalletScreen() {
 
     ble.onDisconnected(() => {
       if (intentionalClose.current || phaseRef.current === 'closed') return;
-      addLog('err', 'ble', 'dApp disconnected');
-      updatePhase('closed');
+      // Don't close — keep advertising. dApp will reconnect automatically.
+      addLog('err', 'ble', 'dApp disconnected — still advertising, waiting for reconnect...');
+      updatePhase('waiting');
     });
 
     try {

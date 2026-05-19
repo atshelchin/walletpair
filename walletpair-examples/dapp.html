@@ -117,6 +117,18 @@ button.danger { background: var(--red); color: #fff; }
       <button id="btnPing">Ping</button>
       <button id="btnClose" class="danger">Close</button>
     </div>
+    <div id="bleBench" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+      <label>BLE Throughput Test</label>
+      <div class="row mt" style="flex-wrap:wrap">
+        <button class="bench" data-kb="1">1 KB</button>
+        <button class="bench" data-kb="10">10 KB</button>
+        <button class="bench" data-kb="20">20 KB</button>
+        <button class="bench" data-kb="50">50 KB</button>
+        <button class="bench" data-kb="100">100 KB</button>
+        <button class="bench" data-kb="500">500 KB</button>
+      </div>
+      <div id="benchResult" style="font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:8px"></div>
+    </div>
   </section>
 
   <section>
@@ -141,7 +153,12 @@ import QRCode from 'https://esm.sh/qrcode@1.5.4';
 // Base64url helpers
 // ---------------------------------------------------------------------------
 function b64urlEncode(bytes) {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+  // Use chunked array-join to avoid O(n²) string concat for large payloads
+  const chunks = [];
+  for (let i = 0; i < bytes.length; i += 8192) {
+    chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + 8192)));
+  }
+  return btoa(chunks.join('')).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 function b64urlDecode(str) {
   const b64 = str.replace(/-/g, '+').replace(/_/g, '/');
@@ -183,15 +200,16 @@ function unsealPayload(sessionKey, channelIdHex, sealed) {
 const BLE_SERVICE_UUID     = 'e3a10001-7770-4270-8000-000077700001';
 const BLE_WRITE_CHAR_UUID  = 'e3a10002-7770-4270-8000-000077700001';
 const BLE_NOTIFY_CHAR_UUID = 'e3a10003-7770-4270-8000-000077700001';
-const MAX_BLE_FRAGMENT = 182;
+let BLE_MTU_PAYLOAD = 509; // default for modern devices; updated after connection
 
 function bleFrameMessage(jsonStr) {
   const payload = new TextEncoder().encode(jsonStr);
   const frames = [];
   if (!payload.length) { const f = new Uint8Array(3); f[0] = 0x03; return [f]; }
-  for (let off = 0; off < payload.length; off += MAX_BLE_FRAGMENT) {
-    const isFirst = off === 0, end = Math.min(off + MAX_BLE_FRAGMENT, payload.length), isLast = end === payload.length;
-    const frag = payload.slice(off, end), frame = new Uint8Array(3 + frag.length);
+  const chunk = Math.max(BLE_MTU_PAYLOAD, 20);
+  for (let off = 0; off < payload.length; off += chunk) {
+    const isFirst = off === 0, end = Math.min(off + chunk, payload.length), isLast = end === payload.length;
+    const frag = payload.subarray(off, end), frame = new Uint8Array(3 + frag.length);
     frame[0] = (isFirst ? 1 : 0) | (isLast ? 2 : 0);
     if (isFirst) { frame[1] = (payload.length >> 8) & 0xff; frame[2] = payload.length & 0xff; }
     frame.set(frag, 3);
@@ -201,16 +219,25 @@ function bleFrameMessage(jsonStr) {
 }
 
 class BleDefragmenter {
-  constructor() { this.chunks = []; }
+  constructor() { this.buf = null; this.off = 0; }
   push(data) {
     if (data.byteLength < 3) return null;
-    const view = new Uint8Array(data.buffer ?? data);
-    const isFirst = !!(view[0] & 1), isLast = !!(view[0] & 2);
-    if (isFirst) this.chunks = [view.slice(3)]; else this.chunks.push(view.slice(3));
-    if (isLast) { const total = this.chunks.reduce((s, c) => s + c.length, 0); const buf = new Uint8Array(total); let o = 0; for (const c of this.chunks) { buf.set(c, o); o += c.length; } this.chunks = []; return new TextDecoder().decode(buf); }
+    const isFirst = !!(data[0] & 1), isLast = !!(data[0] & 2);
+    const frag = data.subarray(3);
+    if (isFirst) {
+      const totalLen = (data[1] << 8) | data[2];
+      this.buf = new Uint8Array(totalLen || frag.length);
+      this.off = 0;
+    }
+    if (this.buf) { this.buf.set(frag, this.off); this.off += frag.length; }
+    if (isLast && this.buf) {
+      const result = new TextDecoder().decode(this.buf.subarray(0, this.off));
+      this.buf = null; this.off = 0;
+      return result;
+    }
     return null;
   }
-  reset() { this.chunks = []; }
+  reset() { this.buf = null; this.off = 0; }
 }
 
 const WEB_BLE_SUPPORTED = typeof navigator !== 'undefined' && !!navigator.bluetooth;
@@ -381,7 +408,7 @@ function openWs(onOpen) {
 
 function sendRaw(msg) {
   if (S.transport === 'ble') {
-    sendViaBle(msg);
+    sendViaBle(msg).catch(e => log('err', 'ble', `send failed: ${e.message}`));
   } else {
     if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
     S.ws.send(JSON.stringify(msg));
@@ -395,11 +422,30 @@ function sendRaw(msg) {
 // BLE Central: Web Bluetooth (dApp connects TO wallet's GATT server)
 // ---------------------------------------------------------------------------
 
+// Hybrid BLE write: N fast frames then 1 ACK frame for flow control.
+// Small messages (≤5 frames): all ACK for reliability.
+// Large messages: batch fast writes + periodic ACK to prevent receiver overflow.
+const BLE_WRITE_BATCH = 5;
+
 async function sendViaBle(msg) {
-  if (!S.bleWriteChar) return;
+  if (!S.bleWriteChar || !S.bleDevice?.gatt?.connected) {
+    log('err', 'ble', 'send skipped — not connected');
+    return;
+  }
   const frames = bleFrameMessage(JSON.stringify(msg));
-  for (const frame of frames) {
-    await S.bleWriteChar.writeValueWithoutResponse(frame);
+  if (frames.length <= 5) {
+    // Small message: all reliable writes
+    for (const frame of frames) await S.bleWriteChar.writeValue(frame);
+  } else {
+    // Large message: hybrid — fast writes + periodic ACK barrier
+    for (let i = 0; i < frames.length; i++) {
+      const needsAck = (i % BLE_WRITE_BATCH === BLE_WRITE_BATCH - 1) || i === frames.length - 1;
+      if (needsAck) {
+        await S.bleWriteChar.writeValue(frames[i]);
+      } else {
+        await S.bleWriteChar.writeValueWithoutResponse(frames[i]);
+      }
+    }
   }
 }
 
@@ -461,9 +507,38 @@ function onBleNotification(event) {
   }
 }
 
-function onBleDisconnect() {
+async function onBleDisconnect() {
   if (S.intentionalClose) return;
-  log('err', 'ble', 'disconnected');
+  log('err', 'ble', 'disconnected — reconnecting...');
+  bleStatusEl.textContent = 'BLE reconnecting...';
+  setPhase('reconnecting');
+  S.bleDefrag.reset();
+
+  // Try to reconnect using existing device reference (no re-scan needed)
+  for (const delay of BACKOFF) {
+    if (S.intentionalClose) return;
+    try {
+      await new Promise(r => setTimeout(r, delay));
+      if (!S.bleDevice?.gatt) break;
+      log('in', 'ble', `reconnect attempt...`);
+
+      const server = await S.bleDevice.gatt.connect();
+      const service = await server.getPrimaryService(BLE_SERVICE_UUID);
+      S.bleWriteChar = await service.getCharacteristic(BLE_WRITE_CHAR_UUID);
+      S.bleNotifyChar = await service.getCharacteristic(BLE_NOTIFY_CHAR_UUID);
+      await S.bleNotifyChar.startNotifications();
+      S.bleNotifyChar.addEventListener('characteristicvaluechanged', onBleNotification);
+
+      log('in', 'ble', 'reconnected');
+      bleStatusEl.textContent = 'BLE reconnected';
+      setPhase('connected');
+      return;
+    } catch (e) {
+      log('err', 'ble', `reconnect failed: ${e.message}`);
+    }
+  }
+  // All retries exhausted
+  log('err', 'ble', 'reconnect gave up');
   bleStatusEl.textContent = 'BLE disconnected';
   setPhase('closed');
 }
@@ -634,7 +709,8 @@ function handleMessage(msg, ws) {
 
       // BLE adapter duty: send ready.waiting to the wallet
       if (S.transport === 'ble') {
-        sendViaBle({ v: 1, t: 'ready', ch: S.channelId, state: 'waiting', role: 'wallet', self: joinPubKey, resume: crypto.randomUUID() });
+        sendViaBle({ v: 1, t: 'ready', ch: S.channelId, state: 'waiting', role: 'wallet', self: joinPubKey, resume: crypto.randomUUID() })
+          .catch(e => log('err', 'ble', `send ready.waiting failed: ${e.message}`));
       }
 
       if (knownWallet) {
@@ -653,13 +729,30 @@ function handleMessage(msg, ws) {
 
     case 'res': {
       let detail = `id=${msg.id} ok=${msg.ok}`;
+      let resDataStr = '';
       if (msg.sealed && S.sessionKey) {
         try {
           const { data } = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
-          detail += ` ${JSON.stringify(data)}`;
+          resDataStr = JSON.stringify(data);
+          detail += ` ${resDataStr.length > 200 ? resDataStr.slice(0, 200) + '...' : resDataStr}`;
         } catch { detail += ' (decrypt failed)'; }
       }
       log('in', 'res', detail);
+      // Benchmark timing
+      if (S.benchPending && S.benchPending.id === msg.id) {
+        const b = S.benchPending;
+        const tDone = performance.now();
+        const encMs = (b.tEncDone - b.t0).toFixed(0);
+        const bleMs = (b.tSendDone - b.tEncDone).toFixed(0);
+        const waitMs = (tDone - b.tSendDone).toFixed(0);
+        const totalMs = (tDone - b.t0).toFixed(0);
+        const kbps = ((b.wireSize / 1024) / ((tDone - b.t0) / 1000)).toFixed(1);
+        document.getElementById('benchResult').innerHTML =
+          `<b>${b.kb} KB</b> total: <b>${totalMs}ms</b> ` +
+          `| encrypt: ${encMs}ms | BLE send: ${bleMs}ms (${b.frameCount} frames) | echo wait: ${waitMs}ms ` +
+          `| wire: ${(b.wireSize/1024).toFixed(1)} KB | ${kbps} KB/s`;
+        S.benchPending = null;
+      }
       break;
     }
 
@@ -805,6 +898,70 @@ methodSel.onchange = () => {
   if (methodSel.value === 'wallet_signMessage') paramsEl.value = '{"message": "Hello WalletPair!"}';
   else paramsEl.value = '{}';
 };
+
+// BLE throughput benchmark
+S.benchPending = null;
+
+// Force UI repaint before continuing
+const yieldUI = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+document.querySelectorAll('.bench').forEach(btn => {
+  btn.onclick = async () => {
+    if (S.phase !== 'connected') { console.log('bench: not connected'); return; }
+    const br = document.getElementById('benchResult');
+    const kb = parseInt(btn.dataset.kb);
+    console.log(`bench: starting ${kb} KB`);
+    const payloadSize = kb * 1024;
+
+    // Step 1: Generate
+    br.textContent = `[1/4] Generating ${kb} KB...`;
+    await yieldUI();
+    const t0 = performance.now();
+    const filler = 'x'.repeat(payloadSize);
+    const params = { benchmark: true, size: payloadSize, data: filler };
+    const tGen = performance.now();
+
+    // Step 2: Encrypt
+    br.textContent = `[2/4] Encrypting ${kb} KB...`;
+    await yieldUI();
+    const id = `bench-${++S.reqCounter}`;
+    const msg = { v: 1, t: 'req', ch: S.channelId, id, from: S.pubKeyB64, method: 'benchmark_echo' };
+    if (S.sessionKey) {
+      msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, params);
+    }
+    const tEnc = performance.now();
+
+    // Step 3: Frame + Send via BLE
+    const wireJson = JSON.stringify(msg);
+    const wireSize = wireJson.length;
+    br.textContent = `[3/4] Encrypt ${(tEnc-tGen).toFixed(0)}ms. Sending ${(wireSize/1024).toFixed(1)} KB...`;
+    await yieldUI();
+    const tSend0 = performance.now();
+
+    if (S.transport === 'ble' && S.bleWriteChar && S.bleDevice?.gatt?.connected) {
+      const frames = bleFrameMessage(wireJson);
+      for (let i = 0; i < frames.length; i++) {
+        const needsAck = (i % BLE_WRITE_BATCH === BLE_WRITE_BATCH - 1) || i === frames.length - 1;
+        if (needsAck) {
+          await S.bleWriteChar.writeValue(frames[i]);
+        } else {
+          await S.bleWriteChar.writeValueWithoutResponse(frames[i]);
+        }
+        if (i > 0 && i % 20 === 0) {
+          br.textContent = `[3/4] Sending frame ${i}/${frames.length}...`;
+        }
+      }
+      const tSend1 = performance.now();
+      br.textContent = `[4/4] Encrypt ${(tEnc-tGen).toFixed(0)}ms | Send ${(tSend1-tSend0).toFixed(0)}ms (${frames.length} frames) | Waiting...`;
+      log('out', 'req', `id=${id} method=benchmark_echo ${frames.length} frames`);
+      S.benchPending = { id, t0, tEncDone: tEnc, tSendDone: tSend1, kb, wireSize, frameCount: frames.length };
+    } else {
+      sendRaw(msg);
+      const tSend1 = performance.now();
+      S.benchPending = { id, t0, tEncDone: tEnc, tSendDone: tSend1, kb, wireSize, frameCount: 0 };
+    }
+  };
+});
 
 // ---------------------------------------------------------------------------
 // On page load: restore session if available (WS only — BLE is not resumable)

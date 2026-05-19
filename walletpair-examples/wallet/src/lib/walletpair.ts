@@ -21,9 +21,11 @@ import {
 // ---------------------------------------------------------------------------
 
 export function b64urlEncode(bytes: Uint8Array): string {
-  let binary = '';
-  for (const b of bytes) binary += String.fromCharCode(b);
-  return btoa(binary)
+  const chunks: string[] = [];
+  for (let i = 0; i < bytes.length; i += 8192) {
+    chunks.push(String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + 8192))));
+  }
+  return btoa(chunks.join(''))
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=/g, '');

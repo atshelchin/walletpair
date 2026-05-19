@@ -6,56 +6,51 @@
  *   flags bit 0: first fragment
  *   flags bit 1: last fragment
  *
- * Single-frame message: flags=0x03
- * Multi-frame first:    flags=0x01, total_length = full payload size
- * Multi-frame middle:   flags=0x00, total_length = 0
- * Multi-frame last:     flags=0x02, total_length = 0
+ * MTU-aware: frame payload size adapts to negotiated MTU.
+ * Default 509 bytes (512 MTU - 3 byte header) for modern devices.
  */
 
 const FLAG_FIRST = 0x01;
 const FLAG_LAST = 0x02;
 
-/** Conservative max payload per fragment (typical BLE MTU 185 - 3 byte header). */
-const MAX_FRAGMENT_PAYLOAD = 182;
+/** Default max payload per fragment. Conservative fallback if MTU unknown. */
+export const DEFAULT_FRAME_PAYLOAD = 509;
+
+/** Minimum safe payload (for devices that don't negotiate MTU). */
+export const MIN_FRAME_PAYLOAD = 20;
 
 // ---------------------------------------------------------------------------
 // Fragmenting (sender side)
 // ---------------------------------------------------------------------------
 
-/** Split a JSON string into BLE frames ready for transmission. */
+/** Split a JSON string into BLE frames. `maxPayload` = MTU - 3 (header). */
 export function frameMessage(
   jsonStr: string,
-  maxPayload = MAX_FRAGMENT_PAYLOAD,
+  maxPayload = DEFAULT_FRAME_PAYLOAD,
 ): Uint8Array[] {
-  const encoder = new TextEncoder();
-  const payload = encoder.encode(jsonStr);
+  const payload = new TextEncoder().encode(jsonStr);
   const frames: Uint8Array[] = [];
 
   if (payload.length === 0) {
-    // Edge case: empty message → single frame with empty payload
     const frame = new Uint8Array(3);
     frame[0] = FLAG_FIRST | FLAG_LAST;
     return [frame];
   }
 
-  for (let offset = 0; offset < payload.length; offset += maxPayload) {
+  const chunkSize = Math.max(maxPayload, MIN_FRAME_PAYLOAD);
+
+  for (let offset = 0; offset < payload.length; offset += chunkSize) {
     const isFirst = offset === 0;
-    const end = Math.min(offset + maxPayload, payload.length);
+    const end = Math.min(offset + chunkSize, payload.length);
     const isLast = end === payload.length;
-    const fragment = payload.slice(offset, end);
+    const fragment = payload.subarray(offset, end); // subarray = no copy
 
     const frame = new Uint8Array(3 + fragment.length);
-
-    // Flags
     frame[0] = (isFirst ? FLAG_FIRST : 0) | (isLast ? FLAG_LAST : 0);
-
-    // Total length (only meaningful in first fragment)
     if (isFirst) {
       frame[1] = (payload.length >> 8) & 0xff;
       frame[2] = payload.length & 0xff;
     }
-    // Subsequent fragments: total_length = 0 (already zeroed)
-
     frame.set(fragment, 3);
     frames.push(frame);
   }
@@ -69,53 +64,62 @@ export function frameMessage(
 
 /** Accumulates BLE frames and emits complete JSON strings. */
 export class Defragmenter {
-  private chunks: Uint8Array[] = [];
+  private buffer: Uint8Array | null = null;
+  private offset = 0;
 
   /**
    * Push a received BLE frame. Returns the complete JSON string when the
    * last fragment arrives, or null if more fragments are expected.
    */
   push(data: Uint8Array): string | null {
-    if (data.length < 3) return null; // malformed
+    if (data.length < 3) return null;
 
     const flags = data[0];
     const isFirst = !!(flags & FLAG_FIRST);
     const isLast = !!(flags & FLAG_LAST);
-    const fragment = data.slice(3);
+    const fragment = data.subarray(3);
 
     if (isFirst) {
-      this.chunks = [fragment];
-    } else {
-      this.chunks.push(fragment);
+      // Pre-allocate buffer using total_length from header
+      const totalLength = (data[1] << 8) | data[2];
+      this.buffer = new Uint8Array(totalLength || fragment.length);
+      this.offset = 0;
     }
 
-    if (isLast) {
-      const totalLength = this.chunks.reduce((s, c) => s + c.length, 0);
-      const assembled = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of this.chunks) {
-        assembled.set(chunk, offset);
-        offset += chunk.length;
+    if (this.buffer) {
+      // Copy fragment into pre-allocated buffer
+      if (this.offset + fragment.length <= this.buffer.length) {
+        this.buffer.set(fragment, this.offset);
+      } else {
+        // Buffer too small (shouldn't happen with correct total_length) — grow
+        const grown = new Uint8Array(this.offset + fragment.length);
+        grown.set(this.buffer.subarray(0, this.offset));
+        grown.set(fragment, this.offset);
+        this.buffer = grown;
       }
-      this.chunks = [];
-      return new TextDecoder().decode(assembled);
+      this.offset += fragment.length;
     }
 
-    return null; // more fragments expected
+    if (isLast && this.buffer) {
+      const result = new TextDecoder().decode(this.buffer.subarray(0, this.offset));
+      this.buffer = null;
+      this.offset = 0;
+      return result;
+    }
+
+    return null;
   }
 
-  /** Reset internal buffer (e.g., on disconnect). */
   reset(): void {
-    this.chunks = [];
+    this.buffer = null;
+    this.offset = 0;
   }
 }
 
 // ---------------------------------------------------------------------------
-// BLE UUIDs (shared between dApp and wallet)
+// BLE UUIDs
 // ---------------------------------------------------------------------------
 
 export const BLE_SERVICE_UUID = 'e3a10001-7770-4270-8000-000077700001';
-/** dApp (Central) writes to this → wallet (Peripheral) receives. */
 export const BLE_WRITE_CHAR_UUID = 'e3a10002-7770-4270-8000-000077700001';
-/** Wallet (Peripheral) notifies on this → dApp (Central) receives. */
 export const BLE_NOTIFY_CHAR_UUID = 'e3a10003-7770-4270-8000-000077700001';
