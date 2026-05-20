@@ -67,7 +67,7 @@ export function getPublicKey(privateKey: Uint8Array): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
-// Session key derivation (protocol Section 7.2)
+// Root and directional key derivation (protocol Section 7.2)
 // ---------------------------------------------------------------------------
 
 export function computeSharedSecret(
@@ -81,7 +81,63 @@ export function deriveSessionKey(
   sharedSecret: Uint8Array,
   channelIdHex: string,
 ): Uint8Array {
-  return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1', 32);
+  return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1 root', 32);
+}
+
+export interface SessionCryptoContext {
+  dappPubKeyB64: string;
+  walletPubKeyB64: string;
+  capabilities?: unknown;
+  walletMeta?: unknown;
+  dappName?: string | undefined;
+}
+
+export interface DirectionalSessionKeys {
+  rootKey: Uint8Array;
+  dappToWalletKey: Uint8Array;
+  walletToDappKey: Uint8Array;
+  transcriptHash: Uint8Array;
+}
+
+export function canonicalJson(value: unknown): string {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+
+  const obj = value as Record<string, unknown>;
+  return `{${Object.keys(obj)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`)
+    .join(',')}}`;
+}
+
+export function computeHandshakeTranscriptHash(
+  channelIdHex: string,
+  context: SessionCryptoContext,
+): Uint8Array {
+  return sha256(concatBytes(
+    utf8ToBytes('walletpair-v1-transcript'),
+    hexToBytes(channelIdHex),
+    lp(context.dappPubKeyB64),
+    lp(context.walletPubKeyB64),
+    lp(canonicalJson(context.capabilities ?? null)),
+    lp(canonicalJson(context.walletMeta ?? null)),
+    lp(context.dappName ?? ''),
+  ));
+}
+
+export function deriveDirectionalSessionKeys(
+  rootKey: Uint8Array,
+  channelIdHex: string,
+  context: SessionCryptoContext,
+): DirectionalSessionKeys {
+  const transcriptHash = computeHandshakeTranscriptHash(channelIdHex, context);
+  return {
+    rootKey,
+    transcriptHash,
+    dappToWalletKey: hkdf(sha256, rootKey, transcriptHash, 'walletpair-v1 dapp-to-wallet', 32),
+    walletToDappKey: hkdf(sha256, rootKey, transcriptHash, 'walletpair-v1 wallet-to-dapp', 32),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -89,10 +145,14 @@ export function deriveSessionKey(
 // ---------------------------------------------------------------------------
 
 export function computePairingCode(
-  sessionKey: Uint8Array,
+  rootKey: Uint8Array,
   channelIdHex: string,
+  context?: SessionCryptoContext,
 ): string {
-  const codeBytes = hkdf(sha256, sessionKey, hexToBytes(channelIdHex), 'walletpair-pairing-code', 4);
+  const salt = context
+    ? computeHandshakeTranscriptHash(channelIdHex, context)
+    : hexToBytes(channelIdHex);
+  const codeBytes = hkdf(sha256, rootKey, salt, 'walletpair-pairing-code', 4);
   const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
   return (view.getUint32(0) % 1000000).toString().padStart(6, '0');
 }
@@ -113,6 +173,9 @@ export type AadHeader =
 /** Length-prefix a UTF-8 string: uint16_be(byte_length) || utf8_bytes */
 function lp(s: string): Uint8Array {
   const bytes = utf8ToBytes(s);
+  if (bytes.length > 0xffff) {
+    throw new Error('AAD field exceeds 65535 bytes');
+  }
   const len = new Uint8Array(2);
   new DataView(len.buffer).setUint16(0, bytes.length);
   return concatBytes(len, bytes);
@@ -135,7 +198,7 @@ function buildAad(channelIdHex: string, header?: AadHeader): Uint8Array {
 }
 
 export function sealPayload(
-  sessionKey: Uint8Array,
+  encryptionKey: Uint8Array,
   channelIdHex: string,
   seq: number,
   data: unknown,
@@ -143,15 +206,15 @@ export function sealPayload(
 ): string {
   const seqBytes = new Uint8Array(4);
   new DataView(seqBytes.buffer).setUint32(0, seq);
-  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
+  const nonce = hmac(sha256, encryptionKey, seqBytes).slice(0, 12);
   const plaintext = utf8ToBytes(JSON.stringify(data));
   const aad = buildAad(channelIdHex, header);
-  const ciphertext = chacha20poly1305(sessionKey, nonce, aad).encrypt(plaintext);
+  const ciphertext = chacha20poly1305(encryptionKey, nonce, aad).encrypt(plaintext);
   return b64urlEncode(concatBytes(seqBytes, ciphertext));
 }
 
 export function unsealPayload(
-  sessionKey: Uint8Array,
+  encryptionKey: Uint8Array,
   channelIdHex: string,
   sealed: string,
   header?: AadHeader,
@@ -159,9 +222,9 @@ export function unsealPayload(
   const bytes = b64urlDecode(sealed);
   const seqBytes = bytes.slice(0, 4);
   const ciphertext = bytes.slice(4);
-  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
+  const nonce = hmac(sha256, encryptionKey, seqBytes).slice(0, 12);
   const aad = buildAad(channelIdHex, header);
-  const plaintext = chacha20poly1305(sessionKey, nonce, aad).decrypt(ciphertext);
+  const plaintext = chacha20poly1305(encryptionKey, nonce, aad).decrypt(ciphertext);
   const seq = new DataView(seqBytes.buffer, seqBytes.byteOffset, 4).getUint32(0);
   return { seq, data: JSON.parse(new TextDecoder().decode(plaintext)) };
 }

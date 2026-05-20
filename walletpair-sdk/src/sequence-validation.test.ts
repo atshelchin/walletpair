@@ -114,11 +114,12 @@ async function connectDAppManually(ctx: ReturnType<typeof setupDAppWithManualWal
     capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
   } as ProtocolMessage);
 
-  // Derive session key from wallet side
+  // Derive root key from wallet side. Responses/events use wallet->dApp key,
+  // which is DAppSession.recvKey after the join transcript is processed.
   const dappPubB64 = transport.sent[0]!.from!;
   const dappPub = b64urlDecode(dappPubB64);
   const shared = computeSharedSecret(walletKp.privateKey, dappPub);
-  const sessionKey = deriveSessionKey(shared, session.channelId);
+  deriveSessionKey(shared, session.channelId);
 
   // Accept and connect
   session.acceptWallet();
@@ -127,7 +128,7 @@ async function connectDAppManually(ctx: ReturnType<typeof setupDAppWithManualWal
     state: 'connected', resume: 'tok',
   } as ProtocolMessage);
 
-  return { sessionKey, dappPubB64 };
+  return { sessionKey: (session as any).recvKey as Uint8Array, dappPubB64 };
 }
 
 /**
@@ -161,11 +162,12 @@ async function connectWalletManually(ctx: ReturnType<typeof setupWalletWithManua
 
   await session.joinFromUri(uri);
 
-  // Derive session key from dApp side
+  // Derive root key from dApp side. Requests use dApp->wallet key,
+  // which is WalletSession.recvKey after prepareJoin().
   const walletPubB64 = transport.sent.find(m => m.t === 'join')!.from!;
   const walletPub = b64urlDecode(walletPubB64);
   const shared = computeSharedSecret(dappKp.privateKey, walletPub);
-  const sessionKey = deriveSessionKey(shared, channelId);
+  deriveSessionKey(shared, channelId);
 
   // Connect
   transport.receive({
@@ -173,7 +175,7 @@ async function connectWalletManually(ctx: ReturnType<typeof setupWalletWithManua
     state: 'connected', resume: 'tok',
   } as ProtocolMessage);
 
-  return { sessionKey, walletPubB64 };
+  return { sessionKey: (session as any).recvKey as Uint8Array, walletPubB64 };
 }
 
 // ---------------------------------------------------------------------------
@@ -543,19 +545,19 @@ describe('Sequence validation', () => {
       const { transport, session } = ctx;
       await connectDAppManually(ctx);
 
-      // Set sendSeq close to overflow: (2^32 - 1) - 1
-      (session as any).sendSeq = 0xFFFF_FFFE;
+      // Set sendSeq to the last allowed sealed message.
+      (session as any).sendSeq = (2 ** 31) - 1;
 
       const errorHandler = vi.fn();
       session.on('error', errorHandler);
 
-      // First request with params (triggers sendSeq increment): sendSeq goes to 0xFFFF_FFFF
+      // First request with params uses the last allowed sequence number.
       // This will be left pending and rejected when session closes, so catch it.
       const p1 = session.request('wallet_getAccounts', { test: true }).catch(() => {});
       await wait(20);
-      // p1 was sent successfully (sendSeq was 0xFFFF_FFFE, used that, incremented to 0xFFFF_FFFF)
+      // p1 was sent successfully; sendSeq is now at the protocol limit.
 
-      // Second request with params: sendSeq would go from 0xFFFF_FFFF to 0 (overflow)
+      // Second request would exceed the protocol limit.
       const p2 = session.request('wallet_getAccounts', { test: true });
       await expect(p2).rejects.toThrow('Send sequence overflow');
       expect(errorHandler).toHaveBeenCalled();
@@ -568,27 +570,16 @@ describe('Sequence validation', () => {
       const { transport, session, dappKp, channelId } = ctx;
       await connectWalletManually(ctx);
 
-      // Set sendSeq close to overflow
-      (session as any).sendSeq = 0xFFFF_FFFE;
+      // Set sendSeq to the last allowed sealed message.
+      (session as any).sendSeq = (2 ** 31) - 1;
 
       const errorHandler = vi.fn();
       session.on('error', errorHandler);
 
-      // First approve: sendSeq 0xFFFF_FFFE -> 0xFFFF_FFFF (ok)
-      transport.receive({
-        v: 1, t: 'req', ch: channelId,
-        id: 'r1', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-      } as ProtocolMessage);
+      // First approve uses the last allowed sequence number.
       session.approve('r1', ['0x123']);
 
-      // sendSeq is now 0xFFFF_FFFF
-      // Second approve: sendSeq 0xFFFF_FFFF -> 0 (overflow, session closes)
-      transport.receive({
-        v: 1, t: 'req', ch: channelId,
-        id: 'r2', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-      } as ProtocolMessage);
+      // Second approve exceeds the protocol limit and closes the session.
       session.approve('r2', ['0x456']);
 
       expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
@@ -602,7 +593,7 @@ describe('Sequence validation', () => {
       const { session } = ctx;
       await connectWalletManually(ctx);
 
-      (session as any).sendSeq = 0xFFFF_FFFE;
+      (session as any).sendSeq = (2 ** 31) - 1;
 
       const errorHandler = vi.fn();
       session.on('error', errorHandler);

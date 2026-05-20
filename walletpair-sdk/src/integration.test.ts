@@ -181,3 +181,212 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
     expect(r3).toEqual({ call: 3 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Directional key integration tests
+// ---------------------------------------------------------------------------
+
+describe('Integration: Bidirectional flow with directional keys', () => {
+
+  it('full bidirectional flow: dApp sends request, wallet receives, wallet responds, dApp receives', async () => {
+    const dappTransport = new MockTransport();
+    const walletTransport = new MockTransport();
+    const _relay = new MockRelay(dappTransport, walletTransport);
+
+    const dappSession = new DAppSession({ transport: dappTransport, name: 'BiDi dApp' });
+    const walletSession = new WalletSession({
+      transport: walletTransport,
+      capabilities: { methods: ['wallet_getAccounts', 'wallet_signMessage'], events: ['accountsChanged'], chains: ['eip155:1'] },
+      meta: { name: 'BiDi Wallet', address: '0xBiDi' },
+    });
+
+    const uri = await dappSession.createPairing();
+    await walletSession.joinFromUri(uri);
+    await wait();
+
+    // Verify pairing codes match (both derived with directional transcript)
+    expect(dappSession.pairingCode).toBe(walletSession.pairingCode);
+
+    dappSession.acceptWallet();
+    await wait();
+
+    expect(dappSession.phase).toBe('connected');
+    expect(walletSession.phase).toBe('connected');
+
+    // Wallet handles requests
+    walletSession.on('request', ({ id, method, params }) => {
+      if (method === 'wallet_getAccounts') {
+        walletSession.approve(id, ['0xBiDi']);
+      } else if (method === 'wallet_signMessage') {
+        walletSession.approve(id, { signature: '0xSIG' });
+      }
+    });
+
+    // DApp sends request (uses dappToWalletKey), wallet decrypts (uses dappToWalletKey as recvKey)
+    const accounts = await dappSession.request('wallet_getAccounts');
+    expect(accounts).toEqual(['0xBiDi']);
+
+    // Wallet responds (uses walletToDappKey), dApp decrypts (uses walletToDappKey as recvKey)
+    const sig = await dappSession.request('wallet_signMessage', { message: 'test' });
+    expect(sig).toEqual({ signature: '0xSIG' });
+  });
+
+  it('wallet pushes event, dApp receives with correct key', async () => {
+    const dappTransport = new MockTransport();
+    const walletTransport = new MockTransport();
+    const _relay = new MockRelay(dappTransport, walletTransport);
+
+    const dappSession = new DAppSession({ transport: dappTransport });
+    const walletSession = new WalletSession({
+      transport: walletTransport,
+      capabilities: { methods: ['wallet_getAccounts'], events: ['accountsChanged', 'chainChanged'], chains: ['eip155:1'] },
+    });
+
+    const uri = await dappSession.createPairing();
+    await walletSession.joinFromUri(uri);
+    await wait();
+    dappSession.acceptWallet();
+    await wait();
+
+    const events: Array<{ event: string; data: unknown }> = [];
+    dappSession.on('event', (evt) => events.push(evt));
+
+    // Push multiple events
+    walletSession.pushEvent('accountsChanged', { accounts: ['0xNew'] });
+    walletSession.pushEvent('chainChanged', { chainId: 'eip155:137' });
+    await wait();
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({ event: 'accountsChanged', data: { accounts: ['0xNew'] } });
+    expect(events[1]).toEqual({ event: 'chainChanged', data: { chainId: 'eip155:137' } });
+  });
+
+  it('multiple concurrent requests do not interfere', async () => {
+    const dappTransport = new MockTransport();
+    const walletTransport = new MockTransport();
+    const _relay = new MockRelay(dappTransport, walletTransport);
+
+    const dappSession = new DAppSession({ transport: dappTransport });
+    const walletSession = new WalletSession({
+      transport: walletTransport,
+      capabilities: { methods: ['wallet_getAccounts', 'wallet_signMessage'], events: [], chains: ['eip155:1'] },
+    });
+
+    const uri = await dappSession.createPairing();
+    await walletSession.joinFromUri(uri);
+    await wait();
+    dappSession.acceptWallet();
+    await wait();
+
+    // Wallet responds to each request with method-specific data, but with a delay
+    walletSession.on('request', ({ id, method }) => {
+      if (method === 'wallet_getAccounts') {
+        // Respond immediately
+        walletSession.approve(id, ['0xABC']);
+      } else if (method === 'wallet_signMessage') {
+        // Respond slightly delayed
+        setTimeout(() => walletSession.approve(id, '0xSIG123'), 10);
+      }
+    });
+
+    // Fire both concurrently
+    const [accounts, signature] = await Promise.all([
+      dappSession.request('wallet_getAccounts'),
+      dappSession.request('wallet_signMessage', { message: 'hello' }),
+    ]);
+
+    expect(accounts).toEqual(['0xABC']);
+    expect(signature).toBe('0xSIG123');
+  });
+
+  it('session serialization preserves directional keys', async () => {
+    const dappTransport = new MockTransport();
+    const walletTransport = new MockTransport();
+    const _relay = new MockRelay(dappTransport, walletTransport);
+
+    const dappSession = new DAppSession({ transport: dappTransport, name: 'Persist dApp' });
+    const walletSession = new WalletSession({
+      transport: walletTransport,
+      capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+      meta: { name: 'Persist Wallet' },
+    });
+
+    const uri = await dappSession.createPairing();
+    await walletSession.joinFromUri(uri);
+    await wait();
+    dappSession.acceptWallet();
+    await wait();
+
+    // Serialize both sessions
+    const dappJson = dappSession.serialize();
+    const walletJson = walletSession.serialize();
+
+    // Parse and verify directional keys are stored
+    const dappState = JSON.parse(dappJson);
+    const walletState = JSON.parse(walletJson);
+
+    expect(dappState.sendKey).toBeTruthy();
+    expect(dappState.recvKey).toBeTruthy();
+    expect(walletState.sendKey).toBeTruthy();
+    expect(walletState.recvKey).toBeTruthy();
+
+    // DApp sendKey (dappToWalletKey) == Wallet recvKey (dappToWalletKey)
+    expect(dappState.sendKey).toBe(walletState.recvKey);
+    // DApp recvKey (walletToDappKey) == Wallet sendKey (walletToDappKey)
+    expect(dappState.recvKey).toBe(walletState.sendKey);
+
+    // sendKey != recvKey (directional)
+    expect(dappState.sendKey).not.toBe(dappState.recvKey);
+  });
+
+  it('restored session can still communicate', async () => {
+    const dappTransport = new MockTransport();
+    const walletTransport = new MockTransport();
+    const _relay = new MockRelay(dappTransport, walletTransport);
+
+    const dappSession = new DAppSession({ transport: dappTransport, name: 'Restore dApp' });
+    const walletSession = new WalletSession({
+      transport: walletTransport,
+      capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+    });
+
+    const uri = await dappSession.createPairing();
+    await walletSession.joinFromUri(uri);
+    await wait();
+    dappSession.acceptWallet();
+    await wait();
+
+    // Exchange one message to advance sequence counters
+    walletSession.on('request', ({ id }) => walletSession.approve(id, 'first'));
+    const r1 = await dappSession.request('wallet_getAccounts');
+    expect(r1).toBe('first');
+
+    // Serialize
+    const dappJson = dappSession.serialize();
+    const walletJson = walletSession.serialize();
+
+    // Restore dApp session to a new transport that is linked to the wallet transport
+    const newDappTransport = new MockTransport();
+    const newWalletTransport = new MockTransport();
+    newDappTransport.peer = newWalletTransport;
+    newWalletTransport.peer = newDappTransport;
+
+    const restoredDapp = new DAppSession({ transport: newDappTransport });
+    expect(restoredDapp.restore(dappJson)).toBe(true);
+    (restoredDapp as any).phase = 'connected';
+
+    const restoredWallet = new WalletSession({
+      transport: newWalletTransport,
+      capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+    });
+    expect(restoredWallet.restore(walletJson)).toBe(true);
+    (restoredWallet as any).phase = 'connected';
+
+    // Set up request handler on restored wallet
+    restoredWallet.on('request', ({ id }) => restoredWallet.approve(id, 'restored'));
+
+    // Restored dApp sends request through linked transports
+    const r2 = await restoredDapp.request('wallet_getAccounts');
+    expect(r2).toBe('restored');
+  });
+});

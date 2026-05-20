@@ -34,12 +34,14 @@ and are assumed by this sub-protocol:
 - **Confidentiality:** All `sealed` payloads are end-to-end encrypted
   (X25519 + ChaCha20-Poly1305). The relay cannot read params, results,
   or error details.
-- **Integrity and replay protection:** Sequence-numbered AEAD prevents
-  tampering and replay of encrypted payloads.
+- **Integrity and replay protection:** Direction-specific traffic keys plus
+  sequence-numbered AEAD prevent tampering, nonce reuse, and replay of
+  encrypted payloads.
 - **Peer authentication:** Peer identity is bound to X25519 public keys;
   pairing code verification prevents MITM.
-- **Role enforcement:** The relay enforces that only the dApp sends `req`
-  and only the wallet sends `res` / `evt`.
+- **Peer and role enforcement:** The transport may enforce roles, but wallets
+  and dApps MUST still locally verify that messages come from the expected
+  peer public key and are valid for that peer's role.
 
 The following security properties are **not** provided by the transport
 layer and MUST be enforced by the wallet implementation at this layer:
@@ -83,8 +85,8 @@ sub-protocol uses CAIP-2 decimal (`"eip155:1"`). Implementations MUST
 convert correctly between formats:
 
 ```text
-CAIP-2 → hex:   "eip155:137"  → parseInt("137", 10) → "0x89"
-hex → CAIP-2:   "0x89"        → parseInt("0x89", 16) → "eip155:137"
+CAIP-2 → hex:   "eip155:137"  → parse as uint256 decimal → "0x89"
+hex → CAIP-2:   "0x89"        → parse as uint256 hex     → "eip155:137"
 ```
 
 When both formats are present in a single request (e.g., `chain` and
@@ -107,6 +109,11 @@ Numeric values in this sub-protocol use two representations:
 Implementations MUST NOT use fixed-width integer types (e.g., JS
 `Number`, 32-bit int) for transaction field parsing. Hex string
 fields are the canonical representation and carry full EVM precision.
+
+Hex quantity fields MUST follow Ethereum JSON-RPC quantity rules: `0x`
+prefix, lowercase or uppercase hex digits accepted, no leading zeroes except
+the value zero encoded as `0x0`, and no empty quantity (`0x`). Fixed-width byte
+fields such as addresses, hashes, `r`, and `s` MUST use exact byte lengths.
 
 ## 3. Account Identification
 
@@ -189,6 +196,12 @@ This method MUST NOT prompt the user for new account authorization.
 Account authorization is established during the pairing flow (join/accept).
 The wallet MAY limit accounts on a per-session basis.
 
+During pairing, the wallet MUST explicitly select or confirm the accounts that
+will be exposed to this session. The selected account set is not sent in
+plaintext `join`; it is disclosed only through encrypted `wallet_getAccounts`
+and subsequent encrypted `accountsChanged` events. A wallet MUST NOT infer
+account authorization from global wallet state.
+
 **Method:** `wallet_getAccounts`
 
 **Params:**
@@ -201,7 +214,7 @@ The wallet MAY limit accounts on a per-session basis.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `chain` | string | no | CAIP-2 chain. If omitted, return accounts for all supported chains. |
+| `chain` | string | no | CAIP-2 chain. If omitted, return accounts for all chains authorized in this session. |
 
 **Result:**
 
@@ -223,6 +236,10 @@ The wallet MAY limit accounts on a per-session basis.
 | `accounts[].chains` | string[] | CAIP-2 chains this account is available on. |
 
 **Errors:** `unauthorized`, `internal_error`
+
+If `chain` is present and not in `capabilities.chains`, the wallet MUST reject
+with `unsupported_chain`. A wallet MUST NOT return accounts for chains outside
+the approved session scope.
 
 ### 5.2 wallet_signTransaction
 
@@ -270,19 +287,19 @@ network.
 | `tx.accessList` | array | no | EIP-2930 access list. Each entry: `{ address: string, storageKeys: string[] }`. |
 | `tx.maxFeePerBlobGas` | string | no | Max fee per blob gas for EIP-4844 (type 3) transactions, hex-encoded. |
 | `tx.blobVersionedHashes` | string[] | no | Versioned hashes for EIP-4844 (each 32-byte hex with `0x01` version prefix). |
-| `tx.authorizationList` | array | no | EIP-7702 authorization tuples. Each entry: `{ chainId: string, address: string, nonce: string, yParity: string, r: string, s: string }`. All hex-encoded. The dApp provides pre-signed authorizations; the wallet MUST display each authorized address and warn the user. |
+| `tx.authorizationList` | array | no | EIP-7702 authorization tuples. Each entry: `{ chainId: string, address: string, nonce: string, yParity: string, r: string, s: string }`. All hex-encoded. These are pre-signed authorizations attached to the transaction; this method does not define a generic dApp-driven flow for creating new authorizations. |
 
 **Validation rules:**
 
 The wallet MUST enforce the following before signing:
 
 1. `address` MUST be an account previously returned by `wallet_getAccounts`
-   for this session. If not, reject with `unauthorized`.
+   for this session and authorized for the requested `chain`. If not, reject
+   with `unauthorized`.
 2. `chain` MUST be in the wallet's declared `capabilities.chains`. If not,
    reject with `unsupported_chain`.
-3. If `tx.chainId` is present, `parseInt(tx.chainId, 16)` MUST equal the
-   numeric chain ID from the `chain` field. On mismatch, reject with
-   `invalid_params`.
+3. If `tx.chainId` is present, its uint256 value MUST equal the numeric chain
+   ID from the `chain` field. On mismatch, reject with `invalid_params`.
 4. If `tx.chainId` is absent, the wallet MUST set it to the chain ID
    derived from `chain` before signing.
 5. Transaction type and fee field consistency:
@@ -327,6 +344,13 @@ The wallet MUST enforce the following before signing:
          access to its balance and storage. The wallet MUST also
          warn that delegation persists even if the transaction
          reverts after the authorization is processed.
+     (f) If `address` is the zero address, display this as clearing an
+         existing delegation rather than granting a new one.
+     (g) The wallet MUST NOT offer a generic UI that lets a dApp request a
+         fresh EIP-7702 authorization signature for arbitrary code. Such
+         authorization generation, if supported at all, MUST be wallet-owned,
+         use audited delegation targets, and be outside this method's generic
+         transaction-signing path.
    - If both `gasPrice` and `maxFeePerGas` are present regardless of
      `type`, reject with `invalid_params`.
    - If `tx.type` is absent, the wallet MAY infer it: presence of
@@ -343,7 +367,18 @@ The wallet MUST enforce the following before signing:
    (case-insensitive comparison). On mismatch, reject with
    `invalid_params`. The wallet MUST use the `address` field as the
    authoritative sender, not `tx.from`.
-9. The wallet MUST display to the user at minimum: chain name, recipient
+9. `tx.to`, `tx.from`, all access-list addresses, and all authorization-list
+   addresses MUST be exact 20-byte hex addresses. `accessList.storageKeys` and
+   `blobVersionedHashes` MUST be exact 32-byte hex values, with blob hashes
+   using version byte `0x01`.
+10. `maxPriorityFeePerGas` MUST NOT exceed `maxFeePerGas` for transaction
+   types that use EIP-1559-style fees. Fee fields, value, gas, nonce, and
+   chainId MUST be non-negative integer quantities in their EIP-defined ranges.
+11. The wallet MUST verify that the requested transaction type is supported on
+   the requested chain. For example, an L2 or pre-fork chain that does not
+   support EIP-4844 or EIP-7702 MUST reject type `0x3` or `0x4` with
+   `invalid_params` or `unsupported_chain`.
+12. The wallet MUST display to the user at minimum: chain name, recipient
    address (or "Contract Creation" if `to` is absent), and value. When
    `to` is absent (contract creation), the wallet SHOULD display a
    prominent warning.
@@ -506,12 +541,12 @@ Signs typed structured data using [EIP-712](https://eips.ethereum.org/EIPS/eip-7
 
 1. `address` MUST be an account authorized for this session.
 2. `chain` MUST be in `capabilities.chains`.
-3. If `typedData.domain.chainId` is present, the wallet MUST coerce it
-   to a number: if it is a hex string (`0x`-prefixed), parse as hex; if
-   a decimal string, parse as decimal; if a number, use directly. If
-   coercion fails, reject with `invalid_params`. The resulting numeric
-   value MUST equal the numeric chain ID from the `chain` parameter. On
-   mismatch, reject with `invalid_params`.
+3. If `typedData.domain.chainId` is present, the wallet MUST parse it as a
+   uint256 value: if it is a hex string (`0x`-prefixed), parse as hex; if a
+   decimal string, parse as decimal; if a JSON number, accept it only when it
+   is a safe integer. If parsing fails, reject with `invalid_params`. The
+   resulting value MUST equal the numeric chain ID from the `chain` parameter.
+   On mismatch, reject with `invalid_params`.
    If `typedData.domain.chainId` is absent AND the typed data matches a
    high-risk pattern (see below), the wallet MUST reject with
    `invalid_params`. For other typed data where `domain.chainId` is
@@ -563,6 +598,11 @@ Chain switching MUST affect only the current WalletPair session. The
 wallet MUST NOT change the active chain for other sessions or its global
 state as a result of this method.
 
+If the wallet has pending confirmations or pending chain-specific RPC
+requests for this session, it MUST cancel or reject them before completing
+the switch. A dApp MUST treat a `chainChanged` event that arrives while a
+request is pending as a possible invalidation of that request's assumptions.
+
 **Method:** `wallet_switchChain`
 
 **Params:**
@@ -593,6 +633,12 @@ Returns the chain that was switched to. The wallet MUST also emit a
 ### 5.7 wallet_addChain
 
 Requests the wallet to add a new EVM chain to its configuration.
+
+`wallet_addChain` is a special case: it may target a chain that is not yet in
+`capabilities.chains`, but only if `wallet_addChain` itself is in
+`capabilities.methods`. A successful add does not automatically expand the
+current session's chain scope; the dApp MUST request a new session or an
+explicit wallet-defined scope update before using the new chain.
 
 **Method:** `wallet_addChain`
 
@@ -637,6 +683,11 @@ The wallet MUST reject `rpcUrls` entries using non-HTTPS schemes, except
 for `http://localhost` and `http://127.0.0.1` (local development). The
 wallet MUST reject `rpcUrls` entries using `javascript:`, `data:`, or
 other non-HTTP(S) schemes with `invalid_params`.
+
+The wallet MUST query `eth_chainId` on each accepted RPC URL before adding
+the chain and MUST reject the request if no RPC URL returns the exact chain ID
+specified by `chain`. A wallet SHOULD reject or quarantine RPC URLs that return
+conflicting chain IDs, timeout repeatedly, or cannot be validated over TLS.
 
 If the chain already exists in the wallet, the wallet MUST prompt the user
 before updating RPC URLs. The wallet MUST NOT silently update RPC endpoints
@@ -684,6 +735,12 @@ Requests the wallet to track a token (ERC-20, ERC-721, or ERC-1155).
 ```
 
 **Errors:** `user_rejected`, `invalid_params`, `internal_error`
+
+The wallet MUST reject if `chain` is not in `capabilities.chains`, if
+`contract` is not an exact 20-byte address, if `decimals` is outside the range
+0-255 for ERC-20, or if `tokenId` is not a non-negative uint256 quantity for
+ERC-721/ERC-1155. The wallet SHOULD verify token metadata from the chain rather
+than trusting dApp-provided `symbol`, `decimals`, or `image`.
 
 ### 5.9 wallet_signRawMessage
 
@@ -1039,8 +1096,10 @@ Decrypted `sealed` (data):
 ## 10. Versioning and Extension
 
 This sub-protocol is versioned independently from WalletPair Protocol v1.
-The sub-protocol version is not carried in wire messages — it is implied
-by the method names and parameter schemas.
+Wallets SHOULD include a version marker in capabilities, for example
+`"evm:walletpair:1"`, or an equivalent SDK-level feature flag. The version is
+not otherwise carried in each wire message, so incompatible schema changes MUST
+use new method names or explicit capability flags.
 
 To add new methods:
 

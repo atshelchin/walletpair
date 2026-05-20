@@ -25,7 +25,7 @@ WalletPair replaces centralized pairing services with a zero-registration, relay
   |                              | <------- join (pubkey) ------|
   |<- join (pubkey, caps) ------ |                              |
   |                              |                              |
-  |   [Both sides derive session key and 6-digit pairing code]  |
+  |   [Both sides derive root key, traffic keys, and code]      |
   |   [User confirms codes match on both devices]               |
   |                              |                              |
   |-- accept ------------------> |                              |
@@ -100,7 +100,7 @@ const session = new WalletSession(transport);
 await session.prepareJoin(pairingUri);
 console.log('Pairing code:', session.pairingCode);
 
-// After user confirms code match
+// Send join, then have the user compare this code with the dApp display
 await session.confirmJoin();
 
 session.on('request', async (req) => {
@@ -169,7 +169,7 @@ cargo build --release
 - **Key exchange**: X25519 ephemeral keypairs
 - **Key derivation**: HKDF-SHA256 with channel ID as salt
 - **Encryption**: ChaCha20-Poly1305 AEAD with length-prefixed AAD
-- **Pairing code**: 6-digit code derived from session key for visual MITM prevention
+- **Pairing code**: 6-digit code derived from the transcript-bound root key for visual MITM prevention
 - **Replay protection**: Per-peer sequence counters with monotonic enforcement
 
 ### Message Types

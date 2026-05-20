@@ -99,12 +99,6 @@ function createFullProvider(postMessageFn?: (...args: any[]) => void) {
       return provider;
     },
 
-    emit(event: string, ...args: any[]) {
-      eventListeners.get(event)?.forEach((handler) => {
-        try { handler(...args); } catch {}
-      });
-    },
-
     isConnected() {
       return isConnected;
     },
@@ -114,26 +108,33 @@ function createFullProvider(postMessageFn?: (...args: any[]) => void) {
     networkVersion: '1',
   };
 
+  // Internal emit — not exposed on the provider object
+  function emit(event: string, ...args: any[]) {
+    eventListeners.get(event)?.forEach((handler) => {
+      try { handler(...args); } catch {}
+    });
+  }
+
   // Simulate handling of wp-event messages (mirrors the window message listener)
   function simulateEvent(evtName: string, data: unknown) {
     if (evtName === 'accountsChanged' && Array.isArray(data)) {
       accounts = data;
       provider.selectedAddress = accounts[0] ?? null;
-      provider.emit('accountsChanged', accounts);
+      emit('accountsChanged', accounts);
     } else if (evtName === 'chainChanged') {
       chainId = typeof data === 'string' ? data : `0x${Number(data).toString(16)}`;
       provider.chainId = chainId;
       provider.networkVersion = String(parseInt(chainId, 16));
-      provider.emit('chainChanged', chainId);
+      emit('chainChanged', chainId);
     } else if (evtName === 'disconnect') {
       isConnected = false;
       accounts = [];
       provider.selectedAddress = null;
-      provider.emit('disconnect', new ProviderRpcError(4900, 'Disconnected'));
+      emit('disconnect', new ProviderRpcError(4900, 'Disconnected'));
     } else if (evtName === 'connect') {
       if (!isConnected) {
         isConnected = true;
-        provider.emit('connect', { chainId });
+        emit('connect', { chainId });
       }
     }
   }
@@ -145,9 +146,9 @@ function createFullProvider(postMessageFn?: (...args: any[]) => void) {
       provider.selectedAddress = accounts[0];
       if (!isConnected) {
         isConnected = true;
-        provider.emit('connect', { chainId });
+        emit('connect', { chainId });
       }
-      provider.emit('accountsChanged', accounts);
+      emit('accountsChanged', accounts);
     }
   }
 

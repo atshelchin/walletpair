@@ -106,11 +106,20 @@ describe('RPC Routing Logic', () => {
   });
 
   describe('proxyRpcCall', () => {
+    /** Helper to build mock Response with text() and headers matching our implementation. */
+    function mockJsonResp(body: unknown, opts?: { ok?: boolean; status?: number; statusText?: string }) {
+      const text = JSON.stringify(body);
+      return {
+        ok: opts?.ok ?? true,
+        status: opts?.status ?? 200,
+        statusText: opts?.statusText ?? 'OK',
+        headers: { get: (k: string) => k.toLowerCase() === 'content-length' ? String(text.length) : null },
+        text: async () => text,
+      };
+    }
+
     it('formats correct JSON-RPC body', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ jsonrpc: '2.0', id: 1, result: '0xabc' }),
-      });
+      mockFetch.mockResolvedValueOnce(mockJsonResp({ jsonrpc: '2.0', id: 1, result: '0xabc' }));
 
       await proxyRpcCall(1, 'eth_getBalance', ['0xdead', 'latest']);
 
@@ -137,13 +146,10 @@ describe('RPC Routing Logic', () => {
     });
 
     it('handles JSON-RPC errors in response', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          jsonrpc: '2.0', id: 1,
-          error: { code: -32000, message: 'nonce too low' },
-        }),
-      });
+      mockFetch.mockResolvedValueOnce(mockJsonResp({
+        jsonrpc: '2.0', id: 1,
+        error: { code: -32000, message: 'nonce too low' },
+      }));
 
       await expect(proxyRpcCall(1, 'eth_sendRawTransaction', ['0xsigned']))
         .rejects.toMatchObject({ code: -32000, message: 'nonce too low' });
@@ -165,10 +171,7 @@ describe('RPC Routing Logic', () => {
       ];
 
       for (const chain of chains) {
-        mockFetch.mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x1' }),
-        });
+        mockFetch.mockResolvedValueOnce(mockJsonResp({ jsonrpc: '2.0', id: 1, result: '0x1' }));
         await proxyRpcCall(chain.id, 'eth_blockNumber', []);
         const [url] = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
         expect(url).toBe(chain.url);

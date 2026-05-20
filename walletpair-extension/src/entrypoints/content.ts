@@ -94,6 +94,11 @@ export default defineContentScript({
       if (msg.type === 'wp-get-state') {
         sendToBackground({ action: 'get-state' });
       }
+
+      // Provider signals it's ready — respond with current state
+      if (msg.type === 'wp-provider-ready') {
+        sendToBackground({ action: 'get-state' });
+      }
     });
 
     // Forward responses and events from background -> page
@@ -121,11 +126,26 @@ export default defineContentScript({
       // State response for provider initialization
       if (msg.action === 'state-update' || msg.action === 'get-state') {
         const state = msg.state ?? msg;
-        if (state.phase === 'connected' && state.wallet) {
+        const isConnected = state.phase === 'connected' && state.wallet;
+        const hexChainId = isConnected
+          ? `0x${(state.wallet.chainId ?? 1).toString(16)}`
+          : '0x1';
+
+        // Send wp-init-state so the MAIN world provider can hydrate in one shot
+        window.postMessage({
+          type: 'wp-init-state',
+          connected: !!isConnected,
+          accounts: isConnected ? [state.wallet.address] : [],
+          chainId: hexChainId,
+          channel: MSG_CHANNEL,
+        }, '*');
+
+        // Also emit standard events so already-registered listeners are notified
+        if (isConnected) {
           window.postMessage({
             type: 'wp-event',
             event: 'connect',
-            data: { chainId: `0x${(state.wallet.chainId ?? 1).toString(16)}` },
+            data: { chainId: hexChainId },
             channel: MSG_CHANNEL,
           }, '*');
           window.postMessage({

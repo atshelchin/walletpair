@@ -28,6 +28,12 @@ export const READ_ONLY_METHODS = new Set([
   'eth_sendRawTransaction', 'eth_syncing',
 ]);
 
+/** RPC proxy timeout (30 seconds) */
+const RPC_TIMEOUT_MS = 30_000;
+
+/** Max RPC response size (2 MB) */
+const RPC_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+
 /** Proxy an RPC call to a public node for the given chain */
 export async function proxyRpcCall(chainId: number, method: string, params: unknown): Promise<unknown> {
   const settings = await getSettings();
@@ -43,17 +49,43 @@ export async function proxyRpcCall(chainId: number, method: string, params: unkn
     params: params ?? [],
   });
 
-  const res = await fetch(rpcUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: controller.signal,
+    });
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') {
+      throw Object.assign(new Error('RPC request timed out'), { code: -32603 });
+    }
+    throw Object.assign(new Error(err.message ?? 'RPC fetch failed'), { code: -32603 });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     throw Object.assign(new Error(`RPC HTTP ${res.status}: ${res.statusText}`), { code: -32603 });
   }
 
-  const json = await res.json();
+  // Check content-length if available
+  const contentLength = res.headers.get('content-length');
+  if (contentLength && parseInt(contentLength, 10) > RPC_MAX_RESPONSE_BYTES) {
+    throw Object.assign(new Error('RPC response too large'), { code: -32603 });
+  }
+
+  const text = await res.text();
+  if (text.length > RPC_MAX_RESPONSE_BYTES) {
+    throw Object.assign(new Error('RPC response too large'), { code: -32603 });
+  }
+
+  const json = JSON.parse(text);
   if (json.error) {
     throw Object.assign(new Error(json.error.message ?? 'RPC error'), { code: json.error.code ?? -32603 });
   }

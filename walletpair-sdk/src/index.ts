@@ -54,7 +54,10 @@ export {
   getPublicKey,
   computeSharedSecret,
   deriveSessionKey,
+  deriveDirectionalSessionKeys,
+  computeHandshakeTranscriptHash,
   computePairingCode,
+  canonicalJson,
   sealPayload,
   unsealPayload,
   generateChannelId,
@@ -65,7 +68,7 @@ export {
   bytesToHex,
   hexToBytes,
 } from './crypto.js';
-export type { X25519KeyPair } from './crypto.js';
+export type { X25519KeyPair, SessionCryptoContext, DirectionalSessionKeys } from './crypto.js';
 
 // Emitter
 export { Emitter } from './emitter.js';

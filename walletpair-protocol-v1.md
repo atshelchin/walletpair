@@ -215,52 +215,96 @@ Timeline:
 1. The wallet obtains the dApp's public key from the pairing URI.
 2. The wallet sends `join` with its own public key.
 3. The dApp receives `join` and obtains the wallet's public key.
-4. Both sides can now independently derive the session key.
+4. Both sides can now independently derive the root key and, after `join`,
+   the direction-specific traffic keys.
 
-### 7.2 Shared Secret Derivation
+### 7.2 Shared Secret and Directional Key Derivation
 
 ```text
 shared_secret = X25519(local_private_key, remote_public_key)
-session_key   = HKDF-SHA256(
+root_key      = HKDF-SHA256(
                   ikm  = shared_secret,
                   salt = channel_id_bytes,   // 32 bytes, decoded from hex
-                  info = "walletpair-v1"
+                  info = "walletpair-v1 root"
                 )[0:32]                      // 32 bytes output
 ```
 
-The session key is 32 bytes and is used for all subsequent encryption.
+After the wallet sends `join`, both peers construct the same handshake
+transcript:
+
+```text
+transcript_hash = SHA256(
+  "walletpair-v1-transcript" ||
+  channel_id_bytes ||
+  lp(dapp_pubkey_base64url) ||
+  lp(wallet_pubkey_base64url) ||
+  lp(canonical_json(join.capabilities or null)) ||
+  lp(canonical_json(join.meta or null)) ||
+  lp(dapp_name_from_pairing_uri or "")
+)
+```
+
+`canonical_json` is UTF-8 JSON with object keys sorted lexicographically,
+no insignificant whitespace, and `undefined` represented as `null`.
+
+The traffic keys are direction-specific:
+
+```text
+dapp_to_wallet_key = HKDF-SHA256(
+                       ikm  = root_key,
+                       salt = transcript_hash,
+                       info = "walletpair-v1 dapp-to-wallet"
+                     )[0:32]
+
+wallet_to_dapp_key = HKDF-SHA256(
+                       ikm  = root_key,
+                       salt = transcript_hash,
+                       info = "walletpair-v1 wallet-to-dapp"
+                     )[0:32]
+```
+
+The same key MUST NOT be used in both directions. `req` messages use
+`dapp_to_wallet_key`; `res` and `evt` messages use `wallet_to_dapp_key`.
+If a relay tampers with the wallet public key, capabilities, wallet
+metadata, or dApp name visible to one peer, the peers derive different
+pairing codes and traffic keys.
 
 ### 7.3 Pairing Code
 
-After key exchange, both sides independently derive a 6-digit pairing code:
+After the wallet `join` message is delivered, both sides independently derive
+a 6-digit pairing code:
 
 ```text
 code_bytes   = HKDF-SHA256(
-                 ikm  = session_key,
-                 salt = channel_id_bytes,
+                 ikm  = root_key,
+                 salt = transcript_hash,
                  info = "walletpair-pairing-code"
                )[0:4]                          // first 4 bytes (indices 0,1,2,3)
 code_uint32  = big-endian uint32(code_bytes)
 pairing_code = code_uint32 mod 1000000         // zero-pad to 6 digits
 ```
 
-The wallet can compute its pairing code immediately after scanning the
-pairing URI (it already has the dApp's public key and channel ID). The
-wallet SHOULD display the pairing code and ask the user to confirm it
-matches the dApp's display BEFORE sending `join`. This ensures the user
-confirms on the device in their hand (the phone), providing better UX.
+The wallet can compute its local pairing code before sending `join`, because
+it has generated its own public key and knows the dApp public key from the
+pairing URI. However, the dApp cannot compute the same code until it receives
+the wallet public key in `join`. Therefore, the wallet MUST NOT treat the code
+as confirmed before `join` is sent.
 
-The dApp computes and displays its pairing code after creating the
-channel (before receiving `join`). The dApp's code display serves as
-the reference the wallet user visually checks.
+The secure flow is:
 
-After receiving `join`, the dApp MAY auto-accept if the implementation
-trusts that the wallet user already confirmed the code. Alternatively,
-the dApp MAY require explicit user confirmation on the dApp side.
+1. The wallet scans the URI, computes its local code, and sends `join`.
+2. The dApp receives `join`, computes the same code, and displays it.
+3. The user compares the code displayed by the wallet and the dApp.
+4. The dApp sends `accept` only after the user confirms the codes match.
+
+A dApp MUST NOT auto-accept a first-time wallet connection. It MAY auto-accept
+a previously paired wallet only if it verifies the same wallet public key and
+the same approved session scope.
 
 This prevents man-in-the-middle attacks: if a relay substitutes public
-keys, both sides will derive different session keys and different pairing
-codes. The user will see mismatched codes and reject the connection.
+keys or tampers with the authenticated handshake context, both sides will
+derive different root/traffic keys and different pairing codes. The user
+will see mismatched codes and reject the connection.
 
 ### 7.4 Message Encryption
 
@@ -282,12 +326,12 @@ the payload is logically empty, encrypt `{}` (for params/data) or `null`
 authentication, a sequence number, and replay protection. A message
 without `sealed` after `ready.connected` MUST be rejected.
 
-Encryption uses ChaCha20-Poly1305:
+Encryption uses ChaCha20-Poly1305 with the direction-specific traffic key:
 
 ```text
-nonce    = HMAC-SHA256(session_key, seq_bytes)[0:12]   // first 12 bytes
+nonce    = HMAC-SHA256(traffic_key, seq_bytes)[0:12]   // first 12 bytes
 aad      = concat(channel_id_bytes, aad_header)
-sealed   = AEAD_encrypt(session_key, nonce, plaintext_json_utf8, aad)
+sealed   = AEAD_encrypt(traffic_key, nonce, plaintext_json_utf8, aad)
 envelope = base64url_no_pad(seq_bytes || ciphertext || tag)
 ```
 
@@ -440,6 +484,11 @@ the approved accounts. The combination of `join.capabilities` (methods,
 chains) and the `wallet_getAccounts` response (accounts) constitutes the
 complete approved session scope.
 
+Account authorization is intentionally not placed in the plaintext `join`
+message. Wallets that expose account-based methods MUST select or confirm the
+session's account set during pairing, then reveal it only through encrypted
+upper-layer methods such as `wallet_getAccounts`.
+
 ### 8.1 Session Scope Enforcement
 
 The wallet's declared `capabilities` define the session scope. The wallet
@@ -518,8 +567,9 @@ walletpair:?ch=...&pubkey=...&relay=wss%3A%2F%2Fr1.example.com%2Fv1&relay=wss%3A
 ```
 
 The dApp must create the channel on all listed relays. The wallet tries relays
-in order and uses the first one that connects. Since the session key is derived
-from the key pair (not the relay), switching relays does not affect encryption.
+in order and uses the first one that connects. Since the root and traffic keys
+are derived from the peer keys and handshake transcript (not the relay),
+switching relays does not affect encryption.
 
 ### 9.2 DApp Creates Channel
 
@@ -554,19 +604,20 @@ The relay replies:
 
 The `resume` token is generated by the relay and is opaque to the peer.
 
-### 9.3 Wallet Confirms and Joins
+### 9.3 Wallet Joins
 
-The wallet scans the pairing URI, generates its keypair, and immediately
-computes the session key and pairing code (it has the dApp's public key
-from the URI). The wallet then displays the pairing code and prompts:
+The wallet scans the pairing URI, generates its keypair, computes its local
+root key and pairing code, displays the requested scope, and asks whether the
+user wants to announce the wallet to the dApp:
 
 ```text
-Wallet: "Connect to MyDApp? Pairing code: 847293. [Connect] [Cancel]"
+Wallet: "Connect to MyDApp? Requested: wallet_signTransaction on eip155:1.
+Pairing code: 847293. Compare this with the dApp before it connects."
 ```
 
-The user verifies the code matches the one displayed on the dApp, then
-taps Connect. Only after user confirmation, the wallet connects to the
-relay and sends:
+The dApp cannot display the matching code until it receives the wallet's
+public key, so this is not yet a completed pairing confirmation. If the user
+continues, the wallet connects to the relay and sends:
 
 ```json
 {
@@ -608,19 +659,22 @@ drops during the waiting phase.
 
 At this point:
 
-- The wallet already confirmed the pairing code (before sending `join`).
-- The dApp now has the wallet's public key (from `join`) and can compute
-  the session key and verify the pairing code.
+- The wallet has displayed its local pairing code.
+- The dApp now has the wallet's public key and can compute the same root key,
+  transcript hash, traffic keys, and pairing code.
+- The user must compare both displays before the dApp accepts.
 
 ### 9.4 DApp Accepts Wallet
 
-The dApp computes its pairing code and displays it. Since the wallet
-user already confirmed the code matches before sending `join`, the dApp
-MAY auto-accept:
+The dApp computes its pairing code and displays it. For a first-time wallet,
+the dApp MUST wait for explicit user confirmation that the wallet display
+shows the same code and requested scope:
 
 ```text
-DApp:   "Pairing code: 847293. Wallet connected!"
+DApp:   "Pairing code: 847293. Confirm this matches your wallet."
 ```
+
+Only after confirmation does the dApp send:
 
 The dApp sends:
 
@@ -666,7 +720,8 @@ Wallet receives:
 }
 ```
 
-From this point on, both sides must encrypt payloads using the session key.
+From this point on, both sides must encrypt payloads using the appropriate
+direction-specific traffic key.
 Both peers initialize their send and receive sequence counters to 0.
 
 ## 10. Request and Response
@@ -890,7 +945,7 @@ an attacker who steals a resume token from impersonating the peer
 If a peer loses its persisted sequence counter (e.g., due to app crash
 or storage corruption), it MUST NOT attempt to reconnect. It MUST close
 the channel and initiate a fresh pairing, because reusing sequence
-numbers with the same session key would break AEAD security.
+numbers with the same traffic key would break AEAD security.
 
 DApp reconnects by sending `create` with `resume`:
 
@@ -927,10 +982,11 @@ sends `ready.connected` to the reconnecting peer. If the other peer is also
 disconnected, the relay sends `ready.waiting` and will send `ready.connected`
 to both once the other peer also reconnects.
 
-The previously negotiated session key remains valid. Peers must persist their
-send and receive sequence counters across reconnects and continue from the
-persisted values. **Sequence counters must never be reset**, because doing so
-would cause nonce reuse and break AEAD security.
+The previously negotiated root key, transcript hash, and traffic keys remain
+valid. Peers must persist their send and receive sequence counters across
+reconnects and continue from the persisted values. **Sequence counters must
+never be reset**, because doing so would cause nonce reuse and break AEAD
+security.
 
 After reconnect, there may be gaps in the sequence numbers (in-flight messages
 lost when the transport dropped). The sequence validation rule in Section 7.4
@@ -1032,7 +1088,7 @@ closed
 6. Only the wallet sends `res` and `evt`.
 7. `req`, `res`, and `evt` are valid only after `ready.connected`.
 8. After `ready.connected`, payload content must be encrypted in the `sealed`
-   field using the session key.
+   field using the direction-specific traffic key.
 9. `resume` is secret and must not be shown to users.
 10. A closed channel cannot carry more requests, responses, or events.
 11. A single message must not exceed 64 KB on the wire.
@@ -1041,6 +1097,11 @@ closed
     with `close` reason `unsupported_version`.
 14. Encryption sequence counters must never be reset. They persist across
     reconnects for the lifetime of the channel.
+15. Each peer MUST locally verify that encrypted messages come from the expected
+    remote peer public key. Relay role enforcement is an availability aid, not
+    a cryptographic trust boundary.
+16. A peer MUST reject `ready.connected` if `remote` does not match the peer
+    public key used to derive the handshake transcript.
 
 ## 17. Transport Requirements
 
@@ -1148,8 +1209,9 @@ create the channel on all listed relays and maintain connections to all of
 them until one relay successfully delivers a `join`.
 
 The wallet tries relays in order and uses the first one that connects and
-has the channel. Since the session key is derived from the key pair (not the
-relay), switching relays does not affect encryption.
+has the channel. Since the root and traffic keys are derived from the peer
+keys and handshake transcript (not the relay), switching relays does not
+affect encryption.
 
 ## 19. Bluetooth Binding
 
@@ -1194,15 +1256,15 @@ Service UUID: to be assigned
 1. DApp creates `ch`. BLE adapter returns `ready.waiting` to the dApp.
 2. DApp exposes pairing URI via QR, NFC, or BLE advertisement.
 3. Wallet discovers the pairing URI and obtains the dApp's public key.
-4. Wallet computes session key and pairing code. Wallet displays code
-   and prompts user: "Connect to [DApp]? Code: XXXXXX".
-5. User confirms code matches the dApp display and taps Connect.
-6. Wallet connects via BLE and sends `join` with public key and capabilities.
-7. BLE adapter forwards `join` to dApp and sends `ready.waiting` to wallet.
-8. DApp computes session key and pairing code. DApp auto-accepts.
+4. Wallet computes its local root key and pairing code, then sends `join`
+   with public key and capabilities.
+5. BLE adapter forwards `join` to dApp and sends `ready.waiting` to wallet.
+6. DApp computes the root key, transcript hash, traffic keys, and pairing code.
+7. User confirms the wallet and dApp displays show the same code.
+8. DApp sends `accept`.
 9. BLE adapter generates `ready.connected` for both sides.
 10. DApp sends `req`. Wallet sends `res` and optional `evt`.
-11. All payloads are encrypted with the session key.
+11. All payloads are encrypted with direction-specific traffic keys.
 
 ### 19.5 Message Framing
 
@@ -1257,7 +1319,7 @@ The relay operator, network attacker, or eavesdropper should not be able to:
 6. Implementations must reject messages with sequence numbers that are not
    strictly greater than the last accepted value.
 7. The relay must not log or store `sealed` content beyond delivery.
-8. Sequence counters must never be reset for a given session key.
+8. Sequence counters must never be reset for a given traffic key.
 
 ### 20.4 Privacy Considerations
 
@@ -1292,7 +1354,7 @@ will. This is an inherent trust assumption of using a relay — the relay
 can always sever the connection (e.g., by dropping WebSocket frames).
 
 The relay cannot forge encrypted messages or impersonate a peer (it does
-not have the session key), so the worst a malicious relay can do is deny
+not have the traffic keys), so the worst a malicious relay can do is deny
 service. Peers SHOULD implement reconnect logic (Section 14) to recover
 from relay-initiated disconnections. For critical operations, peers
 SHOULD use multiple relays for redundancy.
@@ -1374,12 +1436,12 @@ walletpair:?ch=aabb01...eeff&pubkey=dGhpcyBpcyBh...&relay=wss%3A%2F%2Frelay.exam
 }
 ```
 
-### Wallet confirms pairing code and DApp accepts
+### User compares pairing code and DApp accepts
 
 ```text
-DApp:   "Pairing code: 847293"  (displayed since channel creation)
-Wallet: "Connect to MyDApp? Pairing code: 847293"  (user taps Connect)
-DApp:   auto-accepts after receiving join
+Wallet: "Pairing code: 847293"  (displayed after scanning)
+DApp:   "Pairing code: 847293"  (displayed after receiving join)
+User:   confirms both displays match
 ```
 
 ### DApp accepts

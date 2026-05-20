@@ -38,10 +38,11 @@ describe('WalletPairProvider', () => {
       from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
     } as ProtocolMessage);
 
-    // Derive wallet-side session key
+    // Responses/events from the manual wallet use the wallet->dApp key.
     const dappPub = b64urlDecode(transport.sent[0]!.from!);
     const shared = computeSharedSecret(walletKp.privateKey, dappPub);
-    sessionKey = deriveSessionKey(shared, session.channelId);
+    deriveSessionKey(shared, session.channelId);
+    sessionKey = (session as any).recvKey;
 
     // Accept and connect
     session.acceptWallet();

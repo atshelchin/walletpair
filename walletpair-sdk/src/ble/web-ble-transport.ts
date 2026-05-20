@@ -5,6 +5,8 @@
  * Safe to import anywhere — checks Web Bluetooth availability at runtime.
  */
 
+/// <reference path="./web-bluetooth.d.ts" />
+
 import type { Transport, TransportState, ProtocolMessage } from '../types.js';
 import {
   BLE_SERVICE_UUID,

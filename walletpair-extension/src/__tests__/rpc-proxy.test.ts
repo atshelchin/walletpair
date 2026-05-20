@@ -20,6 +20,20 @@ vi.stubGlobal('chrome', {
 const mockFetch = vi.fn();
 vi.stubGlobal('fetch', mockFetch);
 
+/** Helper: build a mock Response matching our proxyRpcCall expectations. */
+function mockJsonResponse(body: unknown, opts?: { ok?: boolean; status?: number; statusText?: string }) {
+  const text = JSON.stringify(body);
+  return {
+    ok: opts?.ok ?? true,
+    status: opts?.status ?? 200,
+    statusText: opts?.statusText ?? 'OK',
+    headers: {
+      get: (key: string) => key.toLowerCase() === 'content-length' ? String(text.length) : null,
+    },
+    text: async () => text,
+  };
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 describe('READ_ONLY_METHODS', () => {
@@ -66,10 +80,9 @@ describe('proxyRpcCall', () => {
   });
 
   it('sends a correct JSON-RPC POST request', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x10' }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      mockJsonResponse({ jsonrpc: '2.0', id: 1, result: '0x10' }),
+    );
 
     const result = await proxyRpcCall(1, 'eth_blockNumber', []);
 
@@ -90,10 +103,9 @@ describe('proxyRpcCall', () => {
   it('uses user-configured RPC URL over default', async () => {
     store['settings'] = { rpcUrls: { 1: 'https://custom-rpc.example.com' } };
 
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x5' }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      mockJsonResponse({ jsonrpc: '2.0', id: 1, result: '0x5' }),
+    );
 
     await proxyRpcCall(1, 'eth_blockNumber', []);
 
@@ -104,10 +116,9 @@ describe('proxyRpcCall', () => {
   it('falls back to DEFAULT_RPC when settings have no URL for chain', async () => {
     store['settings'] = { rpcUrls: {} };
 
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x1' }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      mockJsonResponse({ jsonrpc: '2.0', id: 1, result: '0x1' }),
+    );
 
     await proxyRpcCall(137, 'eth_blockNumber', []);
 
@@ -144,14 +155,13 @@ describe('proxyRpcCall', () => {
   });
 
   it('throws with RPC error code when JSON-RPC response contains error', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    mockFetch.mockResolvedValueOnce(
+      mockJsonResponse({
         jsonrpc: '2.0',
         id: 1,
         error: { code: -32000, message: 'execution reverted' },
       }),
-    });
+    );
 
     try {
       await proxyRpcCall(1, 'eth_call', [{ to: '0x0', data: '0x' }, 'latest']);
@@ -163,10 +173,9 @@ describe('proxyRpcCall', () => {
   });
 
   it('passes params through to the RPC body', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x0' }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      mockJsonResponse({ jsonrpc: '2.0', id: 1, result: '0x0' }),
+    );
 
     const params = [{ to: '0xdead', data: '0x1234' }, 'latest'];
     await proxyRpcCall(1, 'eth_call', params);
@@ -176,14 +185,44 @@ describe('proxyRpcCall', () => {
   });
 
   it('defaults params to empty array when null/undefined', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x5' }),
-    });
+    mockFetch.mockResolvedValueOnce(
+      mockJsonResponse({ jsonrpc: '2.0', id: 1, result: '0x5' }),
+    );
 
     await proxyRpcCall(1, 'eth_blockNumber', null);
 
     const body = JSON.parse(mockFetch.mock.calls[0][1].body);
     expect(body.params).toEqual([]);
+  });
+
+  it('includes AbortSignal for timeout', async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockJsonResponse({ jsonrpc: '2.0', id: 1, result: '0x1' }),
+    );
+
+    await proxyRpcCall(1, 'eth_blockNumber', []);
+
+    const [, options] = mockFetch.mock.calls[0];
+    expect(options.signal).toBeDefined();
+    expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('throws on oversized response', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (key: string) => key.toLowerCase() === 'content-length' ? '10000000' : null,
+      },
+      text: async () => 'x'.repeat(10000000),
+    });
+
+    try {
+      await proxyRpcCall(1, 'eth_blockNumber', []);
+      expect.fail('should have thrown');
+    } catch (err: any) {
+      expect(err.message).toContain('too large');
+      expect(err.code).toBe(-32603);
+    }
   });
 });

@@ -13,6 +13,16 @@ import { describe, it, expect, vi } from 'vitest';
 
 function createProviderLike() {
   const eventListeners = new Map<string, Set<(...args: any[]) => void>>();
+  let isConnected = false;
+  let accounts: string[] = [];
+  let chainId = '0x1';
+
+  // Internal emit — not exposed on the provider object
+  function emit(event: string, ...args: any[]) {
+    eventListeners.get(event)?.forEach((handler) => {
+      try { handler(...args); } catch {}
+    });
+  }
 
   const provider: Record<string, any> = {
     isWalletPair: true,
@@ -58,18 +68,26 @@ function createProviderLike() {
       return provider;
     },
 
-    emit(event: string, ...args: any[]) {
-      eventListeners.get(event)?.forEach((handler) => {
-        try { handler(...args); } catch {}
-      });
-    },
-
     enable() {
       return provider.request({ method: 'eth_requestAccounts' });
     },
 
     send(methodOrPayload: string | { method: string; params?: unknown[] }, callbackOrParams?: unknown) {
       if (typeof methodOrPayload === 'string') {
+        // Synchronous fast-path for cached methods
+        const syncMethods: Record<string, () => unknown> = {
+          eth_accounts: () => isConnected ? [...accounts] : [],
+          eth_chainId: () => chainId,
+          net_version: () => String(parseInt(chainId, 16)),
+          web3_clientVersion: () => 'WalletPair/0.1.0',
+        };
+        if (methodOrPayload in syncMethods) {
+          return {
+            id: 1,
+            jsonrpc: '2.0' as const,
+            result: syncMethods[methodOrPayload](),
+          };
+        }
         return provider.request({ method: methodOrPayload, params: callbackOrParams as unknown[] });
       }
       if (typeof callbackOrParams === 'function') {
@@ -95,7 +113,7 @@ function createProviderLike() {
     },
 
     isConnected() {
-      return false;
+      return isConnected;
     },
 
     _metamask: {
@@ -107,7 +125,7 @@ function createProviderLike() {
     networkVersion: '1',
   };
 
-  return provider;
+  return { provider, emit };
 }
 
 // ── ProviderRpcError ───────────────────────────────────────────────────
@@ -126,14 +144,18 @@ class ProviderRpcError extends Error {
 // ── Tests ──────────────────────────────────────────────────────────────
 
 describe('Provider interface compliance', () => {
-  const provider = createProviderLike();
+  const { provider } = createProviderLike();
 
   it('has request() method', () => {
     expect(typeof provider.request).toBe('function');
   });
 
-  it('has all EventEmitter methods', () => {
-    const methods = ['on', 'once', 'removeListener', 'emit', 'addListener', 'removeAllListeners', 'listenerCount'];
+  it('does not expose emit() publicly', () => {
+    expect(provider.emit).toBeUndefined();
+  });
+
+  it('has all EventEmitter methods (except emit)', () => {
+    const methods = ['on', 'once', 'removeListener', 'addListener', 'removeAllListeners', 'listenerCount'];
     for (const m of methods) {
       expect(typeof provider[m]).toBe('function');
     }
@@ -169,51 +191,51 @@ describe('Provider interface compliance', () => {
 });
 
 describe('Event emitter behavior', () => {
-  it('on() registers and emit() fires handlers', () => {
-    const p = createProviderLike();
+  it('on() registers and internal emit fires handlers', () => {
+    const { provider: p, emit } = createProviderLike();
     const handler = vi.fn();
 
     p.on('accountsChanged', handler);
-    p.emit('accountsChanged', ['0xabc']);
+    emit('accountsChanged', ['0xabc']);
 
     expect(handler).toHaveBeenCalledWith(['0xabc']);
   });
 
   it('on() returns provider for chaining', () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     const result = p.on('connect', () => {});
     expect(result).toBe(p);
   });
 
   it('addListener() is an alias for on()', () => {
-    const p = createProviderLike();
+    const { provider: p, emit } = createProviderLike();
     const handler = vi.fn();
 
     p.addListener('chainChanged', handler);
-    p.emit('chainChanged', '0x89');
+    emit('chainChanged', '0x89');
 
     expect(handler).toHaveBeenCalledWith('0x89');
   });
 
   it('once() auto-removes after first call', () => {
-    const p = createProviderLike();
+    const { provider: p, emit } = createProviderLike();
     const handler = vi.fn();
 
     p.once('connect', handler);
     expect(p.listenerCount('connect')).toBe(1);
 
-    p.emit('connect', { chainId: '0x1' });
+    emit('connect', { chainId: '0x1' });
     expect(handler).toHaveBeenCalledTimes(1);
 
     // Should be removed now
     expect(p.listenerCount('connect')).toBe(0);
 
-    p.emit('connect', { chainId: '0x1' });
+    emit('connect', { chainId: '0x1' });
     expect(handler).toHaveBeenCalledTimes(1); // Still 1
   });
 
   it('removeListener() removes a specific handler', () => {
-    const p = createProviderLike();
+    const { provider: p, emit } = createProviderLike();
     const h1 = vi.fn();
     const h2 = vi.fn();
 
@@ -224,13 +246,13 @@ describe('Event emitter behavior', () => {
     p.removeListener('disconnect', h1);
     expect(p.listenerCount('disconnect')).toBe(1);
 
-    p.emit('disconnect', new Error('gone'));
+    emit('disconnect', new Error('gone'));
     expect(h1).not.toHaveBeenCalled();
     expect(h2).toHaveBeenCalled();
   });
 
   it('removeAllListeners(event) clears handlers for a specific event', () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     p.on('accountsChanged', vi.fn());
     p.on('accountsChanged', vi.fn());
     p.on('chainChanged', vi.fn());
@@ -242,7 +264,7 @@ describe('Event emitter behavior', () => {
   });
 
   it('removeAllListeners() with no arg clears all events', () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     p.on('accountsChanged', vi.fn());
     p.on('chainChanged', vi.fn());
     p.on('disconnect', vi.fn());
@@ -255,7 +277,7 @@ describe('Event emitter behavior', () => {
   });
 
   it('listenerCount() returns correct count', () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     expect(p.listenerCount('message')).toBe(0);
 
     p.on('message', vi.fn());
@@ -265,14 +287,14 @@ describe('Event emitter behavior', () => {
     expect(p.listenerCount('message')).toBe(2);
   });
 
-  it('emit() does not throw when a handler throws', () => {
-    const p = createProviderLike();
+  it('internal emit() does not throw when a handler throws', () => {
+    const { provider: p, emit } = createProviderLike();
     p.on('connect', () => { throw new Error('oops'); });
     const good = vi.fn();
     p.on('connect', good);
 
     // Should not throw
-    expect(() => p.emit('connect', { chainId: '0x1' })).not.toThrow();
+    expect(() => emit('connect', { chainId: '0x1' })).not.toThrow();
     expect(good).toHaveBeenCalled();
   });
 });
@@ -299,7 +321,7 @@ describe('ProviderRpcError', () => {
 
 describe('Legacy methods', () => {
   it('enable() calls request with eth_requestAccounts', async () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     const spy = vi.spyOn(p, 'request').mockResolvedValue(['0xabc']);
 
     const result = await p.enable();
@@ -308,18 +330,43 @@ describe('Legacy methods', () => {
     expect(result).toEqual(['0xabc']);
   });
 
-  it('send(method, params) calls request', async () => {
-    const p = createProviderLike();
-    const spy = vi.spyOn(p, 'request').mockResolvedValue('0x1');
+  it('send(eth_chainId) returns synchronous JSON-RPC envelope', () => {
+    const { provider: p } = createProviderLike();
 
-    const result = await p.send('eth_chainId');
+    const result = p.send('eth_chainId');
 
-    expect(spy).toHaveBeenCalledWith({ method: 'eth_chainId', params: undefined });
-    expect(result).toBe('0x1');
+    // Should be synchronous, not a Promise
+    expect(result).toEqual({ id: 1, jsonrpc: '2.0', result: '0x1' });
+  });
+
+  it('send(net_version) returns synchronous JSON-RPC envelope', () => {
+    const { provider: p } = createProviderLike();
+
+    const result = p.send('net_version');
+
+    expect(result).toEqual({ id: 1, jsonrpc: '2.0', result: '1' });
+  });
+
+  it('send(eth_accounts) returns synchronous JSON-RPC envelope', () => {
+    const { provider: p } = createProviderLike();
+
+    const result = p.send('eth_accounts');
+
+    expect(result).toEqual({ id: 1, jsonrpc: '2.0', result: [] });
+  });
+
+  it('send(non-cached method) falls through to request()', async () => {
+    const { provider: p } = createProviderLike();
+    const spy = vi.spyOn(p, 'request').mockResolvedValue('0xabc');
+
+    const result = await p.send('eth_blockNumber');
+
+    expect(spy).toHaveBeenCalledWith({ method: 'eth_blockNumber', params: undefined });
+    expect(result).toBe('0xabc');
   });
 
   it('send(payload, callback) invokes callback with JSON-RPC envelope', async () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     vi.spyOn(p, 'request').mockResolvedValue('0x5');
 
     const callback = vi.fn();
@@ -332,7 +379,7 @@ describe('Legacy methods', () => {
   });
 
   it('sendAsync() invokes callback with JSON-RPC envelope', async () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     vi.spyOn(p, 'request').mockResolvedValue('0xa');
 
     const callback = vi.fn();
@@ -344,7 +391,7 @@ describe('Legacy methods', () => {
   });
 
   it('sendAsync() passes error to callback on failure', async () => {
-    const p = createProviderLike();
+    const { provider: p } = createProviderLike();
     const error = new Error('fail');
     vi.spyOn(p, 'request').mockRejectedValue(error);
 

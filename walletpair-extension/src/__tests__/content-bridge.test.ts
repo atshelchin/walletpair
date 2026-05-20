@@ -147,11 +147,26 @@ function createBridge() {
 
     if (msg.action === 'state-update' || msg.action === 'get-state') {
       const state = msg.state ?? msg;
-      if (state.phase === 'connected' && state.wallet) {
+      const isConnected = state.phase === 'connected' && state.wallet;
+      const hexChainId = isConnected
+        ? `0x${(state.wallet.chainId ?? 1).toString(16)}`
+        : '0x1';
+
+      // Send wp-init-state so the MAIN world provider can hydrate in one shot
+      sendToPage({
+        type: 'wp-init-state',
+        connected: !!isConnected,
+        accounts: isConnected ? [state.wallet.address] : [],
+        chainId: hexChainId,
+        channel: MSG_CHANNEL,
+      });
+
+      // Also emit standard events so already-registered listeners are notified
+      if (isConnected) {
         sendToPage({
           type: 'wp-event',
           event: 'connect',
-          data: { chainId: `0x${(state.wallet.chainId ?? 1).toString(16)}` },
+          data: { chainId: hexChainId },
           channel: MSG_CHANNEL,
         });
         sendToPage({
@@ -177,6 +192,10 @@ function createBridge() {
     }
 
     if (data.type === 'wp-get-state') {
+      sendToBackground({ action: 'get-state' });
+    }
+
+    if (data.type === 'wp-provider-ready') {
       sendToBackground({ action: 'get-state' });
     }
   }
@@ -377,15 +396,22 @@ describe('Content bridge - response forwarding to page', () => {
       },
     });
 
-    // Should produce connect + accountsChanged events
-    expect(bridge.pageMessages).toHaveLength(2);
+    // Should produce wp-init-state + connect + accountsChanged events
+    expect(bridge.pageMessages).toHaveLength(3);
     expect(bridge.pageMessages[0]).toEqual({
+      type: 'wp-init-state',
+      connected: true,
+      accounts: ['0xdeadbeef'],
+      chainId: '0x89',
+      channel: MSG_CHANNEL,
+    });
+    expect(bridge.pageMessages[1]).toEqual({
       type: 'wp-event',
       event: 'connect',
       data: { chainId: '0x89' },
       channel: MSG_CHANNEL,
     });
-    expect(bridge.pageMessages[1]).toEqual({
+    expect(bridge.pageMessages[2]).toEqual({
       type: 'wp-event',
       event: 'accountsChanged',
       data: ['0xdeadbeef'],
@@ -393,7 +419,7 @@ describe('Content bridge - response forwarding to page', () => {
     });
   });
 
-  it('state-update with non-connected phase produces no events', () => {
+  it('state-update with non-connected phase sends wp-init-state only', () => {
     const bridge = createBridge();
 
     bridge.handleBackgroundMessage({
@@ -401,7 +427,15 @@ describe('Content bridge - response forwarding to page', () => {
       state: { phase: 'idle' },
     });
 
-    expect(bridge.pageMessages).toHaveLength(0);
+    // Should produce wp-init-state with connected: false, no events
+    expect(bridge.pageMessages).toHaveLength(1);
+    expect(bridge.pageMessages[0]).toEqual({
+      type: 'wp-init-state',
+      connected: false,
+      accounts: [],
+      chainId: '0x1',
+      channel: MSG_CHANNEL,
+    });
   });
 });
 
@@ -585,9 +619,11 @@ describe('Content bridge - broadcast listener', () => {
       },
     });
 
-    expect(bridge.pageMessages.length).toBeGreaterThanOrEqual(2);
-    expect(bridge.pageMessages[0].event).toBe('connect');
-    expect(bridge.pageMessages[1].event).toBe('accountsChanged');
-    expect(bridge.pageMessages[1].data).toEqual(['0xbroadcast']);
+    expect(bridge.pageMessages.length).toBeGreaterThanOrEqual(3);
+    expect(bridge.pageMessages[0].type).toBe('wp-init-state');
+    expect(bridge.pageMessages[0].connected).toBe(true);
+    expect(bridge.pageMessages[1].event).toBe('connect');
+    expect(bridge.pageMessages[2].event).toBe('accountsChanged');
+    expect(bridge.pageMessages[2].data).toEqual(['0xbroadcast']);
   });
 });

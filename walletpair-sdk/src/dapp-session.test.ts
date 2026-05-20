@@ -6,13 +6,13 @@ import {
   generateX25519KeyPair,
   computeSharedSecret,
   deriveSessionKey,
-  computePairingCode,
+  deriveDirectionalSessionKeys,
   sealPayload,
   b64urlEncode,
   b64urlDecode,
   parsePairingUri,
 } from './crypto.js';
-import type { AadHeader } from './crypto.js';
+import type { AadHeader, SessionCryptoContext } from './crypto.js';
 import type { ProtocolMessage } from './types.js';
 
 function flushMicrotasks(): Promise<void> {
@@ -181,6 +181,7 @@ describe('DAppSession', () => {
   describe('request/response', () => {
     let walletKp: ReturnType<typeof generateX25519KeyPair>;
     let sessionKey: Uint8Array;
+    let walletToDappKey: Uint8Array;
 
     beforeEach(async () => {
       await session.createPairing();
@@ -204,6 +205,7 @@ describe('DAppSession', () => {
         v: 1, t: 'ready', ch: session.channelId,
         state: 'connected', resume: 'token-123',
       } as ProtocolMessage);
+      walletToDappKey = (session as any).recvKey;
     });
 
     it('sends encrypted request', async () => {
@@ -224,7 +226,7 @@ describe('DAppSession', () => {
         id: (reqMsg as any).id,
         from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, resData, resHdr),
+        sealed: sealPayload(walletToDappKey, session.channelId, 0, resData, resHdr),
       } as ProtocolMessage);
 
       const result = await promise;
@@ -243,7 +245,7 @@ describe('DAppSession', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: reqMsg.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, { signature: '0x...' }, { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok: true }),
+        sealed: sealPayload(walletToDappKey, session.channelId, 0, { signature: '0x...' }, { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok: true }),
       } as ProtocolMessage);
 
       const result = await promise;
@@ -260,7 +262,7 @@ describe('DAppSession', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: reqMsg.id, from: walletKp.publicKeyB64,
         ok: false,
-        sealed: sealPayload(sessionKey, session.channelId, 0, { code: 'user_rejected', message: 'User rejected' }, { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok: false }),
+        sealed: sealPayload(walletToDappKey, session.channelId, 0, { code: 'user_rejected', message: 'User rejected' }, { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok: false }),
       } as ProtocolMessage);
 
       await expect(promise).rejects.toThrow('User rejected');
@@ -275,6 +277,7 @@ describe('DAppSession', () => {
       // Manually set session state to connected
       (shortTimeoutSession as any).phase = 'connected';
       (shortTimeoutSession as any).sessionKey = sessionKey;
+      (shortTimeoutSession as any).sendKey = new Uint8Array(32).fill(1);
       (shortTimeoutSession as any).channelId = session.channelId;
       (shortTimeoutSession as any).pubKeyB64 = 'test';
 
@@ -297,7 +300,7 @@ describe('DAppSession', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: reqMsg.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, ['0x123'], { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok: true }),
+        sealed: sealPayload(walletToDappKey, session.channelId, 0, ['0x123'], { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok: true }),
       } as ProtocolMessage);
 
       await promise;
@@ -322,7 +325,7 @@ describe('DAppSession', () => {
 
       const dappPub = b64urlDecode(transport.sent[0]!.from!);
       const shared = computeSharedSecret(walletKp.privateKey, dappPub);
-      const sessionKey = deriveSessionKey(shared, session.channelId);
+      deriveSessionKey(shared, session.channelId);
 
       session.acceptWallet();
       transport.receive({
@@ -336,7 +339,7 @@ describe('DAppSession', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xabc'] }, { type: 'evt', from: walletKp.publicKeyB64, event: 'accountsChanged' }),
+        sealed: sealPayload((session as any).recvKey, session.channelId, 0, { accounts: ['0xabc'] }, { type: 'evt', from: walletKp.publicKeyB64, event: 'accountsChanged' }),
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith({
@@ -436,14 +439,17 @@ describe('DAppSession', () => {
   });
 
   describe('auto-accept on rejoin', () => {
-    it('auto-accepts known wallet', async () => {
+    it('auto-accepts known wallet with matching capabilities', async () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
+      const capabilities = { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] };
+      const meta = { name: 'TestWallet' };
 
-      // First join
+      // First join with capabilities
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
         from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        capabilities, meta,
       } as ProtocolMessage);
       session.acceptWallet();
       transport.receive({
@@ -451,15 +457,45 @@ describe('DAppSession', () => {
         state: 'connected', resume: 'tok',
       } as ProtocolMessage);
 
-      // Second join (rejoin) — should auto-accept
+      // Second join (rejoin) with same capabilities — should auto-accept
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
         from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        capabilities, meta,
       } as ProtocolMessage);
 
       // Should have sent accept without going through pending_accept
       const acceptMessages = transport.sent.filter(m => m.t === 'accept');
       expect(acceptMessages).toHaveLength(2);
+    });
+
+    it('does not auto-accept known wallet with changed approved scope', async () => {
+      await session.createPairing();
+      const walletKp = generateX25519KeyPair();
+      const capabilities = { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] };
+      const meta = { name: 'TestWallet' };
+
+      transport.receive({
+        v: 1, t: 'join', ch: session.channelId,
+        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        capabilities, meta,
+      } as ProtocolMessage);
+      session.acceptWallet();
+      transport.receive({
+        v: 1, t: 'ready', ch: session.channelId,
+        state: 'connected', resume: 'tok',
+      } as ProtocolMessage);
+
+      transport.receive({
+        v: 1, t: 'join', ch: session.channelId,
+        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        capabilities: { methods: ['wallet_getAccounts', 'wallet_signMessage'], events: [], chains: ['eip155:1'] },
+        meta,
+      } as ProtocolMessage);
+
+      const acceptMessages = transport.sent.filter(m => m.t === 'accept');
+      expect(acceptMessages).toHaveLength(1);
+      expect(session.phase).toBe('pending_accept');
     });
   });
 

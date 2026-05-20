@@ -18,7 +18,9 @@ import {
   parsePairingUri,
   computeSharedSecret,
   deriveSessionKey,
+  deriveDirectionalSessionKeys,
   computePairingCode,
+  canonicalJson,
   sealPayload,
   unsealPayload,
   b64urlEncode,
@@ -26,9 +28,11 @@ import {
   bytesToHex,
   hexToBytes,
 } from './crypto.js';
+import type { SessionCryptoContext } from './crypto.js';
 import { Emitter } from './emitter.js';
 
 const BACKOFF = [1000, 2000, 5000, 10000, 30000];
+const MAX_SEND_SEQ = 2 ** 31;
 
 export class WalletSession extends Emitter<WalletSessionEvents> {
   phase: WalletPhase = 'idle';
@@ -46,10 +50,13 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
   private pubKeyB64 = '';
   private remotePubKey: Uint8Array | null = null;
   private sessionKey: Uint8Array | null = null;
+  private sendKey: Uint8Array | null = null;
+  private recvKey: Uint8Array | null = null;
   private sendSeq = 0;
   private recvSeq = -1;
   private resumeToken: string | null = null;
   private relayUrl = '';
+  private dappName: string | undefined;
   private intentionalClose = false;
   private evtCounter = 0;
 
@@ -72,9 +79,9 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   /**
    * Prepare to join a channel by parsing a pairing URI.
-   * Computes session key and pairing code WITHOUT connecting or sending join.
-   * The wallet UI should display the pairing code and ask the user to confirm
-   * it matches the dApp's display. After user confirms, call `confirmJoin()`.
+   * Computes local keys and the pairing code without connecting.
+   * The dApp can only display the same code after it receives this wallet's
+   * join public key, so the user must compare both displays after join.
    */
   prepareJoin(uri: string): string {
     const parsed = parsePairingUri(uri);
@@ -82,29 +89,36 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     this.channelId = parsed.ch;
     this.remotePubKey = b64urlDecode(parsed.pubkey);
     this.relayUrl = parsed.relay;
+    this.dappName = parsed.name;
     this.sendSeq = 0;
     this.recvSeq = -1;
+    this.sendKey = null;
+    this.recvKey = null;
 
     const kp = generateX25519KeyPair();
     this.privKey = kp.privateKey;
     this.pubKeyB64 = kp.publicKeyB64;
 
-    // Derive session key immediately (we have dApp pubkey from URI)
+    // Derive root and directional traffic keys immediately.
     const shared = computeSharedSecret(this.privKey, this.remotePubKey);
     this.sessionKey = deriveSessionKey(shared, this.channelId);
+    const context = this.sessionContext();
+    const keys = deriveDirectionalSessionKeys(this.sessionKey, this.channelId, context);
+    this.sendKey = keys.walletToDappKey;
+    this.recvKey = keys.dappToWalletKey;
 
-    this.pairingCode = computePairingCode(this.sessionKey, this.channelId);
+    this.pairingCode = computePairingCode(this.sessionKey, this.channelId, context);
     this.emit('pairingCode', this.pairingCode);
 
     return this.pairingCode;
   }
 
   /**
-   * Confirm the pairing code and send the join message.
-   * Call this after `prepareJoin()` when the user has confirmed the code.
+   * Send the join message. The pairing code comparison happens after the dApp
+   * receives this join and displays its locally computed code.
    */
   async confirmJoin(): Promise<void> {
-    if (!this.channelId || !this.sessionKey) {
+    if (!this.channelId || !this.sessionKey || !this.sendKey || !this.recvKey) {
       throw new Error('Must call prepareJoin() first');
     }
 
@@ -120,8 +134,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   /**
    * Join a channel in one step (convenience method).
-   * Equivalent to prepareJoin() + confirmJoin() without waiting for user
-   * confirmation. Prefer prepareJoin() + confirmJoin() for better UX.
+   * Equivalent to prepareJoin() + confirmJoin().
    */
   async joinFromUri(uri: string): Promise<string> {
     const code = this.prepareJoin(uri);
@@ -131,53 +144,38 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   /** Respond to a request with success. */
   approve(requestId: string, result: unknown): void {
-    if (!this.sessionKey) return;
-    const seq = this.sendSeq;
-    this.sendSeq = (this.sendSeq + 1) >>> 0;
-    if (this.sendSeq === 0) {
-      this.emit('error', new Error('Send sequence overflow — session invalidated'));
-      this.close();
-      return;
-    }
+    if (!this.sendKey) return;
+    const seq = this.nextSendSeq();
+    if (seq == null) return;
     const msg: ProtocolMessage = {
       v: 1, t: 'res', ch: this.channelId, id: requestId,
       from: this.pubKeyB64, ok: true,
     };
     const hdr = { type: 'res' as const, from: this.pubKeyB64, id: requestId, ok: true };
-    (msg as any).sealed = sealPayload(this.sessionKey, this.channelId, seq, result, hdr);
+    (msg as any).sealed = sealPayload(this.sendKey, this.channelId, seq, result, hdr);
     this.sendRaw(msg);
   }
 
   /** Respond to a request with rejection. */
   reject(requestId: string, code = 'user_rejected', message = 'User rejected the request'): void {
-    if (!this.sessionKey) return;
-    const seq = this.sendSeq;
-    this.sendSeq = (this.sendSeq + 1) >>> 0;
-    if (this.sendSeq === 0) {
-      this.emit('error', new Error('Send sequence overflow — session invalidated'));
-      this.close();
-      return;
-    }
+    if (!this.sendKey) return;
+    const seq = this.nextSendSeq();
+    if (seq == null) return;
     const error = { code, message };
     const msg: ProtocolMessage = {
       v: 1, t: 'res', ch: this.channelId, id: requestId,
       from: this.pubKeyB64, ok: false,
     };
     const hdr = { type: 'res' as const, from: this.pubKeyB64, id: requestId, ok: false };
-    (msg as any).sealed = sealPayload(this.sessionKey, this.channelId, seq, error, hdr);
+    (msg as any).sealed = sealPayload(this.sendKey, this.channelId, seq, error, hdr);
     this.sendRaw(msg);
   }
 
   /** Push an event to the dApp. */
   pushEvent(event: string, data: unknown): void {
-    if (this.phase !== 'connected' || !this.sessionKey) return;
-    const seq = this.sendSeq;
-    this.sendSeq = (this.sendSeq + 1) >>> 0;
-    if (this.sendSeq === 0) {
-      this.emit('error', new Error('Send sequence overflow — session invalidated'));
-      this.close();
-      return;
-    }
+    if (this.phase !== 'connected' || !this.sendKey) return;
+    const seq = this.nextSendSeq();
+    if (seq == null) return;
     const evtId = `evt-${++this.evtCounter}`;
     const msg: ProtocolMessage = {
       v: 1, t: 'evt', ch: this.channelId,
@@ -185,7 +183,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       from: this.pubKeyB64, event,
     };
     const hdr = { type: 'evt' as const, from: this.pubKeyB64, event, id: evtId };
-    (msg as any).sealed = sealPayload(this.sessionKey, this.channelId, seq, data, hdr);
+    (msg as any).sealed = sealPayload(this.sendKey, this.channelId, seq, data, hdr);
     this.sendRaw(msg);
   }
 
@@ -210,6 +208,14 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
   destroy(): void {
     this.close();
     this.removeAll();
+    // Wipe sensitive key material
+    if (this.privKey) this.privKey.fill(0);
+    if (this.sessionKey) this.sessionKey.fill(0);
+    if (this.sendKey) this.sendKey.fill(0);
+    if (this.recvKey) this.recvKey.fill(0);
+    this.sessionKey = null;
+    this.sendKey = null;
+    this.recvKey = null;
   }
 
   // -------------------------------------------------------------------------
@@ -223,10 +229,15 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       pubKeyB64: this.pubKeyB64,
       remotePubKeyB64: this.remotePubKey ? b64urlEncode(this.remotePubKey) : null,
       sessionKey: this.sessionKey ? bytesToHex(this.sessionKey) : null,
+      sendKey: this.sendKey ? bytesToHex(this.sendKey) : null,
+      recvKey: this.recvKey ? bytesToHex(this.recvKey) : null,
       sendSeq: this.sendSeq,
       recvSeq: this.recvSeq,
       resumeToken: this.resumeToken,
       relayUrl: this.relayUrl,
+      capabilities: this.capabilities,
+      meta: this.meta ?? null,
+      dappName: this.dappName ?? null,
     });
   }
 
@@ -239,10 +250,20 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       this.pubKeyB64 = d.pubKeyB64;
       this.remotePubKey = d.remotePubKeyB64 ? b64urlDecode(d.remotePubKeyB64) : null;
       this.sessionKey = hexToBytes(d.sessionKey);
+      this.sendKey = d.sendKey ? hexToBytes(d.sendKey) : null;
+      this.recvKey = d.recvKey ? hexToBytes(d.recvKey) : null;
+      if (!this.sendKey || !this.recvKey) return false;
       this.sendSeq = d.sendSeq || 0;
       this.recvSeq = d.recvSeq ?? -1;
       this.resumeToken = d.resumeToken;
       this.relayUrl = d.relayUrl;
+      if ('capabilities' in d && canonicalJson(d.capabilities ?? null) !== canonicalJson(this.capabilities ?? null)) {
+        return false;
+      }
+      if ('meta' in d && canonicalJson(d.meta ?? null) !== canonicalJson(this.meta ?? null)) {
+        return false;
+      }
+      this.dappName = d.dappName ?? undefined;
       return true;
     } catch { return false; }
   }
@@ -261,6 +282,16 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       case 'ready':
         this.resumeToken = msg.resume ?? null;
         this.stopReconnect();
+        if (
+          msg.state === 'connected' &&
+          msg.remote &&
+          this.remotePubKey &&
+          msg.remote !== b64urlEncode(this.remotePubKey)
+        ) {
+          this.emit('error', new Error('Connected remote does not match paired dApp'));
+          this.close();
+          break;
+        }
         if (msg.state === 'waiting') {
           this.setPhase('waiting');
         } else if (msg.state === 'connected') {
@@ -269,17 +300,22 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
         break;
 
       case 'req': {
-        let params: unknown = {};
-        if (msg.sealed && this.sessionKey) {
-          try {
-            const reqHdr = { type: 'req' as const, from: msg.from!, id: msg.id, method: msg.method };
-            const { seq, data } = unsealPayload(this.sessionKey, this.channelId, msg.sealed, reqHdr);
-            if (seq <= this.recvSeq) break; // replay — silently drop
-            this.recvSeq = seq;
-            params = data;
-          } catch { /* ignore decryption failure */ break; }
+        if (this.remotePubKey && msg.from !== b64urlEncode(this.remotePubKey)) break;
+        // All requests MUST be sealed — reject unsealed requests to prevent
+        // method injection by a malicious relay.
+        if (!msg.sealed || !this.recvKey) {
+          this.reject(msg.id, 'decryption_failed', 'Request must be encrypted');
+          break;
         }
-        this.emit('request', { id: msg.id, method: msg.method, params });
+        try {
+          const reqHdr = { type: 'req' as const, from: msg.from!, id: msg.id, method: msg.method };
+          const { seq, data } = unsealPayload(this.recvKey, this.channelId, msg.sealed, reqHdr);
+          if (seq <= this.recvSeq) break; // replay — silently drop
+          this.recvSeq = seq;
+          this.emit('request', { id: msg.id, method: msg.method, params: data ?? {} });
+        } catch {
+          this.reject(msg.id, 'decryption_failed', 'Failed to decrypt request');
+        }
         break;
       }
 
@@ -325,6 +361,26 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     this.sendRaw(msg);
   }
 
+  private sessionContext(): SessionCryptoContext {
+    return {
+      dappPubKeyB64: this.remotePubKey ? b64urlEncode(this.remotePubKey) : '',
+      walletPubKeyB64: this.pubKeyB64,
+      capabilities: this.capabilities,
+      walletMeta: this.meta ?? null,
+      dappName: this.dappName,
+    };
+  }
+
+  private nextSendSeq(): number | null {
+    if (this.sendSeq >= MAX_SEND_SEQ) {
+      const error = new Error('Send sequence overflow/limit reached — session invalidated');
+      this.emit('error', error);
+      this.close();
+      return null;
+    }
+    return this.sendSeq++;
+  }
+
   private handleTransportClose(): void {
     if (this.intentionalClose || this.phase === 'closed') return;
     this.startReconnect();
@@ -342,7 +398,8 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   private scheduleReconnect(): void {
     if (this.intentionalClose || this.phase === 'closed') return;
-    const delay = BACKOFF[Math.min(this.reconnectAttempt, BACKOFF.length - 1)]!;
+    const base = BACKOFF[Math.min(this.reconnectAttempt, BACKOFF.length - 1)]!;
+    const delay = base + Math.floor(Math.random() * base * 0.3); // ±30% jitter
     this.reconnectTimer = setTimeout(() => {
       this.doReconnectAttempt(this.reconnectAttempt === 0 && !!this.resumeToken);
       this.reconnectAttempt++;

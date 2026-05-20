@@ -222,11 +222,9 @@ export interface DAppSessionOptions {
   /** Auto-accept known wallets on rejoin (default true). */
   autoAccept?: boolean | undefined;
   /**
-   * Auto-accept new wallet connections (default false).
-   * When true, the dApp auto-accepts after receiving `join`, trusting
-   * that the wallet user already confirmed the pairing code on their
-   * device. The pairing code is still emitted via the `pairingCode`
-   * event for display purposes.
+   * Deprecated compatibility flag. First-time wallets are no longer
+   * auto-accepted; callers must call acceptWallet() after pairing-code
+   * comparison and scope approval.
    */
   autoAcceptNewWallet?: boolean | undefined;
 }

@@ -45,6 +45,15 @@ export default defineContentScript({
     let chainId = '0x1';
     let isConnected = false;
 
+    // Internal emit — not exposed on the provider object so external code cannot fake events
+    function emit(event: string, ...args: any[]) {
+      eventListeners.get(event)?.forEach((handler) => {
+        try {
+          handler(...args);
+        } catch {}
+      });
+    }
+
     // --- EIP-1193 Provider ---
     const provider: Record<string, any> = {
       isWalletPair: true,
@@ -84,7 +93,7 @@ export default defineContentScript({
           setTimeout(() => {
             if (pending.has(id)) {
               pending.delete(id);
-              reject(new ProviderRpcError(4200, 'Request timeout'));
+              reject(new ProviderRpcError(-32603, 'Request timed out'));
             }
           }, 300_000);
         });
@@ -128,14 +137,6 @@ export default defineContentScript({
         return provider;
       },
 
-      emit(event: string, ...args: any[]) {
-        eventListeners.get(event)?.forEach((handler) => {
-          try {
-            handler(...args);
-          } catch {}
-        });
-      },
-
       // Legacy methods some dApps still use
       enable() {
         return provider.request({ method: 'eth_requestAccounts' });
@@ -144,6 +145,20 @@ export default defineContentScript({
       send(methodOrPayload: string | { method: string; params?: unknown[] }, callbackOrParams?: unknown) {
         // Handle both send(method, params) and send(payload, callback) signatures
         if (typeof methodOrPayload === 'string') {
+          // Synchronous fast-path for cached methods — legacy dApps expect this
+          const syncMethods: Record<string, () => unknown> = {
+            eth_accounts: () => isConnected ? [...accounts] : [],
+            eth_chainId: () => chainId,
+            net_version: () => String(parseInt(chainId, 16)),
+            web3_clientVersion: () => 'WalletPair/0.1.0',
+          };
+          if (methodOrPayload in syncMethods) {
+            return {
+              id: 1,
+              jsonrpc: '2.0' as const,
+              result: syncMethods[methodOrPayload](),
+            };
+          }
           return provider.request({ method: methodOrPayload, params: callbackOrParams as unknown[] });
         }
         // send({ method, params }, callback) - legacy
@@ -210,9 +225,9 @@ export default defineContentScript({
               // EIP-1193: only emit connect when transitioning from disconnected
               if (!isConnected) {
                 isConnected = true;
-                provider.emit('connect', { chainId });
+                emit('connect', { chainId });
               }
-              provider.emit('accountsChanged', accounts);
+              emit('accountsChanged', accounts);
             }
           }
           p.resolve(msg.result);
@@ -224,25 +239,25 @@ export default defineContentScript({
         if (evtName === 'accountsChanged' && Array.isArray(data)) {
           accounts = data;
           provider.selectedAddress = accounts[0] ?? null;
-          provider.emit('accountsChanged', accounts);
+          emit('accountsChanged', accounts);
         } else if (evtName === 'chainChanged') {
           chainId = typeof data === 'string' ? data : `0x${Number(data).toString(16)}`;
           provider.chainId = chainId;
           provider.networkVersion = String(parseInt(chainId, 16));
-          provider.emit('chainChanged', chainId);
+          emit('chainChanged', chainId);
         } else if (evtName === 'disconnect') {
           isConnected = false;
           accounts = [];
           provider.selectedAddress = null;
-          provider.emit('disconnect', new ProviderRpcError(4900, 'Disconnected'));
+          emit('disconnect', new ProviderRpcError(4900, 'Disconnected'));
         } else if (evtName === 'connect') {
           if (!isConnected) {
             isConnected = true;
-            provider.emit('connect', { chainId });
+            emit('connect', { chainId });
           }
         } else if (evtName === 'message') {
           // EIP-1193 message event (used for eth_subscription)
-          provider.emit('message', data);
+          emit('message', data);
         }
       }
     });
@@ -318,7 +333,7 @@ export default defineContentScript({
         provider.networkVersion = String(parseInt(chainId, 16));
         if (!isConnected) {
           isConnected = true;
-          provider.emit('connect', { chainId });
+          emit('connect', { chainId });
         }
       }
     };
