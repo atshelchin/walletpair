@@ -161,7 +161,7 @@ Common fields:
 | `pubkey` | `create`, `join` | Alias of `from`. Present for handshake clarity. |
 | `id` | `req`, `res`, optional in `evt` | Request or event ID. |
 | `method` | `req` | Wallet method name (plaintext, visible to relay). |
-| `sealed` | `req`, `res`, `evt` (when encrypted payload exists) | Encrypted payload, base64url. See Section 7.4. |
+| `sealed` | `req`, `res`, `evt` (always required after `ready.connected`) | Encrypted payload, base64url. See Section 7.4. |
 | `ok` | `res` | Boolean. Whether the request succeeded. |
 | `event` | `evt` | Event name (plaintext, visible to relay). |
 | `capabilities` | `join` | Wallet capabilities object. See Section 8. |
@@ -271,20 +271,16 @@ Mapping:
 
 | Message type | Plaintext field | Encrypted into `sealed` |
 |---|---|---|
-| `req` | `params` | yes, if params exist |
-| `res` with `ok=true` | `result` | yes, if result exists |
-| `res` with `ok=false` | `error` | yes, always required |
-| `evt` | `data` | yes, if data exists |
+| `req` | `params` | always (use `{}` if no params) |
+| `res` with `ok=true` | `result` | always (use `null` if no return value) |
+| `res` with `ok=false` | `error` | always (`{code, message}` object) |
+| `evt` | `data` | always (use `{}` if no data) |
 
-A `req` with no params, a `res` with `ok=true` and no return value, or an
-`evt` with no data, may omit `sealed`. A `res` with `ok=false` must always
-include `sealed` (the encrypted error object).
-
-All `req`, `res`, and `evt` messages MUST carry a `sealed` field, even
-when the payload is empty (`null` or `{}`). This ensures every
-application-layer message has AEAD authentication, a sequence number,
-and replay protection. A message without `sealed` after `ready.connected`
-MUST be rejected.
+All `req`, `res`, and `evt` messages MUST carry a `sealed` field. When
+the payload is logically empty, encrypt `{}` (for params/data) or `null`
+(for result). This ensures every application-layer message has AEAD
+authentication, a sequence number, and replay protection. A message
+without `sealed` after `ready.connected` MUST be rejected.
 
 Encryption uses ChaCha20-Poly1305:
 
@@ -468,13 +464,14 @@ Parameters:
 | `pubkey` | yes | DApp X25519 public key (base64url, no padding). |
 | `relay` | yes for relay transport | WebSocket relay URL (percent-encoded). |
 | `name` | optional | DApp display name. |
-| `methods` | optional | Comma-separated list of methods the dApp intends to call. The wallet SHOULD display these to the user during the pairing confirmation prompt (e.g., "MyDApp wants to: send transactions, sign typed data"). |
-| `chains` | optional | Comma-separated list of CAIP-2 chains the dApp intends to use. The wallet SHOULD display these during pairing confirmation. |
+| `methods` | optional | Comma-separated list of methods the dApp intends to call. When present, the wallet MUST restrict the session to these methods (see §8.1) and MUST display them to the user during pairing. |
+| `chains` | optional | Comma-separated list of CAIP-2 chains the dApp intends to use. When present, the wallet MUST restrict the session to these chains (see §8.1) and MUST display them to the user during pairing. |
 
-When `methods` or `chains` are present, the wallet SHOULD show the user
-what the dApp is requesting before the user confirms the connection. This
-enables informed consent. If `methods` or `chains` are absent, the wallet
-SHOULD warn the user that the dApp did not declare its intent.
+When `methods` or `chains` are present, the wallet MUST show the user
+what the dApp is requesting before the user confirms the connection, and
+MUST enforce the declared scope per §8.1. If `methods` or `chains` are
+absent, the wallet MUST warn the user that the dApp did not declare its
+intent (see §8.1).
 
 For Bluetooth pairing, the URI may omit `relay` and instead be transmitted
 through BLE advertisement, NFC tap, or local QR code.
@@ -1279,7 +1276,7 @@ host). Wallet implementations SHOULD either:
 ### Pairing URI (shown as QR code)
 
 ```text
-walletpair:?ch=aabb01...eeff&pubkey=dGhpcyBpcyBh...&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=MyDApp
+walletpair:?ch=aabb01...eeff&pubkey=dGhpcyBpcyBh...&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=MyDApp&methods=wallet_signTransaction,wallet_signMessage&chains=eip155:1,eip155:137
 ```
 
 ### DApp creates channel
