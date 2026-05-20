@@ -288,7 +288,8 @@ canonical_json output: {"name":"MyWallet"}
 ```
 
 Implementations MUST verify their canonical JSON output matches these test
-vectors byte-for-byte before deployment.
+vectors byte-for-byte before deployment. See also Appendix A for a complete
+end-to-end test vector including canonical JSON in the transcript hash.
 
 The traffic keys are direction-specific:
 
@@ -1412,14 +1413,23 @@ The QR code or NFC payload contains the pairing URI (Section 9.1) without the
 
 ### 19.3 BLE Service
 
-Recommended BLE GATT service:
+WalletPair BLE GATT service definition:
 
 ```text
-Service UUID: to be assigned
+Service UUID: 0000FE70-0000-1000-8000-00805F9B34FB
   Characteristic: Channel (read)     - returns pairing URI
+    UUID: 0000FE71-0000-1000-8000-00805F9B34FB
   Characteristic: Message (write)    - wallet writes messages to dApp
+    UUID: 0000FE72-0000-1000-8000-00805F9B34FB
   Characteristic: Message (notify)   - dApp sends messages to wallet
+    UUID: 0000FE73-0000-1000-8000-00805F9B34FB
 ```
+
+Note: The UUIDs above use the Bluetooth SIG 16-bit UUID base
+(`0000xxxx-0000-1000-8000-00805F9B34FB`) with values in the `FE70-FE73`
+range reserved for experimental/member use. Production deployments SHOULD
+register a 16-bit UUID with the Bluetooth SIG or use a fully random
+128-bit UUID to avoid collisions with other services.
 
 ### 19.4 Flow
 
@@ -1456,6 +1466,40 @@ limit). Subsequent fragments set total length to 0.
 
 The receiver assembles fragments until the last-fragment flag is set, then
 parses the complete JSON message.
+
+### 19.6 Bluetooth Security Considerations
+
+1. **BLE advertisement exposure.** When using BLE advertisement for
+   discovery, any nearby device (typically within 10–30 meters) can
+   discover the channel and read the pairing URI from the Channel
+   characteristic. The same MITM protections apply as with relay
+   transport: the attacker cannot complete a full MITM because the
+   wallet obtains the dApp's public key directly from the BLE
+   characteristic (out-of-band from any network attacker), and the
+   pairing code provides human verification.
+
+2. **Proximity assumption.** Unlike relay-based pairing, Bluetooth
+   pairing implicitly assumes physical proximity. However, BLE range
+   can extend beyond visual range (especially with directional
+   antennas). Implementations MUST NOT rely on Bluetooth proximity as
+   a security property — the pairing code verification is the trust
+   anchor, not physical distance. The wallet SHOULD display the dApp
+   name and pairing code prominently and require explicit user
+   confirmation.
+
+3. **BLE connection hijacking.** A nearby attacker could attempt to
+   connect to the dApp's BLE service before the legitimate wallet.
+   The dApp MUST enforce the one-wallet-per-channel rule (§16 rule 4).
+   If a second device attempts to `join`, the BLE adapter MUST reject
+   it with `already_connected`. The pairing code ensures the dApp
+   connects to the intended wallet even if an attacker connects first
+   (the codes will not match).
+
+4. **Denial of service.** A nearby attacker can jam BLE frequencies or
+   flood the GATT service with connections. This is inherent to any
+   wireless protocol. For high-security scenarios, QR code scanning
+   (which does not require BLE advertisement) is recommended over BLE
+   discovery.
 
 ## 20. Security
 
@@ -1772,3 +1816,152 @@ Wallet receives:
   "sealed": "base64url-encrypted-data"
 }
 ```
+
+## Appendix A: Cryptographic Test Vectors
+
+These test vectors allow independent implementations to verify their
+cryptographic operations produce identical results. All hex values are
+lowercase. Base64url values use no padding.
+
+**WARNING:** The private keys below are for testing only. Never use them
+in production.
+
+### A.1 Key Material
+
+```text
+dapp_private_key     = a546e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449ac4
+dapp_public_key      = 1c9fd88f45606d932a80c71824ae151d15d73e77de38e8e000852e614fae7019
+dapp_pub_base64url   = HJ_Yj0VgbZMqgMcYJK4VHRXXPnfeOOjgAIUuYU-ucBk
+
+wallet_private_key   = 4b66e9d4d1b4673c5ad22691957d6af5c11b6421e0ea01d42ca4169e7918ba0d
+wallet_public_key    = ff63fe57bfbf43fa3f563628b149af704d3db625369c49983650347a6a71e00e
+wallet_pub_base64url = _2P-V7-_Q_o_VjYosUmvcE09tiU2nEmYNlA0empx4A4
+
+channel_id           = a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+shared_secret        = 739311d35d8d3c41da4062c799a6c748808a31343facaaa7aa7e311908c1846e
+```
+
+#### Root key derivation
+
+```text
+HKDF-SHA256(
+  ikm  = shared_secret,
+  salt = channel_id_bytes,
+  info = "walletpair-v1 root"
+)[0:32]
+
+root_key = c33b664ab3eea368d81109b432f04a1293a743212749e19bfe412a2996dcefee
+```
+
+### A.2 Transcript and Traffic Keys
+
+Handshake context:
+
+```text
+capabilities (canonical JSON) = {"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]}
+meta (canonical JSON)         = {"name":"MyWallet"}
+dapp_name                     = MyDApp
+```
+
+```text
+transcript_hash = SHA256(
+  "walletpair-v1-transcript" ||
+  channel_id_bytes ||
+  lp("HJ_Yj0VgbZMqgMcYJK4VHRXXPnfeOOjgAIUuYU-ucBk") ||
+  lp("_2P-V7-_Q_o_VjYosUmvcE09tiU2nEmYNlA0empx4A4") ||
+  lp(capabilities_json) ||
+  lp(meta_json) ||
+  lp("MyDApp")
+)
+
+transcript_hash      = 51d1797d9ab563c1d26e033af2bf8fa17c741af5f6c0d4071e69dfd25ce8d39f
+```
+
+```text
+dapp_to_wallet_key   = 782ccebad576c74dede0ba376a324d06b6aa7008b90116bc57c693171c41c074
+wallet_to_dapp_key   = 26bb36c7e36a29df7b92cee30a6b16a09964b3b74833d0b742a2c01b4ab8c925
+```
+
+### A.3 Pairing Code
+
+```text
+HKDF-SHA256(
+  ikm  = root_key,
+  salt = transcript_hash,
+  info = "walletpair-pairing-code"
+)[0:4]
+
+code_bytes  = 9b4c9732
+code_uint32 = 2605487922   (big-endian)
+pairing_code = 2605487922 mod 10000 = 7922
+```
+
+Display: `7922`
+
+### A.4 AEAD Encryption (dapp→wallet, seq=0)
+
+Message: `wallet_getAccounts` request in privacy mode.
+
+```text
+traffic_key     = dapp_to_wallet_key
+                = 782ccebad576c74dede0ba376a324d06b6aa7008b90116bc57c693171c41c074
+
+seq             = 0
+seq_bytes       = 00000000
+
+nonce           = HMAC-SHA256(traffic_key, seq_bytes)[0:12]
+                = 8e8a6459ee942cc99709de1e
+```
+
+AAD construction (`req` type):
+
+```text
+from   = "HJ_Yj0VgbZMqgMcYJK4VHRXXPnfeOOjgAIUuYU-ucBk"
+id     = "req-001"
+method = "encrypted"   (privacy mode)
+
+aad_header = 01                                     (type byte: req)
+           || 002b 484a5f596a3056...7563426b         (lp(from), 43 bytes)
+           || 0007 7265712d303031                     (lp("req-001"), 7 bytes)
+           || 0009 656e63727970746564                  (lp("encrypted"), 9 bytes)
+
+aad = channel_id_bytes || aad_header
+```
+
+Plaintext (privacy mode, `_method` inside sealed):
+
+```text
+{"_method":"wallet_getAccounts","chain":"eip155:1"}
+```
+
+Encryption result:
+
+```text
+ChaCha20-Poly1305(key=traffic_key, nonce=nonce, plaintext=above, aad=aad)
+
+ciphertext+tag = ce3fe8bcf32e130e002ea8a9029d5457f4ee2978220af0b9
+                 eff01361f788df6f50e8b281378ed1bc48b13516844b787b
+                 78447457afef71f4afdd6c9c0b6a1a4e7bab9b
+
+sealed = base64url(seq_bytes || ciphertext || tag)
+       = AAAAAM4_6LzzLhMOAC6oqQKdVFf07il4Igrwue_wE2H3iN9vUOiygTeO0bxIsTUWhEt4e3hEdFev73H0r91snAtqGk57q5s
+```
+
+Wire message:
+
+```json
+{
+  "v": 1,
+  "t": "req",
+  "ch": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+  "id": "req-001",
+  "from": "HJ_Yj0VgbZMqgMcYJK4VHRXXPnfeOOjgAIUuYU-ucBk",
+  "method": "encrypted",
+  "sealed": "AAAAAM4_6LzzLhMOAC6oqQKdVFf07il4Igrwue_wE2H3iN9vUOiygTeO0bxIsTUWhEt4e3hEdFev73H0r91snAtqGk57q5s"
+}
+```
+
+Implementations MUST verify that decrypting the above `sealed` value with
+the computed `dapp_to_wallet_key`, `nonce`, and `aad` produces the expected
+plaintext. Any deviation indicates an error in key derivation, canonical
+JSON, transcript hashing, or AEAD implementation.

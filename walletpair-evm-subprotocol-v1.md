@@ -1264,6 +1264,30 @@ This is intentional:
 | [EIP-3085](https://eips.ethereum.org/EIPS/eip-3085) | Add chain (`wallet_addChain`). |
 | [EIP-3326](https://eips.ethereum.org/EIPS/eip-3326) | Switch chain (`wallet_switchChain`). |
 | [EIP-747](https://eips.ethereum.org/EIPS/eip-747) | Watch asset (`wallet_watchAsset`). |
+| [EIP-4361](https://eips.ethereum.org/EIPS/eip-4361) | Sign-In with Ethereum. Recommended for login flows (see §5.4). |
+| [EIP-6963](https://eips.ethereum.org/EIPS/eip-6963) | Multi Injected Provider Discovery. See §11.1.1. |
+
+#### 11.1.1 Relationship to EIP-6963
+
+[EIP-6963](https://eips.ethereum.org/EIPS/eip-6963) defines a mechanism
+for browser-injected wallet providers to announce themselves via DOM events,
+allowing dApps to discover multiple wallets without `window.ethereum`
+conflicts.
+
+WalletPair operates as a **remote connection protocol** (cross-device,
+cross-context) and is orthogonal to EIP-6963's browser injection model.
+However, SDK implementations that provide an EIP-1193 adapter for
+WalletPair connections SHOULD also register as an EIP-6963 provider when
+running in a browser context. This allows dApps that use EIP-6963 wallet
+discovery to find and use WalletPair connections alongside injected wallets.
+
+The EIP-6963 provider info for a WalletPair connection SHOULD use:
+
+- `uuid`: A unique identifier per WalletPair session (not the channel ID).
+- `name`: The wallet's `meta.name` from the `join` message.
+- `icon`: The wallet's `meta.icon` if provided, or a generic WalletPair icon.
+- `rdns`: A reverse-DNS identifier for the WalletPair SDK (e.g.,
+  `io.walletpair.sdk`).
 
 ### 11.2 CAIPs
 
