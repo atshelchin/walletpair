@@ -157,7 +157,8 @@ Common shape:
 {
   "v": 1,
   "t": "message_type",
-  "ch": "channel-id"
+  "ch": "channel-id",
+  "ts": 1779170000000
 }
 ```
 
@@ -184,7 +185,7 @@ Common fields:
 | `remote`       | `ready` when `state=connected`                                                         | Remote peer ID.                                                                                                  |
 | `resume`       | `ready`, or in `create`/`join` for reconnect                                         | Reconnect token. See Section 14.                                                                                 |
 | `reason`       | `close`                                                                                  | Close or rejection reason.                                                                                       |
-| `ts`           | optional in `ping`, `pong`                                                             | Timestamp in milliseconds.                                                                                       |
+| `ts`           | all                                                                                        | Sender timestamp in milliseconds (Unix epoch). Required in every message.                                        |
 
 Note: The plaintext fields `params`, `result`, `error`, and `data` never
 appear on the wire. Their content is encrypted into the `sealed` field. The
