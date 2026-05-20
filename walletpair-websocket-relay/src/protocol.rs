@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 // --- Identifiers ---
@@ -96,14 +97,11 @@ pub enum ClientMessage {
     Create {
         ch: ChannelId,
         from: PeerId,
-        meta: Option<Value>,
         resume: Option<String>,
     },
     Join {
         ch: ChannelId,
         from: PeerId,
-        capabilities: Value,
-        meta: Option<Value>,
         resume: Option<String>,
     },
     Accept {
@@ -136,7 +134,6 @@ pub enum ClientMessage {
     Close {
         ch: ChannelId,
         from: PeerId,
-        target: Option<PeerId>,
         reason: String,
     },
 }
@@ -210,9 +207,6 @@ pub enum ParseError {
     #[error("invalid peer id: must be base64url-no-pad encoding of 32 bytes")]
     InvalidPeerId,
 
-    #[error("from and pubkey must be equal in create/join")]
-    PubkeyMismatch,
-
     #[error("field type error: {0}")]
     #[allow(dead_code)]
     FieldType(&'static str),
@@ -279,113 +273,87 @@ pub fn parse_message(raw: &str) -> Result<ClientMessage, ParseError> {
         return Err(ParseError::UnsupportedVersion(v));
     }
 
-    // Validate common fields
+    // Validate common envelope fields
     let t = get_str(obj, "t")?;
     let ch = get_str(obj, "ch")?;
     validate_channel_id(ch)?;
     let ch = ch.to_string();
 
+    // ts must be present and a number
+    if obj.get("ts").and_then(|v| v.as_u64()).is_none() {
+        return Err(ParseError::MissingField("ts"));
+    }
+
+    // from must be present and a string
+    let from = get_str(obj, "from")?.to_string();
+
+    // body must be present and an object
+    let body = obj
+        .get("body")
+        .and_then(|v| v.as_object())
+        .ok_or(ParseError::MissingField("body"))?;
+
     match t {
         "create" => {
-            let from = get_str(obj, "from")?.to_string();
-            let pubkey = get_str(obj, "pubkey")?.to_string();
             validate_peer_id(&from)?;
-            validate_peer_id(&pubkey)?;
-            if from != pubkey {
-                return Err(ParseError::PubkeyMismatch);
-            }
-            let meta = obj.get("meta").cloned();
-            let resume = get_optional_str(obj, "resume").map(String::from);
+            let resume = get_optional_str(body, "resume").map(String::from);
             Ok(ClientMessage::Create {
                 ch,
                 from,
-                meta,
                 resume,
             })
         }
         "join" => {
-            let from = get_str(obj, "from")?.to_string();
-            let pubkey = get_str(obj, "pubkey")?.to_string();
             validate_peer_id(&from)?;
-            validate_peer_id(&pubkey)?;
-            if from != pubkey {
-                return Err(ParseError::PubkeyMismatch);
-            }
-            let capabilities = obj
-                .get("capabilities")
-                .ok_or(ParseError::MissingField("capabilities"))?
-                .clone();
-            let meta = obj.get("meta").cloned();
-            let resume = get_optional_str(obj, "resume").map(String::from);
+            let resume = get_optional_str(body, "resume").map(String::from);
             Ok(ClientMessage::Join {
                 ch,
                 from,
-                capabilities,
-                meta,
                 resume,
             })
         }
         "accept" => {
-            let from = get_str(obj, "from")?.to_string();
             validate_peer_id(&from)?;
-            let target = get_str(obj, "target")?.to_string();
+            let target = get_str(body, "target")?.to_string();
             validate_peer_id(&target)?;
             Ok(ClientMessage::Accept { ch, from, target })
         }
         "req" => {
-            let from = get_str(obj, "from")?.to_string();
             validate_peer_id(&from)?;
-            let id = get_str(obj, "id")?.to_string();
-            // method is required per protocol but relay just forwards raw
-            if obj.get("method").and_then(|v| v.as_str()).is_none() {
-                return Err(ParseError::MissingField("method"));
-            }
+            let id = get_str(body, "id")?.to_string();
             Ok(ClientMessage::Req { ch, id, from })
         }
         "res" => {
-            let from = get_str(obj, "from")?.to_string();
             validate_peer_id(&from)?;
-            let id = get_str(obj, "id")?.to_string();
-            if obj.get("ok").is_none() {
+            let id = get_str(body, "id")?.to_string();
+            if body.get("ok").is_none() {
                 return Err(ParseError::MissingField("ok"));
             }
             Ok(ClientMessage::Res { ch, id, from })
         }
         "evt" => {
-            let from = get_str(obj, "from")?.to_string();
             validate_peer_id(&from)?;
-            if obj.get("event").and_then(|v| v.as_str()).is_none() {
-                return Err(ParseError::MissingField("event"));
-            }
             Ok(ClientMessage::Evt { ch, from })
         }
         "ping" => {
-            let from = get_str(obj, "from")?.to_string();
             validate_peer_id(&from)?;
             Ok(ClientMessage::Ping { ch, from })
         }
         "pong" => {
-            let from = get_str(obj, "from")?.to_string();
             validate_peer_id(&from)?;
             Ok(ClientMessage::Pong { ch, from })
         }
         "close" => {
-            let from = get_str(obj, "from")?.to_string();
             validate_peer_id(&from)?;
-            let target = get_optional_str(obj, "target").map(String::from);
-            if let Some(ref t) = target {
-                validate_peer_id(t)?;
-            }
-            let reason = get_str(obj, "reason")?.to_string();
+            let reason = get_str(body, "reason")?.to_string();
             Ok(ClientMessage::Close {
                 ch,
                 from,
-                target,
                 reason,
             })
         }
-        "ready" => Err(ParseError::UnknownType(
-            "ready (peers must not send ready)".to_string(),
+        "ready" | "terminate" => Err(ParseError::UnknownType(
+            format!("{t} (peers must not send {t})")
         )),
         other => Err(ParseError::UnknownType(other.to_string())),
     }
@@ -393,15 +361,28 @@ pub fn parse_message(raw: &str) -> Result<ClientMessage, ParseError> {
 
 // --- Outgoing message builders (relay-generated) ---
 
+/// Current time in milliseconds since Unix epoch.
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 pub fn build_ready_waiting(ch: &str, role: Role, peer_id: &str, resume: &str) -> String {
     serde_json::json!({
         "v": 1,
         "t": "ready",
         "ch": ch,
-        "state": "waiting",
-        "role": role.as_str(),
-        "self": peer_id,
-        "resume": resume,
+        "ts": now_ms(),
+        "from": "_adapter",
+        "body": {
+            "state": "waiting",
+            "role": role.as_str(),
+            "self": peer_id,
+            "remote": null,
+            "resume": resume,
+        }
     })
     .to_string()
 }
@@ -417,32 +398,44 @@ pub fn build_ready_connected(
         "v": 1,
         "t": "ready",
         "ch": ch,
-        "state": "connected",
-        "role": role.as_str(),
-        "self": self_id,
-        "remote": remote_id,
-        "resume": resume,
+        "ts": now_ms(),
+        "from": "_adapter",
+        "body": {
+            "state": "connected",
+            "role": role.as_str(),
+            "self": self_id,
+            "remote": remote_id,
+            "resume": resume,
+        }
     })
     .to_string()
 }
 
-pub fn build_close(ch: &str, reason: CloseReason) -> String {
+pub fn build_terminate(ch: &str, reason: CloseReason) -> String {
     serde_json::json!({
         "v": 1,
-        "t": "close",
+        "t": "terminate",
         "ch": ch,
-        "reason": reason.as_str(),
+        "ts": now_ms(),
+        "from": "_adapter",
+        "body": {
+            "reason": reason.as_str(),
+        }
     })
     .to_string()
 }
 
-pub fn build_close_with_target(ch: &str, reason: CloseReason, target: &str) -> String {
+pub fn build_terminate_with_target(ch: &str, reason: CloseReason, target: &str) -> String {
     serde_json::json!({
         "v": 1,
-        "t": "close",
+        "t": "terminate",
         "ch": ch,
-        "reason": reason.as_str(),
-        "target": target,
+        "ts": now_ms(),
+        "from": "_adapter",
+        "body": {
+            "reason": reason.as_str(),
+            "target": target,
+        }
     })
     .to_string()
 }
@@ -510,8 +503,8 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "create", "ch": ch, "from": pid, "pubkey": pid,
-            "meta": {"name": "test"}
+            "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": pid,
+            "body": {}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Create { .. }));
@@ -519,23 +512,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_create_pubkey_mismatch() {
-        let pid1 = URL_SAFE_NO_PAD.encode([1u8; 32]);
-        let pid2 = URL_SAFE_NO_PAD.encode([2u8; 32]);
-        let ch = make_channel_id();
-        let json = serde_json::json!({
-            "v": 1, "t": "create", "ch": ch, "from": pid1, "pubkey": pid2
-        });
-        let err = parse_message(&json.to_string()).unwrap_err();
-        assert!(matches!(err, ParseError::PubkeyMismatch));
-    }
-
-    #[test]
     fn parse_unsupported_version() {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 2, "t": "create", "ch": ch, "from": pid, "pubkey": pid
+            "v": 2, "t": "create", "ch": ch, "ts": 1234, "from": pid, "body": {}
         });
         let err = parse_message(&json.to_string()).unwrap_err();
         assert!(matches!(err, ParseError::UnsupportedVersion(2)));
@@ -545,7 +526,8 @@ mod tests {
     #[test]
     fn parse_unknown_type() {
         let ch = make_channel_id();
-        let json = serde_json::json!({"v": 1, "t": "unknown", "ch": ch});
+        let pid = make_peer_id();
+        let json = serde_json::json!({"v": 1, "t": "unknown", "ch": ch, "ts": 1234, "from": pid, "body": {}});
         let err = parse_message(&json.to_string()).unwrap_err();
         assert!(matches!(err, ParseError::UnknownType(_)));
     }
@@ -553,7 +535,17 @@ mod tests {
     #[test]
     fn parse_ready_rejected() {
         let ch = make_channel_id();
-        let json = serde_json::json!({"v": 1, "t": "ready", "ch": ch});
+        let pid = make_peer_id();
+        let json = serde_json::json!({"v": 1, "t": "ready", "ch": ch, "ts": 1234, "from": pid, "body": {}});
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::UnknownType(_)));
+    }
+
+    #[test]
+    fn parse_terminate_rejected() {
+        let ch = make_channel_id();
+        let pid = make_peer_id();
+        let json = serde_json::json!({"v": 1, "t": "terminate", "ch": ch, "ts": 1234, "from": pid, "body": {}});
         let err = parse_message(&json.to_string()).unwrap_err();
         assert!(matches!(err, ParseError::UnknownType(_)));
     }
@@ -575,21 +567,11 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "join", "ch": ch, "from": pid, "pubkey": pid,
-            "capabilities": {"methods": [], "events": [], "chains": []}
+            "v": 1, "t": "join", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"sealed_join": "abc123"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Join { .. }));
-    }
-
-    #[test]
-    fn parse_req_missing_method() {
-        let pid = make_peer_id();
-        let ch = make_channel_id();
-        let json = serde_json::json!({
-            "v": 1, "t": "req", "ch": ch, "from": pid, "id": "r1"
-        });
-        assert!(parse_message(&json.to_string()).is_err());
     }
 
     #[test]
@@ -609,8 +591,13 @@ mod tests {
         let json = build_ready_waiting("ab".repeat(32).as_str(), Role::DApp, "peer", "tok");
         let v: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["t"], "ready");
-        assert_eq!(v["state"], "waiting");
-        assert_eq!(v["role"], "dapp");
+        assert_eq!(v["from"], "_adapter");
+        assert!(v["ts"].as_u64().is_some());
+        assert_eq!(v["body"]["state"], "waiting");
+        assert_eq!(v["body"]["role"], "dapp");
+        assert_eq!(v["body"]["self"], "peer");
+        assert!(v["body"]["remote"].is_null());
+        assert_eq!(v["body"]["resume"], "tok");
     }
 
     #[test]
@@ -623,16 +610,21 @@ mod tests {
             "tok",
         );
         let v: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["state"], "connected");
-        assert_eq!(v["remote"], "remote");
+        assert_eq!(v["t"], "ready");
+        assert_eq!(v["from"], "_adapter");
+        assert!(v["ts"].as_u64().is_some());
+        assert_eq!(v["body"]["state"], "connected");
+        assert_eq!(v["body"]["remote"], "remote");
     }
 
     #[test]
-    fn build_close_no_from_field() {
-        let json = build_close("ab".repeat(32).as_str(), CloseReason::Timeout);
+    fn build_terminate_has_adapter_fields() {
+        let json = build_terminate("ab".repeat(32).as_str(), CloseReason::Timeout);
         let v: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["reason"], "timeout");
-        assert!(v.get("from").is_none());
+        assert_eq!(v["t"], "terminate");
+        assert_eq!(v["from"], "_adapter");
+        assert!(v["ts"].as_u64().is_some());
+        assert_eq!(v["body"]["reason"], "timeout");
     }
 
     // --- Additional coverage ---
@@ -643,7 +635,8 @@ mod tests {
         let pid2 = URL_SAFE_NO_PAD.encode([2u8; 32]);
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "accept", "ch": ch, "from": pid1, "target": pid2
+            "v": 1, "t": "accept", "ch": ch, "ts": 1234, "from": pid1,
+            "body": {"target": pid2}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Accept { .. }));
@@ -657,7 +650,8 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "res", "ch": ch, "from": pid, "id": "r1", "ok": true
+            "v": 1, "t": "res", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"id": "r1", "ok": true, "sealed": "xyz"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Res { .. }));
@@ -669,7 +663,8 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "res", "ch": ch, "from": pid, "id": "r1"
+            "v": 1, "t": "res", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"id": "r1"}
         });
         assert!(parse_message(&json.to_string()).is_err());
     }
@@ -679,7 +674,8 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "evt", "ch": ch, "from": pid, "event": "disconnect"
+            "v": 1, "t": "evt", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"id": "e1", "sealed": "xyz"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Evt { .. }));
@@ -687,21 +683,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_evt_missing_event() {
-        let pid = make_peer_id();
-        let ch = make_channel_id();
-        let json = serde_json::json!({
-            "v": 1, "t": "evt", "ch": ch, "from": pid
-        });
-        assert!(parse_message(&json.to_string()).is_err());
-    }
-
-    #[test]
     fn parse_ping_valid() {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "ping", "ch": ch, "from": pid
+            "v": 1, "t": "ping", "ch": ch, "ts": 1234, "from": pid, "body": {}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Ping { .. }));
@@ -713,7 +699,7 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "pong", "ch": ch, "from": pid
+            "v": 1, "t": "pong", "ch": ch, "ts": 1234, "from": pid, "body": {}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Pong { .. }));
@@ -725,7 +711,8 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "close", "ch": ch, "from": pid, "reason": "normal"
+            "v": 1, "t": "close", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"reason": "normal"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Close { .. }));
@@ -733,31 +720,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_close_with_target() {
-        let pid1 = make_peer_id();
-        let pid2 = URL_SAFE_NO_PAD.encode([2u8; 32]);
+    fn parse_close_reason_extracted() {
+        let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "close", "ch": ch, "from": pid1, "target": pid2, "reason": "user_rejected"
+            "v": 1, "t": "close", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"reason": "user_rejected"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         match msg {
-            ClientMessage::Close { target, reason, .. } => {
-                assert_eq!(target.unwrap(), pid2);
+            ClientMessage::Close { reason, .. } => {
                 assert_eq!(reason, "user_rejected");
             }
             _ => panic!("expected Close"),
         }
-    }
-
-    #[test]
-    fn parse_close_invalid_target_peer_id() {
-        let pid = make_peer_id();
-        let ch = make_channel_id();
-        let json = serde_json::json!({
-            "v": 1, "t": "close", "ch": ch, "from": pid, "target": "bad!", "reason": "normal"
-        });
-        assert!(parse_message(&json.to_string()).is_err());
     }
 
     #[test]
@@ -799,29 +775,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_join_missing_capabilities() {
+    fn parse_missing_ts() {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "join", "ch": ch, "from": pid, "pubkey": pid
+            "v": 1, "t": "create", "ch": ch, "from": pid, "body": {}
         });
         let err = parse_message(&json.to_string()).unwrap_err();
-        assert!(matches!(err, ParseError::MissingField("capabilities")));
+        assert!(matches!(err, ParseError::MissingField("ts")));
     }
 
     #[test]
-    fn parse_join_pubkey_mismatch() {
-        let pid1 = URL_SAFE_NO_PAD.encode([1u8; 32]);
-        let pid2 = URL_SAFE_NO_PAD.encode([2u8; 32]);
+    fn parse_missing_body() {
+        let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "join", "ch": ch, "from": pid1, "pubkey": pid2,
-            "capabilities": {}
+            "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": pid
         });
-        assert!(matches!(
-            parse_message(&json.to_string()).unwrap_err(),
-            ParseError::PubkeyMismatch
-        ));
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::MissingField("body")));
     }
 
     #[test]
@@ -829,7 +801,8 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "req", "ch": ch, "from": pid, "id": "r42", "method": "eth_sign"
+            "v": 1, "t": "req", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"id": "r42", "sealed": "encrypted_data"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         match msg {
@@ -843,8 +816,8 @@ mod tests {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
-            "v": 1, "t": "create", "ch": ch, "from": pid, "pubkey": pid,
-            "resume": "some-token"
+            "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": pid,
+            "body": {"resume": "some-token"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         match msg {
@@ -901,14 +874,15 @@ mod tests {
     }
 
     #[test]
-    fn build_close_with_target_includes_target() {
+    fn build_terminate_with_target_includes_target() {
         let ch = "ab".repeat(32);
-        let json = build_close_with_target(&ch, CloseReason::ProtocolError, "some_target");
+        let json = build_terminate_with_target(&ch, CloseReason::ProtocolError, "some_target");
         let v: Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["target"], "some_target");
-        assert_eq!(v["reason"], "protocol_error");
+        assert_eq!(v["body"]["target"], "some_target");
+        assert_eq!(v["body"]["reason"], "protocol_error");
         assert_eq!(v["v"], 1);
-        assert_eq!(v["t"], "close");
+        assert_eq!(v["t"], "terminate");
+        assert_eq!(v["from"], "_adapter");
     }
 
     #[test]

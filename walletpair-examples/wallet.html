@@ -381,7 +381,8 @@ function sendRaw(msg) {
   if (!S.ws || S.ws.readyState !== WebSocket.OPEN) return;
   S.ws.send(JSON.stringify(msg));
   const type = msg.t;
-  const detail = type === 'res' ? `id=${msg.id} ok=${msg.ok}` : type === 'evt' ? `event=${msg.event}` : '';
+  const b = msg.body || {};
+  const detail = type === 'res' ? `id=${b.id} ok=${b.ok}` : type === 'evt' ? `id=${b.id}` : '';
   log('out', type, detail);
 }
 
@@ -418,9 +419,7 @@ function freshJoin() {
 
 function connectAndJoin(useResume) {
   S.ws = openWs(S.relayUrl, () => {
-    const msg = {
-      v: 1, t: 'join', ch: S.channelId,
-      from: S.pubKeyB64, pubkey: S.pubKeyB64,
+    const joinPayload = {
       capabilities: {
         methods: ['wallet_getAccounts', 'wallet_signMessage'],
         events: ['accountsChanged', 'chainChanged'],
@@ -428,7 +427,17 @@ function connectAndJoin(useResume) {
       },
       meta: { name: 'WalletPair EOA Wallet', address: S.ethAddr },
     };
-    if (useResume && S.resumeToken) msg.resume = S.resumeToken;
+    const sealedJoin = (useResume && S.resumeToken)
+      ? null
+      : sealPayload(S.sessionKey, S.channelId, S.sendSeq++, joinPayload);
+    const msg = {
+      v: 1, t: 'join', ch: S.channelId, ts: Date.now(),
+      from: S.pubKeyB64, pubkey: S.pubKeyB64,
+      body: {
+        sealed_join: sealedJoin,
+        resume: (useResume && S.resumeToken) ? S.resumeToken : null,
+      },
+    };
     setPhase('waiting');
     sendRaw(msg);
     saveState();
@@ -457,16 +466,25 @@ function startReconnect() {
 
     // Override close handler for this attempt (retry on failure)
     const ws = openWs(S.relayUrl, () => {
-      const msg = {
-        v: 1, t: 'join', ch: S.channelId,
-        from: S.pubKeyB64, pubkey: S.pubKeyB64,
+      const joinPayload = {
         capabilities: {
           methods: ['wallet_getAccounts', 'wallet_signMessage'],
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
+        meta: { name: 'WalletPair EOA Wallet', address: S.ethAddr },
       };
-      if (useResume) msg.resume = S.resumeToken;
+      const sealedJoin = useResume
+        ? null
+        : sealPayload(S.sessionKey, S.channelId, S.sendSeq++, joinPayload);
+      const msg = {
+        v: 1, t: 'join', ch: S.channelId, ts: Date.now(),
+        from: S.pubKeyB64, pubkey: S.pubKeyB64,
+        body: {
+          sealed_join: sealedJoin,
+          resume: useResume ? S.resumeToken : null,
+        },
+      };
       setPhase('waiting');
       sendRaw(msg);
     });
@@ -490,15 +508,16 @@ function stopReconnect() {
 // Message handling
 // ---------------------------------------------------------------------------
 function handleMessage(msg) {
+  const body = msg.body || {};
   switch (msg.t) {
     case 'ready':
-      S.resumeToken = msg.resume;
+      S.resumeToken = body.resume;
       stopReconnect();
-      if (msg.state === 'waiting') {
+      if (body.state === 'waiting') {
         setPhase('waiting');
         log('in', 'ready', 'state=waiting (awaiting dApp accept)');
-      } else if (msg.state === 'connected') {
-        log('in', 'ready', `state=connected remote=${msg.remote?.slice(0, 12)}...`);
+      } else if (body.state === 'connected') {
+        log('in', 'ready', `state=connected remote=${body.remote?.slice(0, 12)}...`);
         setPhase('connected');
       }
       saveState();
@@ -506,43 +525,53 @@ function handleMessage(msg) {
 
     case 'req': {
       let params = {};
-      if (msg.sealed && S.sessionKey) {
+      let method = '(unknown)';
+      if (body.sealed && S.sessionKey) {
         try {
-          const unsealed = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          const unsealed = unsealPayload(S.sessionKey, S.channelId, body.sealed);
           if (unsealed.seq <= S.recvSeq) {
             log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
             break;
           }
           S.recvSeq = unsealed.seq;
+          method = unsealed.data._method || '(unknown)';
           params = unsealed.data;
+          delete params._method;
         }
-        catch { log('err', 'decrypt', `failed to decrypt req ${msg.id}`); }
+        catch { log('err', 'decrypt', `failed to decrypt req ${body.id}`); }
       }
-      log('in', 'req', `id=${msg.id} method=${msg.method}`);
-      S.pendingReqs.push({ id: msg.id, method: msg.method, params });
+      log('in', 'req', `id=${body.id} method=${method}`);
+      S.pendingReqs.push({ id: body.id, method, params });
       renderRequests();
       break;
     }
 
     case 'ping':
       log('in', 'ping', `ts=${msg.ts}`);
-      sendRaw({ v: 1, t: 'pong', ch: S.channelId, from: S.pubKeyB64, ts: Date.now() });
+      sendRaw({ v: 1, t: 'pong', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: {} });
       break;
 
     case 'pong':
       log('in', 'pong', `ts=${msg.ts}`);
       break;
 
-    case 'close':
-      log('err', 'close', `reason=${msg.reason}`);
-      if (msg.reason === 'invalid_resume' && S.phase !== 'closed') {
+    case 'terminate':
+      log('err', 'terminate', `reason=${body.reason}`);
+      setPhase('closed');
+      S.intentionalClose = true;
+      break;
+
+    case 'close': {
+      const reason = body.reason;
+      log('err', 'close', `reason=${reason}`);
+      if (reason === 'invalid_resume' && S.phase !== 'closed') {
         // Resume rejected (relay restarted). Retry without resume.
         log('in', 'reconnect', 'resume rejected, re-joining without resume');
         S.resumeToken = null;
         S.ws.onclose = () => {};
         S.ws.close();
         connectAndJoin(false);
-      } else if (msg.reason === 'channel_not_found' && S.phase !== 'closed') {
+      } else if (reason === 'channel_not_found' && S.phase !== 'closed') {
         // Channel gone (relay restarted, dApp hasn't re-created yet). Retry.
         log('in', 'reconnect', 'channel not found, waiting for dApp to re-create');
         S.ws.onclose = () => {};
@@ -553,6 +582,7 @@ function handleMessage(msg) {
         S.intentionalClose = true;
       }
       break;
+    }
 
     default:
       log('in', msg.t || '?', JSON.stringify(msg).slice(0, 120));
@@ -580,14 +610,12 @@ function handleRequestAction(reqId, action) {
       default:
         result = { status: 'approved' };
     }
-    const msg = { v: 1, t: 'res', ch: S.channelId, id: req.id, from: S.pubKeyB64, ok: true };
-    msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, result);
-    sendRaw(msg);
+    const sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, result);
+    sendRaw({ v: 1, t: 'res', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { id: req.id, ok: true, sealed } });
   } else {
     const error = { code: 'user_rejected', message: 'User rejected the request' };
-    const msg = { v: 1, t: 'res', ch: S.channelId, id: req.id, from: S.pubKeyB64, ok: false };
-    msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, error);
-    sendRaw(msg);
+    const sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, error);
+    sendRaw({ v: 1, t: 'res', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { id: req.id, ok: false, sealed } });
   }
   S.pendingReqs = S.pendingReqs.filter(r => r.id !== reqId);
   renderRequests();
@@ -600,10 +628,12 @@ function handleRequestAction(reqId, action) {
 function pushEvent() {
   if (S.phase !== 'connected') return;
   const event = eventNameEl.value;
-  const data = event === 'accountsChanged' ? { accounts: [{ address: S.ethAddr, chains: ['eip155:1'] }] } : { chain: 'eip155:1' };
-  const msg = { v: 1, t: 'evt', ch: S.channelId, from: S.pubKeyB64, event };
-  msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, data);
-  sendRaw(msg);
+  const evtId = 'evt-' + Date.now();
+  const data = event === 'accountsChanged'
+    ? { _event: event, accounts: [{ address: S.ethAddr, chains: ['eip155:1'] }] }
+    : { _event: event, chain: 'eip155:1' };
+  const sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, data);
+  sendRaw({ v: 1, t: 'evt', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { id: evtId, sealed } });
   saveState();
 }
 
@@ -611,7 +641,7 @@ function doFullClose() {
   S.intentionalClose = true;
   stopReconnect();
   if (S.ws && S.ws.readyState === WebSocket.OPEN) {
-    sendRaw({ v: 1, t: 'close', ch: S.channelId, from: S.pubKeyB64, reason: 'normal' });
+    sendRaw({ v: 1, t: 'close', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { reason: 'normal' } });
   }
   setPhase('closed');
   clearState();

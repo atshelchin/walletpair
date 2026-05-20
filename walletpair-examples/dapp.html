@@ -415,7 +415,8 @@ function sendRaw(msg) {
     S.ws.send(JSON.stringify(msg));
   }
   const type = msg.t;
-  const detail = type === 'req' ? `id=${msg.id} method=${msg.method}` : type === 'close' ? `reason=${msg.reason}` : '';
+  const body = msg.body || {};
+  const detail = type === 'req' ? `id=${body.id}` : type === 'close' ? `reason=${body.reason}` : '';
   log('out', type, detail);
 }
 
@@ -603,7 +604,7 @@ function freshConnect() {
 
   S.ws = openWs(() => {
     setPhase('waiting');
-    sendRaw({ v: 1, t: 'create', ch: S.channelId, from: S.pubKeyB64, pubkey: S.pubKeyB64 });
+    sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo' }, resume: null } });
     const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
     pairingUriEl.textContent = uri;
     renderQR(uri);
@@ -634,10 +635,10 @@ function startReconnect() {
     S.ws = openWs(() => {
       if (useResume) {
         // Try resume
-        sendRaw({ v: 1, t: 'create', ch: S.channelId, from: S.pubKeyB64, pubkey: S.pubKeyB64, resume: S.resumeToken });
+        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo' }, resume: S.resumeToken } });
       } else {
         // Fresh create with same channel & keys (relay forgot us)
-        sendRaw({ v: 1, t: 'create', ch: S.channelId, from: S.pubKeyB64, pubkey: S.pubKeyB64 });
+        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo' }, resume: null } });
       }
     });
 
@@ -658,14 +659,15 @@ function startReconnect() {
 
       // Check if reconnect succeeded
       const msg = JSON.parse(event.data);
-      if (msg.t === 'close' && msg.reason === 'invalid_resume') {
+      const body = msg.body || {};
+      if ((msg.t === 'close' || msg.t === 'terminate') && body.reason === 'invalid_resume') {
         // Resume failed (relay restarted). Retry immediately without resume.
         log('in', 'reconnect', 'resume rejected, re-creating channel');
         S.resumeToken = null;
         S.ws.onclose = () => {}; // suppress close handler
         S.ws.close();
         doAttempt(1); // force no-resume path
-      } else if (msg.t === 'close' && msg.reason === 'channel_exists') {
+      } else if ((msg.t === 'close' || msg.t === 'terminate') && body.reason === 'channel_exists') {
         // Race condition: our old connection might still be lingering.
         // Wait and retry.
         tryOnce();
@@ -687,26 +689,29 @@ function stopReconnect() {
 // ---------------------------------------------------------------------------
 function handleMessage(msg, ws) {
   switch (msg.t) {
-    case 'ready':
-      S.resumeToken = msg.resume;
+    case 'ready': {
+      const readyBody = msg.body || {};
+      S.resumeToken = readyBody.resume;
       stopReconnect();
-      if (msg.state === 'waiting') {
+      if (readyBody.state === 'waiting') {
         setPhase('waiting');
         log('in', 'ready', 'state=waiting');
         // Show pairing URI (in case of reconnect, re-display it)
         const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
         pairingUriEl.textContent = uri;
         renderQR(uri);
-      } else if (msg.state === 'connected') {
-        log('in', 'ready', `state=connected remote=${msg.remote?.slice(0, 12)}...`);
+      } else if (readyBody.state === 'connected') {
+        log('in', 'ready', `state=connected remote=${readyBody.remote?.slice(0, 12)}...`);
         setPhase('connected');
       }
       saveState();
       break;
+    }
 
     case 'join': {
+      const joinBody = msg.body || {};
       const joinPubKey = msg.from;
-      log('in', 'join', `peer=${joinPubKey?.slice(0, 12)}... chains=${JSON.stringify(msg.capabilities?.chains || [])}`);
+      log('in', 'join', `peer=${joinPubKey?.slice(0, 12)}... sealed_join=${joinBody.sealed_join ? 'present' : 'none'}`);
 
       // Derive session key from the wallet's public key
       const remoteBytes = b64urlDecode(joinPubKey);
@@ -718,9 +723,17 @@ function handleMessage(msg, ws) {
       const shared = x25519.getSharedSecret(S.privKey, S.remotePubKey);
       S.sessionKey = deriveSessionKey(shared, S.channelId);
 
+      // Decrypt sealed_join to get capabilities if present
+      if (joinBody.sealed_join && S.sessionKey) {
+        try {
+          const unsealed = unsealPayload(S.sessionKey, S.channelId, joinBody.sealed_join);
+          log('in', 'join', `capabilities: ${JSON.stringify(unsealed.data)}`);
+        } catch { log('in', 'join', '(sealed_join decrypt failed)'); }
+      }
+
       // BLE adapter duty: send ready.waiting to the wallet
       if (S.transport === 'ble') {
-        sendViaBle({ v: 1, t: 'ready', ch: S.channelId, state: 'waiting', role: 'wallet', self: joinPubKey, resume: crypto.randomUUID() })
+        sendViaBle({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'waiting', role: 'wallet', self: joinPubKey, remote: null, resume: crypto.randomUUID() } })
           .catch(e => log('err', 'ble', `send ready.waiting failed: ${e.message}`));
       }
 
@@ -739,11 +752,12 @@ function handleMessage(msg, ws) {
     }
 
     case 'res': {
-      let detail = `id=${msg.id} ok=${msg.ok}`;
+      const resBody = msg.body || {};
+      let detail = `id=${resBody.id} ok=${resBody.ok}`;
       let resDataStr = '';
-      if (msg.sealed && S.sessionKey) {
+      if (resBody.sealed && S.sessionKey) {
         try {
-          const unsealed = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          const unsealed = unsealPayload(S.sessionKey, S.channelId, resBody.sealed);
           if (unsealed.seq <= S.recvSeq) {
             log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
             break;
@@ -755,7 +769,7 @@ function handleMessage(msg, ws) {
       }
       log('in', 'res', detail);
       // Benchmark timing
-      if (S.benchPending && S.benchPending.id === msg.id) {
+      if (S.benchPending && S.benchPending.id === resBody.id) {
         const b = S.benchPending;
         const tDone = performance.now();
         const encMs = (b.tEncDone - b.t0).toFixed(0);
@@ -773,16 +787,19 @@ function handleMessage(msg, ws) {
     }
 
     case 'evt': {
-      let detail = `event=${msg.event}`;
-      if (msg.sealed && S.sessionKey) {
+      const evtBody = msg.body || {};
+      let detail = `id=${evtBody.id}`;
+      if (evtBody.sealed && S.sessionKey) {
         try {
-          const unsealed = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          const unsealed = unsealPayload(S.sessionKey, S.channelId, evtBody.sealed);
           if (unsealed.seq <= S.recvSeq) {
             log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
             break;
           }
           S.recvSeq = unsealed.seq;
-          detail += ` ${JSON.stringify(unsealed.data)}`;
+          // Event name is inside the decrypted payload as _event
+          const eventName = unsealed.data._event || 'unknown';
+          detail += ` event=${eventName} ${JSON.stringify(unsealed.data)}`;
         } catch { detail += ' (decrypt failed)'; }
       }
       log('in', 'evt', detail);
@@ -791,7 +808,7 @@ function handleMessage(msg, ws) {
 
     case 'ping':
       log('in', 'ping', `ts=${msg.ts}`);
-      sendRaw({ v: 1, t: 'pong', ch: S.channelId, from: S.pubKeyB64, ts: Date.now() });
+      sendRaw({ v: 1, t: 'pong', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: {} });
       break;
 
     case 'pong':
@@ -799,13 +816,16 @@ function handleMessage(msg, ws) {
       break;
 
     case 'close':
-      log('err', 'close', `reason=${msg.reason}`);
+    case 'terminate': {
+      const closeBody = msg.body || {};
+      log('err', msg.t, `reason=${closeBody.reason}`);
       // Don't set closed if we're in reconnect flow handling
       if (S.phase !== 'reconnecting') {
         setPhase('closed');
         S.intentionalClose = true;
       }
       break;
+    }
 
     default:
       log('in', msg.t || '?', JSON.stringify(msg).slice(0, 120));
@@ -823,19 +843,19 @@ function doAccept() {
   if (S.transport === 'ble') {
     // BLE mode: dApp IS the adapter. Generate ready.connected for both sides.
     // Send ready.connected to wallet via BLE
-    sendViaBle({ v: 1, t: 'ready', ch: S.channelId, state: 'connected', role: 'wallet', self: walletPubB64, remote: S.pubKeyB64, resume: crypto.randomUUID() });
+    sendViaBle({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'connected', role: 'wallet', self: walletPubB64, remote: S.pubKeyB64, resume: crypto.randomUUID() } });
     // Self-process ready.connected (local adapter → dApp)
-    handleMessage({ t: 'ready', state: 'connected', role: 'dapp', self: S.pubKeyB64, remote: walletPubB64, resume: crypto.randomUUID(), ch: S.channelId, v: 1 }, null);
+    handleMessage({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'connected', role: 'dapp', self: S.pubKeyB64, remote: walletPubB64, resume: crypto.randomUUID() } }, null);
   } else {
     // WS mode: relay handles ready generation, just send accept
-    sendRaw({ v: 1, t: 'accept', ch: S.channelId, from: S.pubKeyB64, target: walletPubB64 });
+    sendRaw({ v: 1, t: 'accept', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { target: walletPubB64 } });
   }
   saveState();
 }
 
 function doReject() {
   if (!S.remotePubKey) return;
-  sendRaw({ v: 1, t: 'close', ch: S.channelId, from: S.pubKeyB64, target: b64urlEncode(S.remotePubKey), reason: 'user_rejected' });
+  sendRaw({ v: 1, t: 'close', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { reason: 'user_rejected' } });
   doFullClose();
 }
 
@@ -846,24 +866,24 @@ function doSendRequest() {
   let params;
   try { params = JSON.parse(paramsEl.value); } catch { alert('Invalid JSON params'); return; }
   const id = `req-${++S.reqCounter}`;
-  const msg = { v: 1, t: 'req', ch: S.channelId, id, from: S.pubKeyB64, method };
-  if (Object.keys(params).length > 0) {
-    msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, params);
-  }
+  // method goes inside the sealed payload, not in the body
+  const sealedData = { _method: method, ...params };
+  const sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, sealedData);
+  const msg = { v: 1, t: 'req', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { id, sealed } };
   sendRaw(msg);
   saveState();
 }
 
 function doPing() {
   if (S.phase !== 'connected') return;
-  sendRaw({ v: 1, t: 'ping', ch: S.channelId, from: S.pubKeyB64, ts: Date.now() });
+  sendRaw({ v: 1, t: 'ping', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: {} });
 }
 
 function doFullClose() {
   S.intentionalClose = true;
   stopReconnect();
   if (S.channelId) {
-    sendRaw({ v: 1, t: 'close', ch: S.channelId, from: S.pubKeyB64, reason: 'normal' });
+    sendRaw({ v: 1, t: 'close', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { reason: 'normal' } });
   }
   // BLE cleanup
   if (S.bleDevice && S.bleDevice.gatt?.connected) {
@@ -946,10 +966,9 @@ document.querySelectorAll('.bench').forEach(btn => {
     br.textContent = `[2/4] Encrypting ${kb} KB...`;
     await yieldUI();
     const id = `bench-${++S.reqCounter}`;
-    const msg = { v: 1, t: 'req', ch: S.channelId, id, from: S.pubKeyB64, method: 'benchmark_echo' };
-    if (S.sessionKey) {
-      msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, params);
-    }
+    const sealedData = { _method: 'benchmark_echo', ...params };
+    const sealed = S.sessionKey ? sealPayload(S.sessionKey, S.channelId, S.sendSeq++, sealedData) : '';
+    const msg = { v: 1, t: 'req', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { id, sealed } };
     const tEnc = performance.now();
 
     // Step 3: Frame + Send via BLE
@@ -974,7 +993,7 @@ document.querySelectorAll('.bench').forEach(btn => {
       }
       const tSend1 = performance.now();
       br.textContent = `[4/4] Encrypt ${(tEnc-tGen).toFixed(0)}ms | Send ${(tSend1-tSend0).toFixed(0)}ms (${frames.length} frames) | Waiting...`;
-      log('out', 'req', `id=${id} method=benchmark_echo ${frames.length} frames`);
+      log('out', 'req', `id=${id} ${frames.length} frames`);
       S.benchPending = { id, t0, tEncDone: tEnc, tSendDone: tSend1, kb, wireSize, frameCount: frames.length };
     } else {
       sendRaw(msg);

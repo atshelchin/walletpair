@@ -53,7 +53,7 @@ pub async fn handle_ws(
             _ = shutdown_rx.recv() => {
                 // Graceful shutdown: send close and break
                 if let Some(ref b) = binding {
-                    let close = protocol::build_close(
+                    let close = protocol::build_terminate(
                         &b.channel_id,
                         protocol::CloseReason::ServerShutdown,
                     );
@@ -82,7 +82,7 @@ pub async fn handle_ws(
                     .as_ref()
                     .map(|b| b.channel_id.as_str())
                     .unwrap_or("unknown");
-                let close = protocol::build_close(ch, protocol::CloseReason::ProtocolError);
+                let close = protocol::build_terminate(ch, protocol::CloseReason::ProtocolError);
                 let _ = tx.try_send(close);
                 metrics
                     .messages_rejected_total
@@ -98,7 +98,7 @@ pub async fn handle_ws(
                 .as_ref()
                 .map(|b| b.channel_id.as_str())
                 .unwrap_or("unknown");
-            let close = protocol::build_close(ch, protocol::CloseReason::PayloadTooLarge);
+            let close = protocol::build_terminate(ch, protocol::CloseReason::PayloadTooLarge);
             let _ = tx.try_send(close);
             metrics
                 .messages_rejected_total
@@ -116,7 +116,7 @@ pub async fn handle_ws(
                     .as_ref()
                     .map(|b| b.channel_id.as_str())
                     .unwrap_or("unknown");
-                let close = protocol::build_close(ch, reason);
+                let close = protocol::build_terminate(ch, reason);
                 let _ = tx.try_send(close);
                 metrics
                     .messages_rejected_total
@@ -140,7 +140,7 @@ pub async fn handle_ws(
         if let Some(ref b) = binding {
             if msg.channel_id() != b.channel_id {
                 let close =
-                    protocol::build_close(msg.channel_id(), protocol::CloseReason::ProtocolError);
+                    protocol::build_terminate(msg.channel_id(), protocol::CloseReason::ProtocolError);
                 let _ = tx.try_send(close);
                 metrics
                     .messages_rejected_total
@@ -159,7 +159,7 @@ pub async fn handle_ws(
                     });
                 }
                 _ => {
-                    let close = protocol::build_close(
+                    let close = protocol::build_terminate(
                         msg.channel_id(),
                         protocol::CloseReason::InvalidState,
                     );

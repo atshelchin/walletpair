@@ -121,7 +121,7 @@ async fn rapid_create_close_no_channel_leak() {
         let mut ws = ws_connect(&addr).await;
         send_json(
             &mut ws,
-            &json!({"v":1,"t":"create","ch":ch,"from":peer,"pubkey":peer}),
+            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{}}),
         )
         .await;
         let r = recv_json(&mut ws).await;
@@ -130,7 +130,7 @@ async fn rapid_create_close_no_channel_leak() {
         // Close immediately
         send_json(
             &mut ws,
-            &json!({"v":1,"t":"close","ch":ch,"from":peer,"reason":"normal"}),
+            &json!({"v":1,"t":"close","ch":ch,"ts":1234,"from":peer,"body":{"reason":"normal"}}),
         )
         .await;
         // Allow connection to flush
@@ -172,7 +172,7 @@ async fn ttl_cleanup_removes_expired_channels() {
         let mut ws = ws_connect(&addr).await;
         send_json(
             &mut ws,
-            &json!({"v":1,"t":"create","ch":ch,"from":peer,"pubkey":peer}),
+            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{}}),
         )
         .await;
         let _ = recv_json(&mut ws).await;
@@ -209,7 +209,7 @@ async fn abrupt_disconnect_handled_gracefully() {
     let mut dapp_ws = ws_connect(&addr).await;
     send_json(
         &mut dapp_ws,
-        &json!({"v":1,"t":"create","ch":ch,"from":dapp,"pubkey":dapp}),
+        &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{}}),
     )
     .await;
     let _ = recv_json(&mut dapp_ws).await;
@@ -218,8 +218,8 @@ async fn abrupt_disconnect_handled_gracefully() {
     let mut wallet_ws = ws_connect(&addr).await;
     send_json(
         &mut wallet_ws,
-        &json!({"v":1,"t":"join","ch":ch,"from":wallet,"pubkey":wallet,
-            "capabilities":{"methods":[],"events":[],"chains":[]}}),
+        &json!({"v":1,"t":"join","ch":ch,"ts":1234,"from":wallet,
+            "body":{"sealed_join":null}}),
     )
     .await;
     let _ = recv_json(&mut wallet_ws).await;
@@ -228,11 +228,11 @@ async fn abrupt_disconnect_handled_gracefully() {
     // Accept
     send_json(
         &mut dapp_ws,
-        &json!({"v":1,"t":"accept","ch":ch,"from":dapp,"target":wallet}),
+        &json!({"v":1,"t":"accept","ch":ch,"ts":1234,"from":dapp,"body":{"target":wallet}}),
     )
     .await;
     let _ = recv_json(&mut dapp_ws).await;
-    let dapp_resume = recv_json(&mut wallet_ws).await["resume"]
+    let dapp_resume = recv_json(&mut wallet_ws).await["body"]["resume"]
         .as_str()
         .unwrap()
         .to_string();
@@ -245,7 +245,7 @@ async fn abrupt_disconnect_handled_gracefully() {
     // Try sending req — other peer not connected, message will be dropped silently
     send_json(
         &mut dapp_ws,
-        &json!({"v":1,"t":"req","ch":ch,"from":dapp,"id":"test","method":"m","sealed":"x"}),
+        &json!({"v":1,"t":"req","ch":ch,"ts":1234,"from":dapp,"body":{"id":"test","sealed":"x"}}),
     )
     .await;
 
@@ -256,7 +256,7 @@ async fn abrupt_disconnect_handled_gracefully() {
     // dApp can still send close
     send_json(
         &mut dapp_ws,
-        &json!({"v":1,"t":"close","ch":ch,"from":dapp,"reason":"normal"}),
+        &json!({"v":1,"t":"close","ch":ch,"ts":1234,"from":dapp,"body":{"reason":"normal"}}),
     )
     .await;
 
@@ -275,7 +275,7 @@ async fn flood_invalid_json_no_crash() {
         let msg = timeout(TIMEOUT, ws.next()).await;
         if let Ok(Some(Ok(Message::Text(t)))) = msg {
             let v: Value = serde_json::from_str(&t).unwrap();
-            assert_eq!(v["reason"], "protocol_error");
+            assert_eq!(v["body"]["reason"], "protocol_error");
         }
     }
 
@@ -303,7 +303,7 @@ async fn concurrent_channel_creation() {
             let mut dapp_ws = ws_connect(&addr).await;
             send_json(
                 &mut dapp_ws,
-                &json!({"v":1,"t":"create","ch":ch,"from":dapp,"pubkey":dapp}),
+                &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{}}),
             )
             .await;
             let r = recv_json(&mut dapp_ws).await;
@@ -312,8 +312,8 @@ async fn concurrent_channel_creation() {
             let mut wallet_ws = ws_connect(&addr).await;
             send_json(
                 &mut wallet_ws,
-                &json!({"v":1,"t":"join","ch":ch,"from":wallet,"pubkey":wallet,
-                    "capabilities":{"methods":[],"events":[],"chains":[]}}),
+                &json!({"v":1,"t":"join","ch":ch,"ts":1234,"from":wallet,
+                    "body":{"sealed_join":null}}),
             )
             .await;
             let r = recv_json(&mut wallet_ws).await;
@@ -322,7 +322,7 @@ async fn concurrent_channel_creation() {
             // Close
             send_json(
                 &mut dapp_ws,
-                &json!({"v":1,"t":"close","ch":ch,"from":dapp,"reason":"normal"}),
+                &json!({"v":1,"t":"close","ch":ch,"ts":1234,"from":dapp,"body":{"reason":"normal"}}),
             )
             .await;
         }));
@@ -354,7 +354,7 @@ async fn graceful_shutdown_closes_all_channels() {
         let mut dapp_ws = ws_connect(&addr).await;
         send_json(
             &mut dapp_ws,
-            &json!({"v":1,"t":"create","ch":ch,"from":dapp,"pubkey":dapp}),
+            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{}}),
         )
         .await;
         let _ = recv_json(&mut dapp_ws).await;
@@ -362,8 +362,8 @@ async fn graceful_shutdown_closes_all_channels() {
         let mut wallet_ws = ws_connect(&addr).await;
         send_json(
             &mut wallet_ws,
-            &json!({"v":1,"t":"join","ch":ch,"from":wallet,"pubkey":wallet,
-                "capabilities":{"methods":[],"events":[],"chains":[]}}),
+            &json!({"v":1,"t":"join","ch":ch,"ts":1234,"from":wallet,
+                "body":{"sealed_join":null}}),
         )
         .await;
         let _ = recv_json(&mut wallet_ws).await;
@@ -371,7 +371,7 @@ async fn graceful_shutdown_closes_all_channels() {
 
         send_json(
             &mut dapp_ws,
-            &json!({"v":1,"t":"accept","ch":ch,"from":dapp,"target":wallet}),
+            &json!({"v":1,"t":"accept","ch":ch,"ts":1234,"from":dapp,"body":{"target":wallet}}),
         )
         .await;
         let _ = recv_json(&mut dapp_ws).await;
@@ -392,7 +392,7 @@ async fn graceful_shutdown_closes_all_channels() {
                     Some(Ok(Message::Close(_))) => return true,
                     Some(Ok(Message::Text(t))) => {
                         let v: Value = serde_json::from_str(&t).unwrap_or_default();
-                        if v["t"] == "close" {
+                        if v["t"] == "terminate" {
                             return true;
                         }
                     }
@@ -410,7 +410,7 @@ async fn graceful_shutdown_closes_all_channels() {
                     Some(Ok(Message::Close(_))) => return true,
                     Some(Ok(Message::Text(t))) => {
                         let v: Value = serde_json::from_str(&t).unwrap_or_default();
-                        if v["t"] == "close" {
+                        if v["t"] == "terminate" {
                             return true;
                         }
                     }
@@ -438,7 +438,7 @@ async fn metrics_accessible_during_activity() {
             let mut ws = ws_connect(&addr_clone).await;
             send_json(
                 &mut ws,
-                &json!({"v":1,"t":"create","ch":ch,"from":peer,"pubkey":peer}),
+                &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{}}),
             )
             .await;
             let _ = recv_json(&mut ws).await;

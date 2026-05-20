@@ -128,7 +128,7 @@ impl ChannelStore {
             let reference_time = ch.connected_at.unwrap_or(ch.created_at);
             if now.duration_since(reference_time).as_secs() > ttl_secs {
                 // Send close to connected peers before removing
-                let close_msg = crate::protocol::build_close(&ch.id, CloseReason::Timeout);
+                let close_msg = crate::protocol::build_terminate(&ch.id, CloseReason::Timeout);
                 if let Some(ref conn) = ch.dapp_conn {
                     let _ = conn.sender.try_send(close_msg.clone());
                 }

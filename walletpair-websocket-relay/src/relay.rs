@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 
 use crate::metrics::Metrics;
 use crate::protocol::{
-    self, build_close, build_close_with_target, build_ready_connected, build_ready_waiting,
+    self, build_ready_connected, build_ready_waiting, build_terminate, build_terminate_with_target,
     ClientMessage, CloseReason, PeerId, Role,
 };
 use crate::state::{Channel, ChannelState, PeerConn};
@@ -91,7 +91,7 @@ pub fn process_message(
         }
 
         ClientMessage::Close {
-            ch, from, reason, ..
+            ch, from, reason,
         } => handle_close(store, raw_text, &ch, &from, &reason, metrics),
     }
 }
@@ -127,7 +127,7 @@ fn handle_create(
             .messages_rejected_total
             .with_label_values(&["channel_exists"])
             .inc();
-        return ProcessResult::Reject(build_close(ch, CloseReason::ChannelExists));
+        return ProcessResult::Reject(build_terminate(ch, CloseReason::ChannelExists));
     }
 
     // Global channel limit (checked by caller across all shards)
@@ -136,7 +136,7 @@ fn handle_create(
             .messages_rejected_total
             .with_label_values(&["max_channels"])
             .inc();
-        return ProcessResult::Reject(build_close(ch, CloseReason::ProtocolError));
+        return ProcessResult::Reject(build_terminate(ch, CloseReason::ProtocolError));
     }
 
     // Create channel
@@ -194,7 +194,7 @@ fn handle_join(
                 .messages_rejected_total
                 .with_label_values(&["channel_not_found"])
                 .inc();
-            return ProcessResult::Reject(build_close(ch, CloseReason::ChannelNotFound));
+            return ProcessResult::Reject(build_terminate(ch, CloseReason::ChannelNotFound));
         }
     };
 
@@ -209,7 +209,7 @@ fn handle_join(
             .messages_rejected_total
             .with_label_values(&[reason.as_str()])
             .inc();
-        return ProcessResult::Reject(build_close(ch, reason));
+        return ProcessResult::Reject(build_terminate(ch, reason));
     }
 
     // Get dApp sender for forwarding (may be disconnected)
@@ -257,7 +257,7 @@ fn handle_accept(
     let channel = match store.get(ch) {
         Some(c) => c,
         None => {
-            return ProcessResult::Reject(build_close(ch, CloseReason::ChannelNotFound));
+            return ProcessResult::Reject(build_terminate(ch, CloseReason::ChannelNotFound));
         }
     };
 
@@ -267,7 +267,7 @@ fn handle_accept(
             .messages_rejected_total
             .with_label_values(&["invalid_role"])
             .inc();
-        return ProcessResult::Reject(build_close(ch, CloseReason::InvalidRole));
+        return ProcessResult::Reject(build_terminate(ch, CloseReason::InvalidRole));
     }
 
     // Must be in PendingAccept
@@ -276,7 +276,7 @@ fn handle_accept(
             .messages_rejected_total
             .with_label_values(&["invalid_state"])
             .inc();
-        return ProcessResult::Reject(build_close(ch, CloseReason::InvalidState));
+        return ProcessResult::Reject(build_terminate(ch, CloseReason::InvalidState));
     }
 
     // Target must match wallet
@@ -285,7 +285,7 @@ fn handle_accept(
             .messages_rejected_total
             .with_label_values(&["invalid_target"])
             .inc();
-        return ProcessResult::Reject(build_close_with_target(
+        return ProcessResult::Reject(build_terminate_with_target(
             ch,
             CloseReason::ProtocolError,
             target,
@@ -335,7 +335,7 @@ fn handle_data(
     let channel = match store.get(ch) {
         Some(c) => c,
         None => {
-            return ProcessResult::Reject(build_close(ch, CloseReason::ChannelNotFound));
+            return ProcessResult::Reject(build_terminate(ch, CloseReason::ChannelNotFound));
         }
     };
 
@@ -347,7 +347,7 @@ fn handle_data(
                 .messages_rejected_total
                 .with_label_values(&["invalid_role"])
                 .inc();
-            return ProcessResult::Reject(build_close(ch, CloseReason::InvalidRole));
+            return ProcessResult::Reject(build_terminate(ch, CloseReason::InvalidRole));
         }
     };
 
@@ -363,7 +363,7 @@ fn handle_data(
             .messages_rejected_total
             .with_label_values(&[reason.as_str()])
             .inc();
-        return ProcessResult::Reject(build_close(ch, reason));
+        return ProcessResult::Reject(build_terminate(ch, reason));
     }
 
     // Pending request tracking
@@ -374,7 +374,7 @@ fn handle_data(
                     .messages_rejected_total
                     .with_label_values(&["pending_request_limit"])
                     .inc();
-                return ProcessResult::Reject(build_close(ch, CloseReason::InvalidState));
+                return ProcessResult::Reject(build_terminate(ch, CloseReason::InvalidState));
             }
             let channel = store.get_mut(ch).unwrap();
             channel.pending_requests.insert(id.to_string());
@@ -401,7 +401,7 @@ fn handle_data(
             metrics.slow_consumer_closes_total.inc();
             // Notify the slow consumer with a close reason before dropping.
             // The queue is full, so we spawn a direct send on the cloned sender.
-            let close_msg = build_close(ch, CloseReason::SlowConsumer);
+            let close_msg = build_terminate(ch, CloseReason::SlowConsumer);
             let slow_sender = other_sender.clone();
             tokio::spawn(async move {
                 // Use send() (not try_send) so it waits for one slot.
@@ -453,7 +453,7 @@ fn handle_close(
 
     let role = channel.role_of(from);
     if role.is_none() {
-        return ProcessResult::Reject(build_close(ch, CloseReason::InvalidRole));
+        return ProcessResult::Reject(build_terminate(ch, CloseReason::InvalidRole));
     }
     let role = role.unwrap();
 
@@ -501,7 +501,7 @@ fn handle_reconnect(
                 .reconnect_attempts_total
                 .with_label_values(&["invalid_token"])
                 .inc();
-            return ProcessResult::Reject(protocol::build_close(ch, CloseReason::InvalidResume));
+            return ProcessResult::Reject(protocol::build_terminate(ch, CloseReason::InvalidResume));
         }
     };
 
@@ -511,7 +511,7 @@ fn handle_reconnect(
             .reconnect_attempts_total
             .with_label_values(&["token_mismatch"])
             .inc();
-        return ProcessResult::Reject(protocol::build_close(ch, CloseReason::InvalidResume));
+        return ProcessResult::Reject(protocol::build_terminate(ch, CloseReason::InvalidResume));
     }
 
     // Channel must still exist and not be closed
@@ -522,7 +522,7 @@ fn handle_reconnect(
                 .reconnect_attempts_total
                 .with_label_values(&["channel_gone"])
                 .inc();
-            return ProcessResult::Reject(protocol::build_close(ch, CloseReason::ChannelNotFound));
+            return ProcessResult::Reject(protocol::build_terminate(ch, CloseReason::ChannelNotFound));
         }
     };
 
@@ -606,7 +606,8 @@ mod tests {
 
     fn make_create_msg(ch: &str, from: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
-            "v": 1, "t": "create", "ch": ch, "from": from, "pubkey": from
+            "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": from,
+            "body": {}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -615,8 +616,8 @@ mod tests {
 
     fn make_join_msg(ch: &str, from: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
-            "v": 1, "t": "join", "ch": ch, "from": from, "pubkey": from,
-            "capabilities": {"methods": [], "events": [], "chains": []}
+            "v": 1, "t": "join", "ch": ch, "ts": 1234, "from": from,
+            "body": {"sealed_join": null}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -625,7 +626,8 @@ mod tests {
 
     fn make_accept_msg(ch: &str, from: &str, target: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
-            "v": 1, "t": "accept", "ch": ch, "from": from, "target": target
+            "v": 1, "t": "accept", "ch": ch, "ts": 1234, "from": from,
+            "body": {"target": target}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -634,8 +636,8 @@ mod tests {
 
     fn make_req_msg(ch: &str, from: &str, id: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
-            "v": 1, "t": "req", "ch": ch, "from": from, "id": id, "method": "eth_sign",
-            "params": []
+            "v": 1, "t": "req", "ch": ch, "ts": 1234, "from": from,
+            "body": {"id": id, "sealed": "encrypted_data"}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -644,7 +646,8 @@ mod tests {
 
     fn make_close_msg(ch: &str, from: &str, reason: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
-            "v": 1, "t": "close", "ch": ch, "from": from, "reason": reason
+            "v": 1, "t": "close", "ch": ch, "ts": 1234, "from": from,
+            "body": {"reason": reason}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -653,7 +656,8 @@ mod tests {
 
     fn make_evt_msg(ch: &str, from: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
-            "v": 1, "t": "evt", "ch": ch, "from": from, "event": "disconnect"
+            "v": 1, "t": "evt", "ch": ch, "ts": 1234, "from": from,
+            "body": {"id": "e1", "sealed": "encrypted_data"}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -662,7 +666,7 @@ mod tests {
 
     fn make_ping_msg(ch: &str, from: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
-            "v": 1, "t": "ping", "ch": ch, "from": from
+            "v": 1, "t": "ping", "ch": ch, "ts": 1234, "from": from, "body": {}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -740,8 +744,8 @@ mod tests {
         let ready = rx.try_recv().unwrap();
         let v: serde_json::Value = serde_json::from_str(&ready).unwrap();
         assert_eq!(v["t"], "ready");
-        assert_eq!(v["state"], "waiting");
-        assert_eq!(v["role"], "dapp");
+        assert_eq!(v["body"]["state"], "waiting");
+        assert_eq!(v["body"]["role"], "dapp");
     }
 
     #[test]
@@ -760,9 +764,9 @@ mod tests {
         let result = process_message(&mut store, 2, &tx2, &raw, msg, &metrics, false);
 
         match result {
-            ProcessResult::Reject(close_json) => {
-                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "channel_exists");
+            ProcessResult::Reject(terminate_json) => {
+                let v: serde_json::Value = serde_json::from_str(&terminate_json).unwrap();
+                assert_eq!(v["body"]["reason"], "channel_exists");
             }
             _ => panic!("expected Reject"),
         }
@@ -781,9 +785,9 @@ mod tests {
         let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, true); // at_capacity = true
 
         match result {
-            ProcessResult::Reject(close_json) => {
-                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "protocol_error");
+            ProcessResult::Reject(terminate_json) => {
+                let v: serde_json::Value = serde_json::from_str(&terminate_json).unwrap();
+                assert_eq!(v["body"]["reason"], "protocol_error");
             }
             _ => panic!("expected Reject"),
         }
@@ -813,8 +817,8 @@ mod tests {
         let wallet_ready = wallet_rx.try_recv().unwrap();
         let v: serde_json::Value = serde_json::from_str(&wallet_ready).unwrap();
         assert_eq!(v["t"], "ready");
-        assert_eq!(v["state"], "waiting");
-        assert_eq!(v["role"], "wallet");
+        assert_eq!(v["body"]["state"], "waiting");
+        assert_eq!(v["body"]["role"], "wallet");
 
         // DApp should receive the join message (forwarded)
         // First message is ready.waiting from create, second is the join
@@ -839,7 +843,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "channel_not_found");
+                assert_eq!(v["body"]["reason"], "channel_not_found");
             }
             _ => panic!("expected Reject"),
         }
@@ -870,7 +874,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "already_connected");
+                assert_eq!(v["body"]["reason"], "already_connected");
             }
             _ => panic!("expected Reject"),
         }
@@ -903,12 +907,12 @@ mod tests {
         let _ = dapp_rx.try_recv(); // join forwarded
         let dapp_ready = dapp_rx.try_recv().unwrap();
         let v: serde_json::Value = serde_json::from_str(&dapp_ready).unwrap();
-        assert_eq!(v["state"], "connected");
+        assert_eq!(v["body"]["state"], "connected");
 
         let _ = wallet_rx.try_recv(); // ready.waiting from join
         let wallet_ready = wallet_rx.try_recv().unwrap();
         let v: serde_json::Value = serde_json::from_str(&wallet_ready).unwrap();
-        assert_eq!(v["state"], "connected");
+        assert_eq!(v["body"]["state"], "connected");
     }
 
     #[test]
@@ -948,7 +952,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "invalid_role");
+                assert_eq!(v["body"]["reason"], "invalid_role");
             }
             _ => panic!("expected Reject"),
         }
@@ -970,7 +974,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "channel_not_found");
+                assert_eq!(v["body"]["reason"], "channel_not_found");
             }
             _ => panic!("expected Reject"),
         }
@@ -995,7 +999,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "invalid_state");
+                assert_eq!(v["body"]["reason"], "invalid_state");
             }
             _ => panic!("expected Reject"),
         }
@@ -1028,7 +1032,7 @@ mod tests {
         let forwarded = wallet_rx.try_recv().unwrap();
         let v: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
         assert_eq!(v["t"], "req");
-        assert_eq!(v["id"], "r1");
+        assert_eq!(v["body"]["id"], "r1");
     }
 
     #[test]
@@ -1068,7 +1072,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "invalid_role");
+                assert_eq!(v["body"]["reason"], "invalid_role");
             }
             _ => panic!("expected Reject"),
         }
@@ -1160,7 +1164,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "channel_not_found");
+                assert_eq!(v["body"]["reason"], "channel_not_found");
             }
             _ => panic!("expected Reject"),
         }
@@ -1186,7 +1190,8 @@ mod tests {
 
         // Send a res clears it
         let res_raw = serde_json::json!({
-            "v": 1, "t": "res", "ch": ch, "from": wallet, "id": "r1", "ok": true
+            "v": 1, "t": "res", "ch": ch, "ts": 1234, "from": wallet,
+            "body": {"id": "r1", "ok": true, "sealed": "xyz"}
         })
         .to_string();
         let res_msg = protocol::parse_message(&res_raw).unwrap();
@@ -1238,7 +1243,7 @@ mod tests {
         let forwarded = wallet_rx.try_recv().unwrap();
         let v: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
         assert_eq!(v["t"], "close");
-        assert_eq!(v["reason"], "normal");
+        assert_eq!(v["body"]["reason"], "normal");
     }
 
     #[test]
@@ -1274,7 +1279,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "invalid_role");
+                assert_eq!(v["body"]["reason"], "invalid_role");
             }
             _ => panic!("expected Reject"),
         }
@@ -1298,8 +1303,8 @@ mod tests {
         // Reconnect
         let (tx, mut rx) = mpsc::channel(64);
         let raw = serde_json::json!({
-            "v": 1, "t": "create", "ch": ch, "from": dapp, "pubkey": dapp,
-            "resume": token
+            "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": dapp,
+            "body": {"resume": token}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -1326,8 +1331,8 @@ mod tests {
 
         let (tx, _rx) = mpsc::channel(64);
         let raw = serde_json::json!({
-            "v": 1, "t": "create", "ch": ch, "from": dapp, "pubkey": dapp,
-            "resume": "bogus-token"
+            "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": dapp,
+            "body": {"resume": "bogus-token"}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();
@@ -1336,7 +1341,7 @@ mod tests {
         match result {
             ProcessResult::Reject(close_json) => {
                 let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
-                assert_eq!(v["reason"], "invalid_resume");
+                assert_eq!(v["body"]["reason"], "invalid_resume");
             }
             _ => panic!("expected Reject"),
         }
