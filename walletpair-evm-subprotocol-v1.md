@@ -433,10 +433,27 @@ successful response indicates the transaction was accepted by the wallet's
 RPC endpoint, not that it was mined or confirmed. The dApp is responsible
 for monitoring the transaction status on-chain.
 
-Note: EIP-4844 blob transactions require blob sidecar data for
-broadcasting, which may exceed the 64 KB WalletPair message limit.
-For blob transactions, dApps SHOULD use `wallet_signTransaction`
-(sign only) and submit the transaction with sidecar data themselves.
+**EIP-4844 blob transaction limitations.** Blob transactions (type 3)
+require blob sidecar data for broadcasting, which typically exceeds the
+64 KB WalletPair message limit. WalletPair v1 support for blob
+transactions is therefore limited:
+
+- For `wallet_sendTransaction` with type 3: the wallet signs and
+  broadcasts. However, the wallet needs access to the blob sidecar data
+  (not transmitted via WalletPair) to construct a valid broadcast. If
+  the wallet does not have sidecar data available, it MUST reject with
+  `invalid_params` and message "Blob sidecar data required for
+  broadcast".
+- **Recommended approach:** dApps SHOULD use `wallet_signTransaction`
+  (sign only) for blob transactions and submit the signed transaction
+  with sidecar data themselves via their own RPC endpoint.
+- The wallet signs the transaction based on `blobVersionedHashes`
+  provided by the dApp. The wallet **cannot verify** that actual blob
+  data exists for these hashes — it trusts the dApp to provide correct
+  hashes. The wallet SHOULD display the number of blob hashes and a
+  warning about additional data costs.
+- A future WalletPair extension may define chunked transfer for large
+  payloads to enable full blob transaction support.
 
 **Errors:** `user_rejected`, `unauthorized`, `invalid_params`, `unsupported_chain`, `insufficient_funds`, `nonce_too_low`, `gas_estimation_failed`, `tx_rejected`, `internal_error`
 
@@ -484,6 +501,25 @@ chain-bound and may be replayed on any EVM chain. The wallet MUST
 additionally warn when the message appears to be a login nonce or
 authorization grant without domain/expiry/nonce fields (e.g., bare hex
 hashes or short numeric strings).
+
+**Structured message recommendation.** DApps that need domain-bound or
+expiry-bound message signatures SHOULD use `wallet_signTypedData`
+(EIP-712) instead, which supports `domain.chainId` for chain binding.
+For login flows specifically, dApps SHOULD use
+[EIP-4361](https://eips.ethereum.org/EIPS/eip-4361) (Sign-In with
+Ethereum) formatted messages, which include domain, chain ID, nonce,
+and expiration. The wallet SHOULD detect EIP-4361 formatted messages
+and display the parsed fields (domain, chain, expiry) prominently.
+
+**Risk-based confirmation.** The wallet MAY implement tiered confirmation
+for `wallet_signMessage`:
+- Messages matching EIP-4361 format: standard confirmation.
+- Messages that are plain human-readable text: standard confirmation with
+  cross-chain replay warning.
+- Messages that appear to be bare hex hashes, short numeric strings, or
+  unstructured authorization tokens: require elevated confirmation (e.g.,
+  additional tap, delay, or explicit "I understand this may be replayed"
+  acknowledgment).
 
 **Result:**
 
@@ -689,21 +725,38 @@ explicit wallet-defined scope update before using the new chain.
 }
 ```
 
-The wallet MUST reject `rpcUrls` entries using non-HTTPS schemes, except
-for `http://localhost` and `http://127.0.0.1` (local development). The
-wallet MUST reject `rpcUrls` entries using `javascript:`, `data:`, or
-other non-HTTP(S) schemes with `invalid_params`.
+**Input length limits.** The wallet MUST enforce the following limits and
+reject with `invalid_params` if exceeded:
 
-The wallet MUST query `eth_chainId` on each accepted RPC URL before adding
-the chain and MUST reject the request if no RPC URL returns the exact chain ID
-specified by `chain`. A wallet SHOULD reject or quarantine RPC URLs that return
-conflicting chain IDs, timeout repeatedly, or cannot be validated over TLS.
+| Field | Maximum |
+|-------|---------|
+| `chainName` | 64 UTF-8 characters |
+| `nativeCurrency.name` | 32 UTF-8 characters |
+| `nativeCurrency.symbol` | 6 UTF-8 characters |
+| `rpcUrls` | At most 5 entries |
+| `blockExplorerUrls` | At most 5 entries |
+| `iconUrls` | At most 3 entries |
+| Each URL | 2048 UTF-8 characters |
 
-If the chain already exists in the wallet, the wallet MUST prompt the user
-before updating RPC URLs. The wallet MUST NOT silently update RPC endpoints
-for existing chains, as this could enable RPC hijacking (a malicious dApp
-replacing a trusted RPC with one that returns false balances or transaction
-results).
+**URL scheme validation.** The wallet MUST reject `rpcUrls` entries using
+non-HTTPS schemes, except for `http://localhost` and `http://127.0.0.1`
+(local development). The wallet MUST reject `rpcUrls` entries using
+`javascript:`, `data:`, or other non-HTTP(S) schemes with `invalid_params`.
+
+**RPC validation and TLS.** The wallet MUST query `eth_chainId` on each
+accepted RPC URL before adding the chain and MUST reject the request if no
+RPC URL returns the exact chain ID specified by `chain`. The wallet MUST
+verify the TLS certificate chain for all HTTPS RPC URLs and MUST reject
+URLs that fail TLS validation. The wallet MUST reject or quarantine RPC
+URLs that return conflicting chain IDs, timeout repeatedly, or present
+invalid certificates. After adding a chain, the wallet SHOULD periodically
+re-validate that the RPC URL still returns the correct chain ID.
+
+**Existing chain protection.** If the chain already exists in the wallet,
+the wallet MUST prompt the user before updating RPC URLs. The wallet MUST
+NOT silently update RPC endpoints for existing chains, as this could enable
+RPC hijacking (a malicious dApp replacing a trusted RPC with one that
+returns false balances or transaction results).
 
 **Errors:** `user_rejected`, `invalid_params`, `internal_error`
 
@@ -789,7 +842,10 @@ representation.
 
 As with `wallet_signMessage`, EIP-191 signatures are not chain-bound. The
 wallet MUST display a prominent warning that the signature may be replayed
-on any EVM chain.
+on any EVM chain. The wallet SHOULD apply the same risk-based confirmation
+tiers described in §5.4. Since raw byte signing is inherently opaque to the
+user, the wallet SHOULD require elevated confirmation for all
+`wallet_signRawMessage` requests.
 
 **Validation rules:**
 
@@ -1111,10 +1167,31 @@ Decrypted `sealed` (data):
 ## 10. Versioning and Extension
 
 This sub-protocol is versioned independently from WalletPair Protocol v1.
-Wallets SHOULD include a version marker in capabilities, for example
-`"evm:walletpair:1"`, or an equivalent SDK-level feature flag. The version is
-not otherwise carried in each wire message, so incompatible schema changes MUST
-use new method names or explicit capability flags.
+Wallets MUST declare the EVM sub-protocol version in the `capabilities.version`
+object defined in WalletPair Protocol v1 §8:
+
+```json
+{
+  "capabilities": {
+    "methods": [...],
+    "events": [...],
+    "chains": ["eip155:1", "eip155:137"],
+    "version": {
+      "evm": 1
+    }
+  }
+}
+```
+
+The `"evm"` key corresponds to the `eip155` CAIP-2 namespace. The integer
+value is the sub-protocol version (currently `1`). If `version` is absent
+or the `"evm"` key is missing, the dApp MUST assume EVM sub-protocol
+version 1 for backward compatibility.
+
+The version is not carried in each wire message, so incompatible schema
+changes MUST use new method names or explicit capability flags. A major
+version increment (e.g., `"evm": 2`) indicates breaking changes to
+existing method schemas.
 
 To add new methods:
 

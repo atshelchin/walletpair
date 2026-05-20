@@ -491,6 +491,30 @@ Capability fields:
 All three fields are required in `capabilities`. An empty array means the
 wallet explicitly supports none of that category.
 
+The wallet SHOULD include a `version` field in `capabilities` to declare
+the sub-protocol versions it supports:
+
+```json
+{
+  "capabilities": {
+    "methods": [...],
+    "events": [...],
+    "chains": [...],
+    "version": {
+      "evm": 1
+    }
+  }
+}
+```
+
+The `version` object maps sub-protocol namespace strings to integer version
+numbers. This allows the dApp to verify sub-protocol compatibility before
+`accept`. If the dApp requires a sub-protocol version the wallet does not
+declare, the dApp SHOULD `close` with `unsupported_capability`. If
+`version` is absent, the dApp MUST assume version 1 for all declared chain
+namespaces (backward compatible with implementations that predate this
+field).
+
 The `capabilities` in the `join` message represents the **approved session
 scope** — not the wallet's full capability set. When the pairing URI
 includes `methods` and `chains`, the wallet MUST compute the intersection
@@ -837,6 +861,24 @@ Rules:
    persist broadcast tx hashes separately (keyed by `req.id`) until
    the channel is closed.
 
+   **Cache entry size limit.** Each cached entry MUST store at most the
+   params hash (32 bytes), the response status (ok/error), and the
+   serialized response JSON. The wallet MUST cap individual cached
+   response entries at 16 KB. If a response exceeds this limit, the
+   wallet stores only the params hash and a flag indicating "response
+   too large to cache"; on a cache hit with this flag, the wallet
+   re-processes the request (safe for read-only methods). For
+   `wallet_sendTransaction`, the broadcast tx hash (32 bytes) is
+   always stored regardless of this limit.
+
+   **Worst-case memory.** With 1024 cache entries at 16 KB each, the
+   maximum idempotency cache size is 16 MB. Combined with the 32
+   concurrent pending requests limit (§16 rule 12), a malicious dApp
+   can generate at most 32 new cache entries per round-trip cycle.
+   Wallets on memory-constrained devices MAY use a smaller cache
+   (minimum 128 entries) and MUST document the reduced cache size in
+   their capability declaration.
+
 ## 11. Wallet Events
 
 The wallet can push an event to the dApp with `evt`.
@@ -900,6 +942,30 @@ timeout        : 60 seconds
 
 If no `pong` is received within the timeout, the peer should treat the
 connection as dead, close the transport, and begin reconnect (Section 14).
+
+### 12.1 Heartbeat Security
+
+Heartbeat messages are **not encrypted** and do not consume sequence
+numbers. This is intentional — heartbeats carry no sensitive payload and
+must function even when encryption state is being established.
+
+However, implementations MUST be aware of the following implications:
+
+1. **Relay-forged heartbeats.** A malicious relay can forge `ping` or
+   `pong` messages (including the `from` field) since they are not
+   authenticated. This cannot cause data compromise but may confuse
+   liveness detection.
+2. **Heartbeat suppression.** A malicious relay can drop `pong` responses
+   to make peers believe the connection is dead, triggering reconnection.
+   This is a denial-of-service vector equivalent to the relay dropping
+   any other message type — see §20.5.
+3. **Timing metadata.** The `ts` field and heartbeat frequency are
+   visible to the relay and can be used for timing analysis (e.g.,
+   determining if a peer is active).
+
+These risks are within the accepted threat model: a relay can always deny
+service by dropping messages (§20.5). Peers SHOULD use reconnect logic
+(§14) and multiple relays (§18.5) to mitigate relay-initiated disruption.
 
 ## 13. Close and Reject
 
@@ -1342,6 +1408,46 @@ The relay operator, network attacker, or eavesdropper should not be able to:
 | Channel hijack | Channel ID is 32 random bytes (256-bit entropy). |
 | Relay compromise | Relay only sees encrypted `sealed` blobs and routing metadata. |
 
+### 20.2.1 Pairing Code Security Analysis
+
+The 4-digit pairing code is a **defense-in-depth** measure, not the primary
+MITM protection.
+
+**Primary defense: out-of-band public key delivery.** The dApp's public key
+is embedded in the pairing URI (QR code displayed on the dApp's screen).
+The wallet obtains this key by optically scanning the screen — the relay is
+not in this path and cannot substitute the dApp's public key.
+
+A relay-positioned attacker can only attempt a **half-MITM**: substituting
+the wallet's public key in the forwarded `join` message. However, this
+causes both sides to derive different `root_key`, `transcript_hash`, and
+`traffic_key` values:
+
+```text
+dApp side:   shared_secret = X25519(dapp_priv, attacker_pub)
+Wallet side: shared_secret = X25519(wallet_priv, dapp_pub)  ← real, from QR
+
+→ Different root_key → different transcript_hash → different traffic_key
+→ Channel is cryptographically non-functional (AEAD decryption fails)
+→ Different pairing_code (user sees mismatch)
+```
+
+Even if the 4-digit codes coincidentally match (1 in 10,000), the channel
+cannot carry any messages because the two sides have incompatible traffic
+keys. The attacker cannot complete a full MITM because it cannot substitute
+the dApp's public key (delivered via QR).
+
+**What the pairing code guards against:** The pairing code provides
+human-verifiable confirmation as a secondary safeguard. It does NOT protect
+against phishing attacks where the attacker controls the QR code display
+itself (e.g., a fake dApp website) — in that scenario the attacker controls
+both ends and codes will match regardless of length.
+
+**Collision probability:** The attacker gets exactly one attempt per pairing
+session (one `join` per channel). The probability is 1/10,000 per attempt,
+but a successful collision does not yield a functional MITM channel due to
+the traffic key mismatch described above.
+
 ### 20.3 Rules
 
 1. `ch` must be cryptographically random (256 bits).
@@ -1377,6 +1483,27 @@ type and capabilities). Implementations MUST mitigate this:
 Method/event name encryption is the default behavior per Section 7.4.
 Peers MAY opt out only by mutual agreement via the `privacy_mode`
 capability.
+
+**Handshake metadata tradeoff.** The `capabilities` and `meta` fields in
+the `join` message are transmitted in plaintext because the dApp needs them
+to decide whether to `accept` the wallet before the encrypted channel is
+established. This is an inherent tradeoff in the current handshake design.
+Implementations SHOULD be aware of the following specific leakage:
+
+- `meta.name` reveals the wallet brand or device name (e.g., "MetaMask",
+  "Ledger Nano S"). Wallets SHOULD use a generic name or omit `meta.name`
+  when privacy is a concern.
+- `capabilities.chains` reveals which chains the user intends to use.
+  Wallets SHOULD include only the intersection of dApp-requested chains
+  (per §8.1) rather than all supported chains.
+- `capabilities.methods` reveals the scope of operations. This is less
+  sensitive but may indicate user intent (e.g., presence of
+  `wallet_signTypedData` suggests DeFi interaction).
+
+Relay operators MUST NOT log, index, or retain `join` message content
+beyond the immediate delivery. A future protocol version may address this
+by splitting the handshake into a key-exchange phase followed by an
+encrypted capability exchange.
 
 ### 20.5 Close Message Trust
 
