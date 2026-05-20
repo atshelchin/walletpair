@@ -409,4 +409,242 @@ mod tests {
         // (ch1 and ch2 may or may not be in same shard, so just verify lookup works)
         assert!(!store.lock_shard(&ch1).contains(&ch2) || shard_index(&ch1, 63) == shard_index(&ch2, 63));
     }
+
+    // --- Additional coverage ---
+
+    #[test]
+    fn revoke_resume_tokens_only_revokes_matching_role() {
+        let config = test_config();
+        let mut store = ChannelStore::new(&config);
+        let (tx, _rx) = mpsc::channel(1);
+
+        let ch_id = "ab".repeat(32);
+        let ch = Channel::new(
+            ch_id.clone(),
+            "dapp_p".into(),
+            PeerConn { sender: tx, conn_id: 1 },
+        );
+        store.insert(ch);
+
+        // Set wallet peer so we can generate a wallet token
+        store.get_mut(&ch_id).unwrap().wallet_peer_id = Some("wallet_p".into());
+
+        let dapp_token = store.generate_resume_token(&ch_id, Role::DApp, "dapp_p");
+        let wallet_token = store.generate_resume_token(&ch_id, Role::Wallet, "wallet_p");
+
+        // Revoke only dapp tokens
+        store.revoke_resume_tokens(&ch_id, Role::DApp);
+
+        assert!(store.validate_resume_token(&dapp_token).is_none());
+        assert!(store.validate_resume_token(&wallet_token).is_some());
+    }
+
+    #[test]
+    fn disconnect_peer_returns_role() {
+        let config = test_config();
+        let mut store = ChannelStore::new(&config);
+        let (tx, _rx) = mpsc::channel(1);
+
+        let ch_id = "ab".repeat(32);
+        let ch = Channel::new(
+            ch_id.clone(),
+            "p".into(),
+            PeerConn { sender: tx, conn_id: 42 },
+        );
+        store.insert(ch);
+
+        let result = store.disconnect_peer(&ch_id, 42);
+        assert!(result.is_some());
+        let (id, role) = result.unwrap();
+        assert_eq!(id, ch_id);
+        assert_eq!(role, Role::DApp);
+
+        // Conn should be gone now
+        assert!(store.get(&ch_id).unwrap().dapp_conn.is_none());
+    }
+
+    #[test]
+    fn disconnect_peer_unknown_conn_id() {
+        let config = test_config();
+        let mut store = ChannelStore::new(&config);
+        let (tx, _rx) = mpsc::channel(1);
+
+        let ch_id = "ab".repeat(32);
+        let ch = Channel::new(
+            ch_id.clone(),
+            "p".into(),
+            PeerConn { sender: tx, conn_id: 1 },
+        );
+        store.insert(ch);
+
+        assert!(store.disconnect_peer(&ch_id, 999).is_none());
+    }
+
+    #[test]
+    fn disconnect_peer_unknown_channel() {
+        let config = test_config();
+        let mut store = ChannelStore::new(&config);
+        assert!(store.disconnect_peer("nonexistent", 1).is_none());
+    }
+
+    #[test]
+    fn channel_count_tracks_insertions() {
+        let config = test_config();
+        let mut store = ChannelStore::new(&config);
+        assert_eq!(store.channel_count(), 0);
+
+        let (tx, _rx) = mpsc::channel(1);
+        store.insert(Channel::new(
+            "ab".repeat(32),
+            "p".into(),
+            PeerConn { sender: tx, conn_id: 1 },
+        ));
+        assert_eq!(store.channel_count(), 1);
+    }
+
+    #[test]
+    fn get_and_contains() {
+        let config = test_config();
+        let mut store = ChannelStore::new(&config);
+        let (tx, _rx) = mpsc::channel(1);
+        let ch_id = "ab".repeat(32);
+        store.insert(Channel::new(
+            ch_id.clone(),
+            "p".into(),
+            PeerConn { sender: tx, conn_id: 1 },
+        ));
+
+        assert!(store.contains(&ch_id));
+        assert!(!store.contains("nonexistent"));
+        assert!(store.get(&ch_id).is_some());
+        assert!(store.get("nonexistent").is_none());
+        assert!(store.get_mut(&ch_id).is_some());
+    }
+
+    #[test]
+    fn shard_index_deterministic() {
+        let ch = "ab".repeat(32);
+        let idx1 = shard_index(&ch, 63);
+        let idx2 = shard_index(&ch, 63);
+        assert_eq!(idx1, idx2);
+    }
+
+    #[test]
+    fn shard_index_within_bounds() {
+        let mask = 63; // 64 shards
+        for i in 0..=255u8 {
+            let ch = format!("{:02x}", i).repeat(32);
+            let idx = shard_index(&ch, mask);
+            assert!(idx <= mask, "shard index {} exceeds mask {}", idx, mask);
+        }
+    }
+
+    #[test]
+    fn shard_index_distributes_across_shards() {
+        let mask = 63;
+        let mut seen = std::collections::HashSet::new();
+        // Generate 256 different channel IDs and check distribution
+        for i in 0..256u16 {
+            let ch = format!("{:04x}{}", i, "a".repeat(60));
+            seen.insert(shard_index(&ch, mask));
+        }
+        // With 256 inputs and 64 shards, we should hit many shards
+        assert!(seen.len() > 10, "only {} shards used out of 64", seen.len());
+    }
+
+    #[test]
+    fn sharded_store_at_capacity() {
+        let config = Config {
+            max_channels: 2,
+            ..test_config()
+        };
+        let store = ShardedStore::new(&config);
+        assert!(!store.at_capacity());
+
+        store.inc_total();
+        assert!(!store.at_capacity());
+
+        store.inc_total();
+        assert!(store.at_capacity());
+    }
+
+    #[test]
+    fn sharded_store_inc_dec_total() {
+        let config = test_config();
+        let store = ShardedStore::new(&config);
+
+        assert_eq!(store.total_channels(), 0);
+        store.inc_total();
+        store.inc_total();
+        assert_eq!(store.total_channels(), 2);
+        store.dec_total();
+        assert_eq!(store.total_channels(), 1);
+    }
+
+    #[test]
+    fn sharded_store_for_each_shard() {
+        let config = test_config();
+        let store = ShardedStore::new(&config);
+
+        // Insert a channel
+        let ch_id = "ab".repeat(32);
+        {
+            let mut shard = store.lock_shard(&ch_id);
+            let (tx, _rx) = mpsc::channel(1);
+            shard.insert(Channel::new(
+                ch_id.clone(),
+                "p".into(),
+                PeerConn { sender: tx, conn_id: 1 },
+            ));
+        }
+
+        let mut total = 0;
+        store.for_each_shard(|s| {
+            total += s.channel_count();
+        });
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn cleanup_expired_removes_closed_channels() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let (tx, _rx) = mpsc::channel(1);
+
+        let ch_id = "ab".repeat(32);
+        let mut ch = Channel::new(
+            ch_id.clone(),
+            "p".into(),
+            PeerConn { sender: tx, conn_id: 1 },
+        );
+        ch.state = ChannelState::Closed;
+        store.insert(ch);
+        metrics.active_channels.inc();
+
+        let removed = store.cleanup_expired(&metrics);
+        assert_eq!(removed, 1);
+        assert!(!store.contains(&ch_id));
+    }
+
+    #[test]
+    fn generate_resume_token_stores_on_channel() {
+        let config = test_config();
+        let mut store = ChannelStore::new(&config);
+        let (tx, _rx) = mpsc::channel(1);
+
+        let ch_id = "ab".repeat(32);
+        let ch = Channel::new(
+            ch_id.clone(),
+            "dapp_p".into(),
+            PeerConn { sender: tx, conn_id: 1 },
+        );
+        store.insert(ch);
+
+        let token = store.generate_resume_token(&ch_id, Role::DApp, "dapp_p");
+
+        // Token should be stored on the channel
+        let ch = store.get(&ch_id).unwrap();
+        assert_eq!(ch.dapp_resume.as_ref().unwrap(), &token);
+    }
 }

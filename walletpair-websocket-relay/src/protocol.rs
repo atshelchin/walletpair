@@ -634,4 +634,309 @@ mod tests {
         assert_eq!(v["reason"], "timeout");
         assert!(v.get("from").is_none());
     }
+
+    // --- Additional coverage ---
+
+    #[test]
+    fn parse_accept_valid() {
+        let pid1 = make_peer_id();
+        let pid2 = URL_SAFE_NO_PAD.encode([2u8; 32]);
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "accept", "ch": ch, "from": pid1, "target": pid2
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        assert!(matches!(msg, ClientMessage::Accept { .. }));
+        assert_eq!(msg.message_type(), "accept");
+        assert_eq!(msg.channel_id(), ch);
+        assert_eq!(msg.from_peer(), pid1);
+    }
+
+    #[test]
+    fn parse_res_valid() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "res", "ch": ch, "from": pid, "id": "r1", "ok": true
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        assert!(matches!(msg, ClientMessage::Res { .. }));
+        assert_eq!(msg.message_type(), "res");
+    }
+
+    #[test]
+    fn parse_res_missing_ok() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "res", "ch": ch, "from": pid, "id": "r1"
+        });
+        assert!(parse_message(&json.to_string()).is_err());
+    }
+
+    #[test]
+    fn parse_evt_valid() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "evt", "ch": ch, "from": pid, "event": "disconnect"
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        assert!(matches!(msg, ClientMessage::Evt { .. }));
+        assert_eq!(msg.message_type(), "evt");
+    }
+
+    #[test]
+    fn parse_evt_missing_event() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "evt", "ch": ch, "from": pid
+        });
+        assert!(parse_message(&json.to_string()).is_err());
+    }
+
+    #[test]
+    fn parse_ping_valid() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "ping", "ch": ch, "from": pid
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        assert!(matches!(msg, ClientMessage::Ping { .. }));
+        assert_eq!(msg.message_type(), "ping");
+    }
+
+    #[test]
+    fn parse_pong_valid() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "pong", "ch": ch, "from": pid
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        assert!(matches!(msg, ClientMessage::Pong { .. }));
+        assert_eq!(msg.message_type(), "pong");
+    }
+
+    #[test]
+    fn parse_close_valid() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "close", "ch": ch, "from": pid, "reason": "normal"
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        assert!(matches!(msg, ClientMessage::Close { .. }));
+        assert_eq!(msg.message_type(), "close");
+    }
+
+    #[test]
+    fn parse_close_with_target() {
+        let pid1 = make_peer_id();
+        let pid2 = URL_SAFE_NO_PAD.encode([2u8; 32]);
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "close", "ch": ch, "from": pid1, "target": pid2, "reason": "user_rejected"
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        match msg {
+            ClientMessage::Close { target, reason, .. } => {
+                assert_eq!(target.unwrap(), pid2);
+                assert_eq!(reason, "user_rejected");
+            }
+            _ => panic!("expected Close"),
+        }
+    }
+
+    #[test]
+    fn parse_close_invalid_target_peer_id() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "close", "ch": ch, "from": pid, "target": "bad!", "reason": "normal"
+        });
+        assert!(parse_message(&json.to_string()).is_err());
+    }
+
+    #[test]
+    fn parse_missing_version() {
+        let ch = make_channel_id();
+        let json = serde_json::json!({"t": "create", "ch": ch});
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::MissingField("v")));
+    }
+
+    #[test]
+    fn parse_missing_type() {
+        let ch = make_channel_id();
+        let json = serde_json::json!({"v": 1, "ch": ch});
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::MissingField("t")));
+    }
+
+    #[test]
+    fn parse_missing_channel() {
+        let json = serde_json::json!({"v": 1, "t": "create"});
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::MissingField("ch")));
+    }
+
+    #[test]
+    fn parse_invalid_channel_id_in_message() {
+        let json = serde_json::json!({"v": 1, "t": "create", "ch": "tooshort"});
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::InvalidChannelId));
+    }
+
+    #[test]
+    fn parse_version_zero() {
+        let ch = make_channel_id();
+        let json = serde_json::json!({"v": 0, "t": "create", "ch": ch});
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::UnsupportedVersion(0)));
+    }
+
+    #[test]
+    fn parse_join_missing_capabilities() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "join", "ch": ch, "from": pid, "pubkey": pid
+        });
+        let err = parse_message(&json.to_string()).unwrap_err();
+        assert!(matches!(err, ParseError::MissingField("capabilities")));
+    }
+
+    #[test]
+    fn parse_join_pubkey_mismatch() {
+        let pid1 = URL_SAFE_NO_PAD.encode([1u8; 32]);
+        let pid2 = URL_SAFE_NO_PAD.encode([2u8; 32]);
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "join", "ch": ch, "from": pid1, "pubkey": pid2,
+            "capabilities": {}
+        });
+        assert!(matches!(
+            parse_message(&json.to_string()).unwrap_err(),
+            ParseError::PubkeyMismatch
+        ));
+    }
+
+    #[test]
+    fn parse_req_valid() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "req", "ch": ch, "from": pid, "id": "r42", "method": "eth_sign"
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        match msg {
+            ClientMessage::Req { id, .. } => assert_eq!(id, "r42"),
+            _ => panic!("expected Req"),
+        }
+    }
+
+    #[test]
+    fn parse_create_with_resume() {
+        let pid = make_peer_id();
+        let ch = make_channel_id();
+        let json = serde_json::json!({
+            "v": 1, "t": "create", "ch": ch, "from": pid, "pubkey": pid,
+            "resume": "some-token"
+        });
+        let msg = parse_message(&json.to_string()).unwrap();
+        match msg {
+            ClientMessage::Create { resume, .. } => assert_eq!(resume.unwrap(), "some-token"),
+            _ => panic!("expected Create"),
+        }
+    }
+
+    #[test]
+    fn all_close_reasons_as_str() {
+        let reasons = vec![
+            (CloseReason::Normal, "normal"),
+            (CloseReason::UserRejected, "user_rejected"),
+            (CloseReason::UnsupportedCapability, "unsupported_capability"),
+            (CloseReason::ChannelNotFound, "channel_not_found"),
+            (CloseReason::ChannelExists, "channel_exists"),
+            (CloseReason::AlreadyConnected, "already_connected"),
+            (CloseReason::InvalidState, "invalid_state"),
+            (CloseReason::InvalidRole, "invalid_role"),
+            (CloseReason::InvalidResume, "invalid_resume"),
+            (CloseReason::Timeout, "timeout"),
+            (CloseReason::PayloadTooLarge, "payload_too_large"),
+            (CloseReason::ProtocolError, "protocol_error"),
+            (CloseReason::UnsupportedVersion, "unsupported_version"),
+            (CloseReason::DecryptionFailed, "decryption_failed"),
+            (CloseReason::SlowConsumer, "slow_consumer"),
+            (CloseReason::ServerShutdown, "server_shutdown"),
+        ];
+        for (reason, expected) in reasons {
+            assert_eq!(reason.as_str(), expected);
+            // Also test Display
+            assert_eq!(format!("{}", reason), expected);
+        }
+    }
+
+    #[test]
+    fn role_as_str_and_display() {
+        assert_eq!(Role::DApp.as_str(), "dapp");
+        assert_eq!(Role::Wallet.as_str(), "wallet");
+        assert_eq!(format!("{}", Role::DApp), "dapp");
+        assert_eq!(format!("{}", Role::Wallet), "wallet");
+    }
+
+    #[test]
+    fn parse_error_to_close_reason_protocol_error_for_most() {
+        let err = ParseError::InvalidChannelId;
+        assert_eq!(err.to_close_reason(), CloseReason::ProtocolError);
+
+        let err = ParseError::MissingField("x");
+        assert_eq!(err.to_close_reason(), CloseReason::ProtocolError);
+
+        let err = ParseError::NotAnObject;
+        assert_eq!(err.to_close_reason(), CloseReason::ProtocolError);
+    }
+
+    #[test]
+    fn build_close_with_target_includes_target() {
+        let ch = "ab".repeat(32);
+        let json = build_close_with_target(&ch, CloseReason::ProtocolError, "some_target");
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["target"], "some_target");
+        assert_eq!(v["reason"], "protocol_error");
+        assert_eq!(v["v"], 1);
+        assert_eq!(v["t"], "close");
+    }
+
+    #[test]
+    fn channel_id_empty_string_rejected() {
+        assert!(validate_channel_id("").is_err());
+    }
+
+    #[test]
+    fn channel_id_65_chars_rejected() {
+        let id = "a".repeat(65);
+        assert!(validate_channel_id(&id).is_err());
+    }
+
+    #[test]
+    fn channel_id_mixed_case_rejected() {
+        let mut id = "a".repeat(63);
+        id.push('A');
+        assert!(validate_channel_id(&id).is_err());
+    }
+
+    #[test]
+    fn valid_channel_id_all_hex_chars() {
+        let id = "0123456789abcdef".repeat(4);
+        assert!(validate_channel_id(&id).is_ok());
+    }
+
+    #[test]
+    fn peer_id_empty_rejected() {
+        assert!(validate_peer_id("").is_err());
+    }
 }

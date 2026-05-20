@@ -574,3 +574,800 @@ fn handle_reconnect(
     );
     ProcessResult::Ok
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+
+    fn test_config() -> Config {
+        Config {
+            max_channels: 100,
+            pending_request_limit: 32,
+            unpaired_channel_ttl_secs: 300,
+            connected_channel_ttl_secs: 86400,
+            ..Config::default()
+        }
+    }
+
+    fn test_metrics() -> Metrics {
+        Metrics::new()
+    }
+
+    fn make_peer_id(seed: u8) -> String {
+        URL_SAFE_NO_PAD.encode([seed; 32])
+    }
+
+    fn make_channel_id() -> String {
+        "ab".repeat(32)
+    }
+
+    fn make_create_msg(ch: &str, from: &str) -> (String, ClientMessage) {
+        let raw = serde_json::json!({
+            "v": 1, "t": "create", "ch": ch, "from": from, "pubkey": from
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        (raw, msg)
+    }
+
+    fn make_join_msg(ch: &str, from: &str) -> (String, ClientMessage) {
+        let raw = serde_json::json!({
+            "v": 1, "t": "join", "ch": ch, "from": from, "pubkey": from,
+            "capabilities": {"methods": [], "events": [], "chains": []}
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        (raw, msg)
+    }
+
+    fn make_accept_msg(ch: &str, from: &str, target: &str) -> (String, ClientMessage) {
+        let raw = serde_json::json!({
+            "v": 1, "t": "accept", "ch": ch, "from": from, "target": target
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        (raw, msg)
+    }
+
+    fn make_req_msg(ch: &str, from: &str, id: &str) -> (String, ClientMessage) {
+        let raw = serde_json::json!({
+            "v": 1, "t": "req", "ch": ch, "from": from, "id": id, "method": "eth_sign",
+            "params": []
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        (raw, msg)
+    }
+
+    fn make_close_msg(ch: &str, from: &str, reason: &str) -> (String, ClientMessage) {
+        let raw = serde_json::json!({
+            "v": 1, "t": "close", "ch": ch, "from": from, "reason": reason
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        (raw, msg)
+    }
+
+    fn make_evt_msg(ch: &str, from: &str) -> (String, ClientMessage) {
+        let raw = serde_json::json!({
+            "v": 1, "t": "evt", "ch": ch, "from": from, "event": "disconnect"
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        (raw, msg)
+    }
+
+    fn make_ping_msg(ch: &str, from: &str) -> (String, ClientMessage) {
+        let raw = serde_json::json!({
+            "v": 1, "t": "ping", "ch": ch, "from": from
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        (raw, msg)
+    }
+
+    /// Helper: create channel, return the dapp sender rx so we can check messages sent to dapp
+    fn setup_channel(
+        store: &mut ChannelStore,
+        metrics: &Metrics,
+        ch: &str,
+        dapp_id: &str,
+    ) -> mpsc::Receiver<String> {
+        let (tx, rx) = mpsc::channel(64);
+        let (raw, msg) = make_create_msg(ch, dapp_id);
+        let result = process_message(store, 1, &tx, &raw, msg, metrics, false);
+        assert!(matches!(result, ProcessResult::OkCreated));
+        rx
+    }
+
+    /// Helper: create + join, return (dapp_rx, wallet_rx)
+    fn setup_joined_channel(
+        store: &mut ChannelStore,
+        metrics: &Metrics,
+        ch: &str,
+        dapp_id: &str,
+        wallet_id: &str,
+    ) -> (mpsc::Receiver<String>, mpsc::Receiver<String>) {
+        let dapp_rx = setup_channel(store, metrics, ch, dapp_id);
+
+        let (wallet_tx, wallet_rx) = mpsc::channel(64);
+        let (raw, msg) = make_join_msg(ch, wallet_id);
+        let result = process_message(store, 2, &wallet_tx, &raw, msg, metrics, false);
+        assert!(matches!(result, ProcessResult::Ok));
+        (dapp_rx, wallet_rx)
+    }
+
+    /// Helper: create + join + accept, return (dapp_rx, wallet_rx)
+    fn setup_connected_channel(
+        store: &mut ChannelStore,
+        metrics: &Metrics,
+        ch: &str,
+        dapp_id: &str,
+        wallet_id: &str,
+    ) -> (mpsc::Receiver<String>, mpsc::Receiver<String>) {
+        let (dapp_rx, wallet_rx) = setup_joined_channel(store, metrics, ch, dapp_id, wallet_id);
+
+        let (dapp_tx_clone, _) = mpsc::channel(64);
+        let (raw, msg) = make_accept_msg(ch, dapp_id, wallet_id);
+        // Use the existing dapp sender from the store (it's already stored)
+        let result = process_message(store, 1, &dapp_tx_clone, &raw, msg, metrics, false);
+        assert!(matches!(result, ProcessResult::Ok));
+        (dapp_rx, wallet_rx)
+    }
+
+    // --- handle_create tests ---
+
+    #[test]
+    fn create_channel_returns_ok_created() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let (raw, msg) = make_create_msg(&ch, &dapp);
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::OkCreated));
+        assert!(store.contains(&ch));
+        assert_eq!(store.channel_count(), 1);
+
+        // Should have received a ready.waiting message
+        let ready = rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(v["t"], "ready");
+        assert_eq!(v["state"], "waiting");
+        assert_eq!(v["role"], "dapp");
+    }
+
+    #[test]
+    fn create_duplicate_channel_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+
+        let _rx = setup_channel(&mut store, &metrics, &ch, &dapp);
+
+        // Try to create again
+        let (tx2, _rx2) = mpsc::channel(64);
+        let (raw, msg) = make_create_msg(&ch, &dapp);
+        let result = process_message(&mut store, 2, &tx2, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "channel_exists");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[test]
+    fn create_at_capacity_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let (raw, msg) = make_create_msg(&ch, &dapp);
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, true); // at_capacity = true
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "protocol_error");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    // --- handle_join tests ---
+
+    #[test]
+    fn join_valid_channel() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let mut dapp_rx = setup_channel(&mut store, &metrics, &ch, &dapp);
+
+        let (wallet_tx, mut wallet_rx) = mpsc::channel(64);
+        let (raw, msg) = make_join_msg(&ch, &wallet);
+        let result = process_message(&mut store, 2, &wallet_tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Ok));
+        assert_eq!(store.get(&ch).unwrap().state, ChannelState::PendingAccept);
+
+        // Wallet should receive ready.waiting
+        let wallet_ready = wallet_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&wallet_ready).unwrap();
+        assert_eq!(v["t"], "ready");
+        assert_eq!(v["state"], "waiting");
+        assert_eq!(v["role"], "wallet");
+
+        // DApp should receive the join message (forwarded)
+        // First message is ready.waiting from create, second is the join
+        let _ready = dapp_rx.try_recv().unwrap(); // ready.waiting from create
+        let join_fwd = dapp_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&join_fwd).unwrap();
+        assert_eq!(v["t"], "join");
+    }
+
+    #[test]
+    fn join_nonexistent_channel_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let wallet = make_peer_id(2);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let (raw, msg) = make_join_msg(&ch, &wallet);
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "channel_not_found");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[test]
+    fn join_already_joined_channel_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet1 = make_peer_id(2);
+        let wallet2 = make_peer_id(3);
+
+        let _dapp_rx = setup_channel(&mut store, &metrics, &ch, &dapp);
+
+        // First join
+        let (tx1, _rx1) = mpsc::channel(64);
+        let (raw, msg) = make_join_msg(&ch, &wallet1);
+        let _ = process_message(&mut store, 2, &tx1, &raw, msg, &metrics, false);
+
+        // Second join should fail
+        let (tx2, _rx2) = mpsc::channel(64);
+        let (raw, msg) = make_join_msg(&ch, &wallet2);
+        let result = process_message(&mut store, 3, &tx2, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "already_connected");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    // --- handle_accept tests ---
+
+    #[test]
+    fn accept_transitions_to_connected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (mut dapp_rx, mut wallet_rx) =
+            setup_joined_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        let (dapp_tx2, _) = mpsc::channel(64);
+        let (raw, msg) = make_accept_msg(&ch, &dapp, &wallet);
+        let result = process_message(&mut store, 1, &dapp_tx2, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Ok));
+        assert_eq!(store.get(&ch).unwrap().state, ChannelState::Connected);
+
+        // Both peers should receive ready.connected
+        // Drain the ready.waiting messages first
+        let _ = dapp_rx.try_recv(); // ready.waiting from create
+        let _ = dapp_rx.try_recv(); // join forwarded
+        let dapp_ready = dapp_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&dapp_ready).unwrap();
+        assert_eq!(v["state"], "connected");
+
+        let _ = wallet_rx.try_recv(); // ready.waiting from join
+        let wallet_ready = wallet_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&wallet_ready).unwrap();
+        assert_eq!(v["state"], "connected");
+    }
+
+    #[test]
+    fn accept_wrong_target_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+        let wrong_target = make_peer_id(3);
+
+        let _ = setup_joined_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let (raw, msg) = make_accept_msg(&ch, &dapp, &wrong_target);
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Reject(_)));
+    }
+
+    #[test]
+    fn accept_from_wallet_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let _ = setup_joined_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let (raw, msg) = make_accept_msg(&ch, &wallet, &dapp);
+        let result = process_message(&mut store, 2, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "invalid_role");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[test]
+    fn accept_nonexistent_channel_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let (raw, msg) = make_accept_msg(&ch, &dapp, &wallet);
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "channel_not_found");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[test]
+    fn accept_in_wrong_state_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        // Only create, don't join — state is WaitingForWallet
+        let _ = setup_channel(&mut store, &metrics, &ch, &dapp);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let (raw, msg) = make_accept_msg(&ch, &dapp, &wallet);
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "invalid_state");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    // --- handle_data tests ---
+
+    #[test]
+    fn data_forwards_req_to_wallet() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (_dapp_rx, mut wallet_rx) =
+            setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        // Drain wallet_rx of setup messages
+        while wallet_rx.try_recv().is_ok() {}
+
+        let (dapp_tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_req_msg(&ch, &dapp, "r1");
+        let result = process_message(&mut store, 1, &dapp_tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Ok));
+
+        // Wallet should receive the req
+        let forwarded = wallet_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
+        assert_eq!(v["t"], "req");
+        assert_eq!(v["id"], "r1");
+    }
+
+    #[test]
+    fn data_rejects_req_from_wallet() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let _ = setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        let (wallet_tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_req_msg(&ch, &wallet, "r1");
+        let result = process_message(&mut store, 2, &wallet_tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Reject(_)));
+    }
+
+    #[test]
+    fn data_rejects_unknown_peer() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+        let stranger = make_peer_id(3);
+
+        let _ = setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_req_msg(&ch, &stranger, "r1");
+        let result = process_message(&mut store, 99, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "invalid_role");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[test]
+    fn data_rejects_req_in_pending_accept_state() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let _ = setup_joined_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+        // State is PendingAccept
+
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_req_msg(&ch, &dapp, "r1");
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Reject(_)));
+    }
+
+    #[test]
+    fn data_evt_forwarded_from_wallet() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (mut dapp_rx, _wallet_rx) =
+            setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        // Drain dapp_rx of setup messages
+        while dapp_rx.try_recv().is_ok() {}
+
+        let (wallet_tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_evt_msg(&ch, &wallet);
+        let result = process_message(&mut store, 2, &wallet_tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Ok));
+
+        let forwarded = dapp_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
+        assert_eq!(v["t"], "evt");
+    }
+
+    #[test]
+    fn data_ping_forwarded_from_either() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (mut dapp_rx, mut wallet_rx) =
+            setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        while dapp_rx.try_recv().is_ok() {}
+        while wallet_rx.try_recv().is_ok() {}
+
+        // DApp sends ping -> wallet receives it
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_ping_msg(&ch, &dapp);
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+        assert!(matches!(result, ProcessResult::Ok));
+
+        let forwarded = wallet_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
+        assert_eq!(v["t"], "ping");
+    }
+
+    #[test]
+    fn data_nonexistent_channel_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_req_msg(&ch, &dapp, "r1");
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "channel_not_found");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_request_tracking() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let _ = setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        // Send a req
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_req_msg(&ch, &dapp, "r1");
+        let _ = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        assert!(store.get(&ch).unwrap().pending_requests.contains("r1"));
+
+        // Send a res clears it
+        let res_raw = serde_json::json!({
+            "v": 1, "t": "res", "ch": ch, "from": wallet, "id": "r1", "ok": true
+        })
+        .to_string();
+        let res_msg = protocol::parse_message(&res_raw).unwrap();
+        let _ = process_message(&mut store, 2, &tx, &res_raw, res_msg, &metrics, false);
+
+        assert!(!store.get(&ch).unwrap().pending_requests.contains("r1"));
+    }
+
+    // --- handle_close tests ---
+
+    #[test]
+    fn close_removes_channel() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let _ = setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+        assert!(store.contains(&ch));
+
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_close_msg(&ch, &dapp, "normal");
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::OkRemoved));
+        assert!(!store.contains(&ch));
+    }
+
+    #[test]
+    fn close_forwards_to_other_peer() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (_dapp_rx, mut wallet_rx) =
+            setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        while wallet_rx.try_recv().is_ok() {}
+
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_close_msg(&ch, &dapp, "normal");
+        process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        let forwarded = wallet_rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&forwarded).unwrap();
+        assert_eq!(v["t"], "close");
+        assert_eq!(v["reason"], "normal");
+    }
+
+    #[test]
+    fn close_nonexistent_channel_ok() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_close_msg(&ch, &dapp, "normal");
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Ok));
+    }
+
+    #[test]
+    fn close_from_unknown_peer_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let stranger = make_peer_id(3);
+
+        let _ = setup_channel(&mut store, &metrics, &ch, &dapp);
+
+        let (tx, _) = mpsc::channel(64);
+        let (raw, msg) = make_close_msg(&ch, &stranger, "normal");
+        let result = process_message(&mut store, 99, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "invalid_role");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    // --- handle_reconnect tests ---
+
+    #[test]
+    fn reconnect_with_valid_token() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+
+        let _ = setup_channel(&mut store, &metrics, &ch, &dapp);
+
+        // Get the resume token
+        let token = store.get(&ch).unwrap().dapp_resume.clone().unwrap();
+
+        // Reconnect
+        let (tx, mut rx) = mpsc::channel(64);
+        let raw = serde_json::json!({
+            "v": 1, "t": "create", "ch": ch, "from": dapp, "pubkey": dapp,
+            "resume": token
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        let result = process_message(&mut store, 10, &tx, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::Ok));
+
+        let ready = rx.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(v["t"], "ready");
+        // Old token should be revoked
+        assert!(store.validate_resume_token(&token).is_none());
+    }
+
+    #[test]
+    fn reconnect_with_invalid_token() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+
+        let _ = setup_channel(&mut store, &metrics, &ch, &dapp);
+
+        let (tx, _rx) = mpsc::channel(64);
+        let raw = serde_json::json!({
+            "v": 1, "t": "create", "ch": ch, "from": dapp, "pubkey": dapp,
+            "resume": "bogus-token"
+        })
+        .to_string();
+        let msg = protocol::parse_message(&raw).unwrap();
+        let result = process_message(&mut store, 10, &tx, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(close_json) => {
+                let v: serde_json::Value = serde_json::from_str(&close_json).unwrap();
+                assert_eq!(v["reason"], "invalid_resume");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_request_limit_enforced() {
+        let config = Config {
+            pending_request_limit: 2,
+            ..test_config()
+        };
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let _ = setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        let (tx, _) = mpsc::channel(64);
+
+        // Send 2 reqs (at the limit)
+        for i in 0..2 {
+            let (raw, msg) = make_req_msg(&ch, &dapp, &format!("r{i}"));
+            let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+            assert!(matches!(result, ProcessResult::Ok));
+        }
+
+        // Third should be rejected
+        let (raw, msg) = make_req_msg(&ch, &dapp, "r2");
+        let result = process_message(&mut store, 1, &tx, &raw, msg, &metrics, false);
+        assert!(matches!(result, ProcessResult::Reject(_)));
+    }
+}

@@ -66,3 +66,188 @@ impl Config {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_listen_addr() {
+        let c = Config::default();
+        assert_eq!(c.listen_addr, "0.0.0.0:8080".parse::<SocketAddr>().unwrap());
+    }
+
+    #[test]
+    fn default_websocket_path() {
+        let c = Config::default();
+        assert_eq!(c.websocket_path, "/v1");
+    }
+
+    #[test]
+    fn default_max_connections() {
+        let c = Config::default();
+        assert_eq!(c.max_connections, 10_000);
+    }
+
+    #[test]
+    fn default_max_channels() {
+        let c = Config::default();
+        assert_eq!(c.max_channels, 50_000);
+    }
+
+    #[test]
+    fn default_max_message_bytes() {
+        let c = Config::default();
+        assert_eq!(c.max_message_bytes, 2_097_152);
+    }
+
+    #[test]
+    fn default_outbound_queue_size() {
+        let c = Config::default();
+        assert_eq!(c.outbound_queue_size, 64);
+    }
+
+    #[test]
+    fn default_pending_request_limit() {
+        let c = Config::default();
+        assert_eq!(c.pending_request_limit, 32);
+    }
+
+    #[test]
+    fn default_ttls() {
+        let c = Config::default();
+        assert_eq!(c.unpaired_channel_ttl_secs, 300);
+        assert_eq!(c.connected_channel_ttl_secs, 86_400);
+    }
+
+    #[test]
+    fn default_cleanup_interval() {
+        let c = Config::default();
+        assert_eq!(c.cleanup_interval_secs, 30);
+    }
+
+    #[test]
+    fn default_graceful_shutdown() {
+        let c = Config::default();
+        assert_eq!(c.graceful_shutdown_timeout_secs, 10);
+    }
+
+    #[test]
+    fn default_log_level() {
+        let c = Config::default();
+        assert_eq!(c.log_level, "info");
+    }
+
+    #[test]
+    fn default_metrics_enabled() {
+        let c = Config::default();
+        assert!(c.metrics_enabled);
+    }
+
+    #[test]
+    fn default_allowed_origins_none() {
+        let c = Config::default();
+        assert!(c.allowed_origins.is_none());
+    }
+
+    #[test]
+    fn default_state_file_none() {
+        let c = Config::default();
+        assert!(c.state_file.is_none());
+    }
+
+    #[test]
+    fn parse_from_toml_full() {
+        let toml_str = r#"
+            listen_addr = "127.0.0.1:9090"
+            websocket_path = "/ws"
+            max_connections = 500
+            max_channels = 1000
+            max_message_bytes = 1024
+            outbound_queue_size = 16
+            pending_request_limit = 8
+            unpaired_channel_ttl_secs = 60
+            connected_channel_ttl_secs = 3600
+            cleanup_interval_secs = 10
+            graceful_shutdown_timeout_secs = 5
+            log_level = "debug"
+            metrics_enabled = false
+            allowed_origins = ["https://example.com"]
+            state_file = "/tmp/state.json"
+        "#;
+        let c: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(c.listen_addr, "127.0.0.1:9090".parse::<SocketAddr>().unwrap());
+        assert_eq!(c.websocket_path, "/ws");
+        assert_eq!(c.max_connections, 500);
+        assert_eq!(c.max_channels, 1000);
+        assert_eq!(c.max_message_bytes, 1024);
+        assert_eq!(c.outbound_queue_size, 16);
+        assert_eq!(c.pending_request_limit, 8);
+        assert_eq!(c.unpaired_channel_ttl_secs, 60);
+        assert_eq!(c.connected_channel_ttl_secs, 3600);
+        assert_eq!(c.cleanup_interval_secs, 10);
+        assert_eq!(c.graceful_shutdown_timeout_secs, 5);
+        assert_eq!(c.log_level, "debug");
+        assert!(!c.metrics_enabled);
+        assert_eq!(c.allowed_origins.unwrap(), vec!["https://example.com"]);
+        assert_eq!(c.state_file.unwrap(), "/tmp/state.json");
+    }
+
+    #[test]
+    fn parse_from_toml_partial_uses_defaults() {
+        let toml_str = r#"
+            max_connections = 200
+        "#;
+        let c: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(c.max_connections, 200);
+        // Everything else should be default
+        assert_eq!(c.listen_addr, "0.0.0.0:8080".parse::<SocketAddr>().unwrap());
+        assert_eq!(c.max_channels, 50_000);
+        assert_eq!(c.websocket_path, "/v1");
+        assert!(c.metrics_enabled);
+    }
+
+    #[test]
+    fn parse_from_empty_toml_all_defaults() {
+        let c: Config = toml::from_str("").unwrap();
+        let d = Config::default();
+        assert_eq!(c.listen_addr, d.listen_addr);
+        assert_eq!(c.max_connections, d.max_connections);
+        assert_eq!(c.max_channels, d.max_channels);
+        assert_eq!(c.log_level, d.log_level);
+    }
+
+    #[test]
+    fn parse_from_toml_invalid_field_type_errors() {
+        let toml_str = r#"
+            max_connections = "not_a_number"
+        "#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_from_toml_invalid_listen_addr_errors() {
+        let toml_str = r#"
+            listen_addr = "not-an-address"
+        "#;
+        let result: Result<Config, _> = toml::from_str(toml_str);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn default_values_are_sensible() {
+        let c = Config::default();
+        assert!(c.max_connections > 0);
+        assert!(c.max_channels > 0);
+        assert!(c.max_message_bytes > 0);
+        assert!(c.outbound_queue_size > 0);
+        assert!(c.pending_request_limit > 0);
+        assert!(c.unpaired_channel_ttl_secs > 0);
+        assert!(c.connected_channel_ttl_secs > 0);
+        assert!(c.cleanup_interval_secs > 0);
+        assert!(c.graceful_shutdown_timeout_secs > 0);
+        // Connected TTL should be longer than unpaired TTL
+        assert!(c.connected_channel_ttl_secs > c.unpaired_channel_ttl_secs);
+    }
+}
