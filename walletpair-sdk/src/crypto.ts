@@ -101,17 +101,29 @@ export function computePairingCode(
 // Encrypt / Decrypt (protocol Section 7.4)
 // ---------------------------------------------------------------------------
 
+/**
+ * Build AEAD additional authenticated data.
+ * AAD = channel_id_bytes || utf8(aadSuffix)
+ * The aadSuffix authenticates plaintext header fields to prevent relay tampering.
+ */
+function buildAad(channelIdHex: string, aadSuffix?: string): Uint8Array {
+  const chBytes = hexToBytes(channelIdHex);
+  if (!aadSuffix) return chBytes;
+  return concatBytes(chBytes, utf8ToBytes(aadSuffix));
+}
+
 export function sealPayload(
   sessionKey: Uint8Array,
   channelIdHex: string,
   seq: number,
   data: unknown,
+  aadSuffix?: string,
 ): string {
   const seqBytes = new Uint8Array(4);
   new DataView(seqBytes.buffer).setUint32(0, seq);
   const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
   const plaintext = utf8ToBytes(JSON.stringify(data));
-  const aad = hexToBytes(channelIdHex);
+  const aad = buildAad(channelIdHex, aadSuffix);
   const ciphertext = chacha20poly1305(sessionKey, nonce, aad).encrypt(plaintext);
   return b64urlEncode(concatBytes(seqBytes, ciphertext));
 }
@@ -120,12 +132,13 @@ export function unsealPayload(
   sessionKey: Uint8Array,
   channelIdHex: string,
   sealed: string,
+  aadSuffix?: string,
 ): { seq: number; data: unknown } {
   const bytes = b64urlDecode(sealed);
   const seqBytes = bytes.slice(0, 4);
   const ciphertext = bytes.slice(4);
   const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
-  const aad = hexToBytes(channelIdHex);
+  const aad = buildAad(channelIdHex, aadSuffix);
   const plaintext = chacha20poly1305(sessionKey, nonce, aad).decrypt(ciphertext);
   const seq = new DataView(seqBytes.buffer, seqBytes.byteOffset, 4).getUint32(0);
   return { seq, data: JSON.parse(new TextDecoder().decode(plaintext)) };

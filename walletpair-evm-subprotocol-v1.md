@@ -250,10 +250,10 @@ network.
 | `tx.nonce` | string | no | Nonce, hex-encoded. Wallet MAY determine if omitted. |
 | `tx.type` | string | no | Transaction type: `"0x0"` (legacy), `"0x1"` (EIP-2930), `"0x2"` (EIP-1559), `"0x3"` (EIP-4844), `"0x4"` (EIP-7702). |
 | `tx.chainId` | string | no | Chain ID, hex-encoded. MUST match `chain` if provided. |
-| `tx.accessList` | array | no | EIP-2930 access list. |
+| `tx.accessList` | array | no | EIP-2930 access list. Each entry: `{ address: string, storageKeys: string[] }`. |
 | `tx.maxFeePerBlobGas` | string | no | Max fee per blob gas for EIP-4844 (type 3) transactions, hex-encoded. |
-| `tx.blobVersionedHashes` | string[] | no | Blob versioned hashes for EIP-4844 transactions. |
-| `tx.authorizationList` | array | no | Authorization list for EIP-7702 (type 4) transactions. |
+| `tx.blobVersionedHashes` | string[] | no | Versioned hashes for EIP-4844 (each 32-byte hex with `0x01` version prefix). |
+| `tx.authorizationList` | array | no | EIP-7702 authorization tuples. Each entry: `{ chainId: string, address: string, nonce: string, yParity: string, r: string, s: string }`. All hex-encoded. The dApp provides pre-signed authorizations; the wallet MUST display each authorized address and warn the user. |
 
 **Validation rules:**
 
@@ -392,6 +392,13 @@ The wallet MUST display the full message text to the user before signing.
 1. `address` MUST be an account authorized for this session.
 2. `chain` MUST be in `capabilities.chains`.
 
+Note: EIP-191 personal sign signatures are not chain-bound (the chain ID
+is not part of the signed data). The `chain` parameter identifies the
+session context but does not prevent cross-chain replay of the signature.
+The wallet SHOULD display a warning when the message appears to be a
+login nonce or authorization grant without domain/expiry/nonce fields
+(e.g., bare hex hashes or short numeric strings).
+
 **Result:**
 
 ```json
@@ -464,6 +471,12 @@ Signs typed structured data using [EIP-712](https://eips.ethereum.org/EIPS/eip-7
    coercion fails, reject with `invalid_params`. The resulting numeric
    value MUST equal the numeric chain ID from the `chain` parameter. On
    mismatch, reject with `invalid_params`.
+   If `typedData.domain.chainId` is absent AND the typed data represents
+   a high-risk pattern (Permit, approval, or any spending allowance),
+   the wallet MUST reject with `invalid_params`. For other typed data
+   where `domain.chainId` is absent, the wallet MUST display a warning
+   that the signature is not chain-bound and may be replayed on other
+   chains.
 4. The wallet MUST verify that `typedData.primaryType` references a type
    defined in `typedData.types`. If not, reject with `invalid_params`.
 5. The wallet MUST verify that `typedData.types` contains

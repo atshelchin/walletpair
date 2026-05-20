@@ -55,10 +55,11 @@ describe('WalletPairProvider', () => {
   function respondToLatestReq(result: unknown, ok = true) {
     const reqMsg = [...transport.sent].reverse().find(m => m.t === 'req') as any;
     if (!reqMsg) throw new Error('No req found');
+    const aadSuffix = `${walletKp.publicKeyB64}:${reqMsg.id}:${ok ? 'ok' : 'err'}`;
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       id: reqMsg.id, from: walletKp.publicKeyB64, ok,
-      sealed: sealPayload(sessionKey, session.channelId, walletSendSeq++, result),
+      sealed: sealPayload(sessionKey, session.channelId, walletSendSeq++, result, aadSuffix),
     } as ProtocolMessage);
   }
 
@@ -253,7 +254,7 @@ describe('WalletPairProvider', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xnew'] }),
+        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xnew'] }, `${walletKp.publicKeyB64}:accountsChanged`),
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith(['0xnew']);
@@ -268,7 +269,7 @@ describe('WalletPairProvider', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'chainChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { chainId: 'eip155:137' }),
+        sealed: sealPayload(sessionKey, session.channelId, 0, { chainId: 'eip155:137' }, `${walletKp.publicKeyB64}:chainChanged`),
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith('0x89');
@@ -282,7 +283,7 @@ describe('WalletPairProvider', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'chainChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { chainId: '0x89' }),
+        sealed: sealPayload(sessionKey, session.channelId, 0, { chainId: '0x89' }, `${walletKp.publicKeyB64}:chainChanged`),
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith('0x89');
@@ -297,7 +298,7 @@ describe('WalletPairProvider', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0x1'] }),
+        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0x1'] }, `${walletKp.publicKeyB64}:accountsChanged`),
       } as ProtocolMessage);
 
       expect(handler).not.toHaveBeenCalled();

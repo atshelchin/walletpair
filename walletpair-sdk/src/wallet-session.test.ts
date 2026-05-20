@@ -140,7 +140,7 @@ describe('WalletSession', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'req-1', from: dappKp.publicKeyB64,
         method: 'wallet_signMessage',
-        sealed: sealPayload(sessionKey, channelId, 0, params),
+        sealed: sealPayload(sessionKey, channelId, 0, params, `${dappKp.publicKeyB64}:req-1:wallet_signMessage`),
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith({
@@ -170,10 +170,11 @@ describe('WalletSession', () => {
 
   describe('approve/reject', () => {
     let sessionKey: Uint8Array;
+    let walletPubB64: string;
 
     beforeEach(async () => {
       await session.joinFromUri(makePairingUri());
-      const walletPubB64 = transport.sent.find(m => m.t === 'join')!.from!;
+      walletPubB64 = transport.sent.find(m => m.t === 'join')!.from!;
       const shared = computeSharedSecret(dappKp.privateKey, b64urlDecode(walletPubB64));
       sessionKey = deriveSessionKey(shared, channelId);
 
@@ -199,7 +200,7 @@ describe('WalletSession', () => {
       expect(resMsg.sealed).toBeTruthy();
 
       // Verify dApp can decrypt the response
-      const { data } = unsealPayload(sessionKey, channelId, resMsg.sealed);
+      const { data } = unsealPayload(sessionKey, channelId, resMsg.sealed, `${walletPubB64}:req-1:ok`);
       expect(data).toEqual(['0xabc123']);
     });
 
@@ -208,7 +209,7 @@ describe('WalletSession', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'req-2', from: dappKp.publicKeyB64,
         method: 'wallet_signMessage',
-        sealed: sealPayload(sessionKey, channelId, 0, { message: 'test' }),
+        sealed: sealPayload(sessionKey, channelId, 0, { message: 'test' }, `${dappKp.publicKeyB64}:req-2:wallet_signMessage`),
       } as ProtocolMessage);
 
       session.reject('req-2', 'user_rejected', 'User said no');
@@ -219,7 +220,7 @@ describe('WalletSession', () => {
       expect(resMsg.ok).toBe(false);
       expect(resMsg.sealed).toBeTruthy();
 
-      const { data } = unsealPayload(sessionKey, channelId, resMsg.sealed);
+      const { data } = unsealPayload(sessionKey, channelId, resMsg.sealed, `${walletPubB64}:req-2:err`);
       expect(data).toEqual({ code: 'user_rejected', message: 'User said no' });
     });
 
@@ -243,10 +244,11 @@ describe('WalletSession', () => {
 
   describe('pushEvent', () => {
     let sessionKey: Uint8Array;
+    let walletPubB64: string;
 
     beforeEach(async () => {
       await session.joinFromUri(makePairingUri());
-      const walletPubB64 = transport.sent.find(m => m.t === 'join')!.from!;
+      walletPubB64 = transport.sent.find(m => m.t === 'join')!.from!;
       const shared = computeSharedSecret(dappKp.privateKey, b64urlDecode(walletPubB64));
       sessionKey = deriveSessionKey(shared, channelId);
 
@@ -265,7 +267,7 @@ describe('WalletSession', () => {
       expect(evtMsg.sealed).toBeTruthy();
 
       // Verify dApp can decrypt
-      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed);
+      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed, `${walletPubB64}:accountsChanged`);
       expect(data).toEqual({ accounts: ['0xnew'] });
     });
 
@@ -284,7 +286,7 @@ describe('WalletSession', () => {
       const evtMsg = transport.sent.find(m => m.t === 'evt') as any;
       expect(evtMsg.event).toBe('chainChanged');
 
-      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed);
+      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed, `${walletPubB64}:chainChanged`);
       expect(data).toEqual({ chainId: 'eip155:137' });
     });
   });

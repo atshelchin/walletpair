@@ -284,9 +284,22 @@ Encryption uses ChaCha20-Poly1305:
 
 ```text
 nonce    = HMAC-SHA256(session_key, seq_bytes)[0:12]   // first 12 bytes
-sealed   = AEAD_encrypt(session_key, nonce, plaintext_json_utf8, aad=channel_id_bytes)
+aad      = concat(channel_id_bytes, utf8(aad_suffix))
+sealed   = AEAD_encrypt(session_key, nonce, plaintext_json_utf8, aad)
 envelope = base64url_no_pad(seq_bytes || ciphertext || tag)
 ```
+
+The `aad_suffix` authenticates the plaintext header fields to prevent a
+compromised relay from tampering with routing metadata:
+
+```text
+req:  aad_suffix = from + ":" + id + ":" + method
+res:  aad_suffix = from + ":" + id + ":" + (ok ? "ok" : "err")
+evt:  aad_suffix = from + ":" + event
+```
+
+If a relay modifies `from`, `id`, `method`, `event`, or `ok`, the
+receiver's AEAD decryption will fail, rejecting the tampered message.
 
 Where `seq_bytes` is a 4-byte big-endian sequence number. Each peer maintains
 its own send counter, starting at 0 and incrementing by 1 for each message
@@ -392,13 +405,13 @@ via deep link.
 Format:
 
 ```text
-walletpair:?ch=<channel-id>&pubkey=<dapp-pubkey-base64url>&relay=<relay-url-percent-encoded>&name=<dapp-name>
+walletpair:?ch=<channel-id>&pubkey=<dapp-pubkey-base64url>&relay=<relay-url-percent-encoded>&name=<dapp-name>&methods=<comma-list>&chains=<comma-list>
 ```
 
 Example:
 
 ```text
-walletpair:?ch=aabb01...eeff&pubkey=dGhpcyBpcyBh...&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=MyDApp
+walletpair:?ch=aabb01...eeff&pubkey=dGhpcyBpcyBh...&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=MyDApp&methods=wallet_sendTransaction,wallet_signTypedData&chains=eip155:1,eip155:137
 ```
 
 Parameters:
@@ -409,6 +422,13 @@ Parameters:
 | `pubkey` | yes | DApp X25519 public key (base64url, no padding). |
 | `relay` | yes for relay transport | WebSocket relay URL (percent-encoded). |
 | `name` | optional | DApp display name. |
+| `methods` | optional | Comma-separated list of methods the dApp intends to call. The wallet SHOULD display these to the user during the pairing confirmation prompt (e.g., "MyDApp wants to: send transactions, sign typed data"). |
+| `chains` | optional | Comma-separated list of CAIP-2 chains the dApp intends to use. The wallet SHOULD display these during pairing confirmation. |
+
+When `methods` or `chains` are present, the wallet SHOULD show the user
+what the dApp is requesting before the user confirms the connection. This
+enables informed consent. If `methods` or `chains` are absent, the wallet
+SHOULD warn the user that the dApp did not declare its intent.
 
 For Bluetooth pairing, the URI may omit `relay` and instead be transmitted
 through BLE advertisement, NFC tap, or local QR code.
@@ -636,8 +656,17 @@ Rules:
 4. A request receives exactly one response.
 5. The decrypted content of `sealed` is the JSON value of `params`, `result`,
    or `error`, owned by the upper-layer service.
-6. The wallet should treat duplicate `req.id` as a retry and avoid executing
-   non-idempotent work twice.
+6. The wallet MUST track recently processed request IDs and their
+   responses for at least 5 minutes. If the wallet receives a `req`
+   with an `id` it has already processed:
+   - If the params hash matches the original request, the wallet MUST
+     return the cached response without re-executing the operation.
+   - If the params hash differs, the wallet MUST reject with
+     `invalid_params` ("Duplicate request ID with different params").
+   This prevents duplicate signing or broadcast after reconnect retries.
+   For `wallet_sendTransaction` specifically: if the wallet has already
+   signed and broadcast a transaction for a given `req.id`, it MUST NOT
+   sign or broadcast again — it MUST return the original `txHash`.
 
 ## 11. Wallet Events
 

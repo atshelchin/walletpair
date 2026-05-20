@@ -200,7 +200,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: req0.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, ['0xabc']),
+        sealed: sealPayload(sessionKey, session.channelId, 0, ['0xabc'], `${walletKp.publicKeyB64}:${req0.id}:ok`),
       } as ProtocolMessage);
 
       const result0 = await p0;
@@ -216,7 +216,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: req1.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, ['0xreplay']),
+        sealed: sealPayload(sessionKey, session.channelId, 0, ['0xreplay'], `${walletKp.publicKeyB64}:${req1.id}:ok`),
       } as ProtocolMessage);
 
       await expect(p1).rejects.toThrow('Replay detected');
@@ -231,7 +231,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: req2.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 1, ['0xdef']),
+        sealed: sealPayload(sessionKey, session.channelId, 1, ['0xdef'], `${walletKp.publicKeyB64}:${req2.id}:ok`),
       } as ProtocolMessage);
 
       const result2 = await p2;
@@ -250,7 +250,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xa'] }),
+        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xa'] }, `${walletKp.publicKeyB64}:accountsChanged`),
       } as ProtocolMessage);
 
       expect(eventHandler).toHaveBeenCalledTimes(1);
@@ -259,7 +259,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xa'] }),
+        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xa'] }, `${walletKp.publicKeyB64}:accountsChanged`),
       } as ProtocolMessage);
 
       expect(eventHandler).toHaveBeenCalledTimes(1); // still 1
@@ -268,7 +268,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
         from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 1, { accounts: ['0xb'] }),
+        sealed: sealPayload(sessionKey, session.channelId, 1, { accounts: ['0xb'] }, `${walletKp.publicKeyB64}:accountsChanged`),
       } as ProtocolMessage);
 
       expect(eventHandler).toHaveBeenCalledTimes(2);
@@ -292,7 +292,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'req-1', from: dappKp.publicKeyB64,
         method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 0, { foo: 'bar' }),
+        sealed: sealPayload(sessionKey, channelId, 0, { foo: 'bar' }, `${dappKp.publicKeyB64}:req-1:wallet_getAccounts`),
       } as ProtocolMessage);
 
       expect(requestHandler).toHaveBeenCalledTimes(1);
@@ -307,7 +307,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'req-1-replay', from: dappKp.publicKeyB64,
         method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 0, { foo: 'bar' }),
+        sealed: sealPayload(sessionKey, channelId, 0, { foo: 'bar' }, `${dappKp.publicKeyB64}:req-1-replay:wallet_getAccounts`),
       } as ProtocolMessage);
 
       expect(requestHandler).toHaveBeenCalledTimes(1); // still 1
@@ -317,7 +317,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'req-2', from: dappKp.publicKeyB64,
         method: 'wallet_signMessage',
-        sealed: sealPayload(sessionKey, channelId, 1, { message: 'hello' }),
+        sealed: sealPayload(sessionKey, channelId, 1, { message: 'hello' }, `${dappKp.publicKeyB64}:req-2:wallet_signMessage`),
       } as ProtocolMessage);
 
       expect(requestHandler).toHaveBeenCalledTimes(2);
@@ -347,7 +347,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: req0.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, 'first'),
+        sealed: sealPayload(sessionKey, session.channelId, 0, 'first', `${walletKp.publicKeyB64}:${req0.id}:ok`),
       } as ProtocolMessage);
 
       expect(await p0).toBe('first');
@@ -361,7 +361,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: req1.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 5, 'second'),
+        sealed: sealPayload(sessionKey, session.channelId, 5, 'second', `${walletKp.publicKeyB64}:${req1.id}:ok`),
       } as ProtocolMessage);
 
       expect(await p1).toBe('second');
@@ -375,7 +375,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: session.channelId,
         id: req2.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 3, 'replay-attempt'),
+        sealed: sealPayload(sessionKey, session.channelId, 3, 'replay-attempt', `${walletKp.publicKeyB64}:${req2.id}:ok`),
       } as ProtocolMessage);
 
       await expect(p2).rejects.toThrow('Replay detected');
@@ -394,7 +394,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'r1', from: dappKp.publicKeyB64,
         method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 0, {}),
+        sealed: sealPayload(sessionKey, channelId, 0, {}, `${dappKp.publicKeyB64}:r1:wallet_getAccounts`),
       } as ProtocolMessage);
       expect(requestHandler).toHaveBeenCalledTimes(1);
 
@@ -403,7 +403,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'r2', from: dappKp.publicKeyB64,
         method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 5, {}),
+        sealed: sealPayload(sessionKey, channelId, 5, {}, `${dappKp.publicKeyB64}:r2:wallet_getAccounts`),
       } as ProtocolMessage);
       expect(requestHandler).toHaveBeenCalledTimes(2);
 
@@ -412,7 +412,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'r3', from: dappKp.publicKeyB64,
         method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 3, {}),
+        sealed: sealPayload(sessionKey, channelId, 3, {}, `${dappKp.publicKeyB64}:r3:wallet_getAccounts`),
       } as ProtocolMessage);
       expect(requestHandler).toHaveBeenCalledTimes(2); // still 2
     });
@@ -438,7 +438,7 @@ describe('Sequence validation', () => {
           v: 1, t: 'res', ch: session.channelId,
           id: req.id, from: walletKp.publicKeyB64,
           ok: true,
-          sealed: sealPayload(sessionKey, session.channelId, seq, `result-${seq}`),
+          sealed: sealPayload(sessionKey, session.channelId, seq, `result-${seq}`, `${walletKp.publicKeyB64}:${req.id}:ok`),
         } as ProtocolMessage);
 
         await p;
@@ -462,7 +462,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: restored.channelId,
         id: reqMsg.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, restored.channelId, 1, 'stale'),
+        sealed: sealPayload(sessionKey, restored.channelId, 1, 'stale', `${walletKp.publicKeyB64}:${reqMsg.id}:ok`),
       } as ProtocolMessage);
 
       await expect(p).rejects.toThrow('Replay detected');
@@ -476,7 +476,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'res', ch: restored.channelId,
         id: reqMsg2.id, from: walletKp.publicKeyB64,
         ok: true,
-        sealed: sealPayload(sessionKey, restored.channelId, 3, 'fresh'),
+        sealed: sealPayload(sessionKey, restored.channelId, 3, 'fresh', `${walletKp.publicKeyB64}:${reqMsg2.id}:ok`),
       } as ProtocolMessage);
 
       expect(await p2).toBe('fresh');
@@ -496,7 +496,7 @@ describe('Sequence validation', () => {
           v: 1, t: 'req', ch: channelId,
           id: `req-${seq}`, from: dappKp.publicKeyB64,
           method: 'wallet_getAccounts',
-          sealed: sealPayload(sessionKey, channelId, seq, {}),
+          sealed: sealPayload(sessionKey, channelId, seq, {}, `${dappKp.publicKeyB64}:req-${seq}:wallet_getAccounts`),
         } as ProtocolMessage);
       }
       expect(handler).toHaveBeenCalledTimes(3);
@@ -518,7 +518,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'replay-1', from: dappKp.publicKeyB64,
         method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 1, {}),
+        sealed: sealPayload(sessionKey, channelId, 1, {}, `${dappKp.publicKeyB64}:replay-1:wallet_getAccounts`),
       } as ProtocolMessage);
       expect(handler2).toHaveBeenCalledTimes(0);
 
@@ -527,7 +527,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'req', ch: channelId,
         id: 'fresh-3', from: dappKp.publicKeyB64,
         method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 3, {}),
+        sealed: sealPayload(sessionKey, channelId, 3, {}, `${dappKp.publicKeyB64}:fresh-3:wallet_getAccounts`),
       } as ProtocolMessage);
       expect(handler2).toHaveBeenCalledTimes(1);
     });
