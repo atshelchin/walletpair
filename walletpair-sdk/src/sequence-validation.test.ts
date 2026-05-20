@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { DAppSession } from './dapp-session.js';
 import { WalletSession } from './wallet-session.js';
-import { MockTransport, MockRelay } from './test-helpers.js';
+import { makeJoinBody, MockTransport, MockRelay } from './test-helpers.js';
 import {
   generateX25519KeyPair,
   generateChannelId,
@@ -111,7 +111,7 @@ async function connectDAppManually(ctx: ReturnType<typeof setupDAppWithManualWal
   transport.receive({
     v: 1, t: 'join', ch: session.channelId,
     ts: Date.now(), from: walletKp.publicKeyB64,
-    body: { sealed_join: null, resume: null },
+    body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
   } as ProtocolMessage);
 
   // Derive root key from wallet side. Responses/events use wallet->dApp key,
@@ -126,7 +126,7 @@ async function connectDAppManually(ctx: ReturnType<typeof setupDAppWithManualWal
   transport.receive({
     v: 1, t: 'ready', ch: session.channelId,
     ts: Date.now(), from: '_adapter',
-    body: { state: 'connected', resume: 'tok', remote: null },
+    body: { state: 'connected', resume: 'tok', remote: walletKp.publicKeyB64 },
   } as ProtocolMessage);
 
   return { sessionKey: (session as any).recvKey as Uint8Array, dappPubB64 };
@@ -174,7 +174,7 @@ async function connectWalletManually(ctx: ReturnType<typeof setupWalletWithManua
   transport.receive({
     v: 1, t: 'ready', ch: channelId,
     ts: Date.now(), from: '_adapter',
-    body: { state: 'connected', resume: 'tok', remote: null },
+    body: { state: 'connected', resume: 'tok', remote: dappKp.publicKeyB64 },
   } as ProtocolMessage);
 
   return { sessionKey: (session as any).recvKey as Uint8Array, walletPubB64 };
@@ -619,7 +619,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
+        body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
       } as ProtocolMessage);
 
       expect(session.phase).toBe('pending_accept');
@@ -649,7 +649,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
+        body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
       } as ProtocolMessage);
 
       expect(session.phase).toBe('pending_accept');
@@ -669,12 +669,14 @@ describe('Sequence validation', () => {
   // 7. Capabilities validation
   // -----------------------------------------------------------------------
   describe('capabilities validation', () => {
-    it('accepts join with no sealed_join (capabilities will be undefined)', async () => {
+    it('rejects initial join with no sealed_join', async () => {
       const transport = new MockTransport();
       const session = new DAppSession({ transport, name: 'Test dApp' });
       const walletKp = generateX25519KeyPair();
 
       await session.createPairing();
+      const errorHandler = vi.fn();
+      session.on('error', errorHandler);
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
@@ -682,9 +684,11 @@ describe('Sequence validation', () => {
         body: { sealed_join: null, resume: null },
       } as ProtocolMessage);
 
-      expect(session.phase).toBe('pending_accept');
-      // No sealed_join means no capabilities decrypted
-      expect(session.walletCapabilities).toBeUndefined();
+      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('missing sealed_join'),
+      }));
+      const closeMsg = transport.sent.find(m => m.t === 'close');
+      expect((closeMsg as any).body.reason).toBe('protocol_error');
     });
 
     it('rejects join with invalid sealed_join (decryption failure)', async () => {

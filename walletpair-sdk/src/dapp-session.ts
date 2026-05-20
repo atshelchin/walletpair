@@ -63,6 +63,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   walletMeta: WalletMeta | undefined = undefined;
   private approvedCapabilities: Capabilities | undefined = undefined;
   private approvedWalletMeta: WalletMeta | undefined = undefined;
+  private approvedWalletPubKeyB64: string | undefined = undefined;
   private approvedScopeRecorded = false;
 
   private transport: Transport;
@@ -136,6 +137,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     this.clearSessionTtl();
     this.approvedCapabilities = undefined;
     this.approvedWalletMeta = undefined;
+    this.approvedWalletPubKeyB64 = undefined;
     this.approvedScopeRecorded = false;
     this.reqCounter = 0;
     this.paired = false;
@@ -295,6 +297,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       approvedScopeRecorded: this.approvedScopeRecorded,
       approvedCapabilities: this.approvedCapabilities ?? null,
       approvedWalletMeta: this.approvedWalletMeta ?? null,
+      approvedWalletPubKeyB64: this.approvedWalletPubKeyB64 ?? null,
       sessionStartTime: this.sessionStartTime,
     });
   }
@@ -319,6 +322,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       this.approvedScopeRecorded = d.approvedScopeRecorded === true;
       this.approvedCapabilities = d.approvedCapabilities ?? undefined;
       this.approvedWalletMeta = d.approvedWalletMeta ?? undefined;
+      this.approvedWalletPubKeyB64 = d.approvedWalletPubKeyB64 ?? (d.remotePubKeyB64 ?? undefined);
       this.walletCapabilities = this.approvedCapabilities;
       this.walletMeta = this.approvedWalletMeta;
       this.name = d.dappName ?? undefined;
@@ -343,15 +347,13 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         const readyBody = msg.body as { state?: string; resume?: string | null; remote?: string | null };
         this.resumeToken = readyBody.resume ?? null;
         this.stopReconnect();
-        if (
-          readyBody.state === 'connected' &&
-          readyBody.remote &&
-          this.remotePubKey &&
-          readyBody.remote !== b64urlEncode(this.remotePubKey)
-        ) {
-          this.emit('error', new Error('Connected remote does not match paired wallet'));
-          this.close();
-          break;
+        if (readyBody.state === 'connected') {
+          const expectedRemote = this.remotePubKey ? b64urlEncode(this.remotePubKey) : null;
+          if (!expectedRemote || readyBody.remote !== expectedRemote) {
+            this.emit('error', new Error('Connected remote does not match paired wallet'));
+            this.close();
+            break;
+          }
         }
         if (readyBody.state === 'waiting') {
           this.setPhase('waiting');
@@ -398,11 +400,10 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
           joinMeta = this.approvedWalletMeta;
         } else if (joinBody.sealed_join) {
           // Decrypt sealed_join (private handshake §7.5)
+          let joinKey: Uint8Array | null = null;
           try {
-            const joinKey = deriveJoinEncryptionKey(rootKey, this.channelId);
+            joinKey = deriveJoinEncryptionKey(rootKey, this.channelId);
             const decrypted = unsealJoin(joinKey, this.channelId, joinBody.sealed_join);
-            // §20.7: erase join_encryption_key
-            joinKey.fill(0);
             joinCapabilities = decrypted.capabilities as Capabilities | undefined;
             joinMeta = decrypted.meta as WalletMeta | undefined;
           } catch {
@@ -414,7 +415,19 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
             this.emit('error', new Error('Failed to decrypt sealed_join'));
             rootKey.fill(0);
             break;
+          } finally {
+            // §20.7: erase join_encryption_key after one-shot use.
+            if (joinKey) joinKey.fill(0);
           }
+        } else {
+          this.sendRaw({
+            v: 1, t: 'close', ch: this.channelId,
+            ts: Date.now(), from: this.pubKeyB64,
+            body: { reason: 'protocol_error' },
+          } as ProtocolMessage);
+          this.emit('error', new Error('Initial wallet join missing sealed_join'));
+          rootKey.fill(0);
+          break;
         }
 
         // Validate capabilities shape
@@ -530,6 +543,8 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
 
           if (event) {
             this.emit('event', { event, data: eventData });
+          } else {
+            this.emit('error', new Error('Event payload missing _event'));
           }
         } catch { /* drop events that fail decryption */ }
         break;
@@ -572,6 +587,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     this.paired = true;
     this.approvedCapabilities = this.walletCapabilities;
     this.approvedWalletMeta = this.walletMeta;
+    this.approvedWalletPubKeyB64 = b64urlEncode(this.remotePubKey!);
     this.approvedScopeRecorded = true;
     const walletPubB64 = b64urlEncode(this.remotePubKey!);
     this.sendRaw({
@@ -602,8 +618,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   ): boolean {
     return this.autoAccept &&
       this.paired &&
-      this.remotePubKey !== null &&
-      b64urlEncode(this.remotePubKey) === walletPubKeyB64 &&
+      this.approvedWalletPubKeyB64 === walletPubKeyB64 &&
       this.approvedScopeRecorded &&
       canonicalJson(this.approvedCapabilities) === canonicalJson(capabilities ?? null) &&
       canonicalJson(this.approvedWalletMeta ?? null) === canonicalJson(walletMeta ?? null);

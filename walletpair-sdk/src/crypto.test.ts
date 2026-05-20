@@ -6,9 +6,12 @@ import {
   getPublicKey,
   computeSharedSecret,
   deriveSessionKey,
+  deriveJoinEncryptionKey,
   computePairingCode,
   sealPayload,
   unsealPayload,
+  sealJoin,
+  unsealJoin,
   generateChannelId,
   buildPairingUri,
   parsePairingUri,
@@ -255,6 +258,30 @@ describe('seal/unseal', () => {
     const s0 = sealPayload(sessionKey, channelId, 0, data);
     const s1 = sealPayload(sessionKey, channelId, 1, data);
     expect(s0).not.toBe(s1);
+  });
+});
+
+describe('sealJoin/unsealJoin', () => {
+  it('round-trips capabilities and metadata with a nonce-prefixed envelope', () => {
+    const joinKey = deriveJoinEncryptionKey(new Uint8Array(32).fill(7), '11'.repeat(32));
+    const capabilities = { methods: ['wallet_getAccounts'], events: ['accountsChanged'], chains: ['eip155:1'] };
+    const meta = { name: 'Test Wallet' };
+
+    const sealed = sealJoin(joinKey, '11'.repeat(32), capabilities, meta);
+    const envelope = b64urlDecode(sealed);
+    expect(envelope.length).toBeGreaterThan(12 + 16);
+
+    expect(unsealJoin(joinKey, '11'.repeat(32), sealed)).toEqual({ capabilities, meta });
+  });
+
+  it('uses a fresh nonce for each sealed_join encryption', () => {
+    const joinKey = deriveJoinEncryptionKey(new Uint8Array(32).fill(9), '22'.repeat(32));
+    const capabilities = { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] };
+
+    const a = sealJoin(joinKey, '22'.repeat(32), capabilities, {});
+    const b = sealJoin(joinKey, '22'.repeat(32), capabilities, {});
+
+    expect(a).not.toBe(b);
   });
 });
 

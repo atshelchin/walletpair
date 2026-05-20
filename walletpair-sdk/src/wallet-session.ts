@@ -25,6 +25,7 @@ import {
   sealPayload,
   unsealPayload,
   sealJoin,
+  sha256Hex,
   b64urlEncode,
   b64urlDecode,
   bytesToHex,
@@ -36,6 +37,19 @@ import { Emitter } from './emitter.js';
 const BACKOFF = [1000, 2000, 5000, 10000, 30000];
 const MAX_SEND_SEQ = 2 ** 31;
 const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours (§16 rule 17)
+const IDEMPOTENCY_CACHE_LIMIT = 1024;
+const IDEMPOTENCY_RESPONSE_LIMIT_BYTES = 16 * 1024;
+
+interface PendingRequestRecord {
+  paramsHash: string;
+  method: string;
+}
+
+interface CachedRequestResponse extends PendingRequestRecord {
+  ok: boolean;
+  data: unknown;
+  tooLarge: boolean;
+}
 
 export class WalletSession extends Emitter<WalletSessionEvents> {
   phase: WalletPhase = 'idle';
@@ -75,6 +89,9 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
+  private pendingRequestRecords = new Map<string, PendingRequestRecord>();
+  private idempotencyCache = new Map<string, CachedRequestResponse>();
+  private broadcastResponseCache = new Map<string, CachedRequestResponse>();
 
   constructor(options: WalletSessionOptions) {
     super();
@@ -111,6 +128,9 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     this.recvSeq = -1;
     this.sendKey = null;
     this.recvKey = null;
+    this.pendingRequestRecords.clear();
+    this.idempotencyCache.clear();
+    this.broadcastResponseCache.clear();
 
     // Compute effective capabilities via scope intersection (§8.1)
     this.effectiveCapabilities = this.computeScopeIntersection();
@@ -175,31 +195,17 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   /** Respond to a request with success. */
   approve(requestId: string, result: unknown): void {
-    if (!this.sendKey) return;
-    const seq = this.nextSendSeq();
-    if (seq == null) return;
-    const hdr = { type: 'res' as const, from: this.pubKeyB64, id: requestId, ok: true };
-    const sealed = sealPayload(this.sendKey, this.channelId, seq, result, hdr);
-    this.sendRaw({
-      v: 1, t: 'res', ch: this.channelId,
-      ts: Date.now(), from: this.pubKeyB64,
-      body: { id: requestId, ok: true, sealed },
-    } as ProtocolMessage);
+    if (this.sendResponse(requestId, true, result)) {
+      this.cacheProcessedResponse(requestId, true, result);
+    }
   }
 
   /** Respond to a request with rejection. */
   reject(requestId: string, code = 'user_rejected', message = 'User rejected the request'): void {
-    if (!this.sendKey) return;
-    const seq = this.nextSendSeq();
-    if (seq == null) return;
     const error = { code, message };
-    const hdr = { type: 'res' as const, from: this.pubKeyB64, id: requestId, ok: false };
-    const sealed = sealPayload(this.sendKey, this.channelId, seq, error, hdr);
-    this.sendRaw({
-      v: 1, t: 'res', ch: this.channelId,
-      ts: Date.now(), from: this.pubKeyB64,
-      body: { id: requestId, ok: false, sealed },
-    } as ProtocolMessage);
+    if (this.sendResponse(requestId, false, error)) {
+      this.cacheProcessedResponse(requestId, false, error);
+    }
   }
 
   /** Push an event to the dApp. */
@@ -230,6 +236,9 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     this.intentionalClose = true;
     this.stopReconnect();
     this.clearSessionTtl();
+    this.pendingRequestRecords.clear();
+    this.idempotencyCache.clear();
+    this.broadcastResponseCache.clear();
     if (this.channelId) {
       this.sendRaw({ v: 1, t: 'close', ch: this.channelId, ts: Date.now(), from: this.pubKeyB64, body: { reason } } as ProtocolMessage);
     }
@@ -246,6 +255,9 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     if (this.sessionKey) this.sessionKey.fill(0);
     if (this.sendKey) this.sendKey.fill(0);
     if (this.recvKey) this.recvKey.fill(0);
+    this.pendingRequestRecords.clear();
+    this.idempotencyCache.clear();
+    this.broadcastResponseCache.clear();
     this.sessionKey = null;
     this.sendKey = null;
     this.recvKey = null;
@@ -316,15 +328,13 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
         const readyBody = msg.body as { state?: string; resume?: string | null; remote?: string | null };
         this.resumeToken = readyBody.resume ?? null;
         this.stopReconnect();
-        if (
-          readyBody.state === 'connected' &&
-          readyBody.remote &&
-          this.remotePubKey &&
-          readyBody.remote !== b64urlEncode(this.remotePubKey)
-        ) {
-          this.emit('error', new Error('Connected remote does not match paired dApp'));
-          this.close();
-          break;
+        if (readyBody.state === 'connected') {
+          const expectedRemote = this.remotePubKey ? b64urlEncode(this.remotePubKey) : null;
+          if (!expectedRemote || readyBody.remote !== expectedRemote) {
+            this.emit('error', new Error('Connected remote does not match paired dApp'));
+            this.close();
+            break;
+          }
         }
         if (readyBody.state === 'waiting') {
           this.setPhase('waiting');
@@ -347,18 +357,52 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
         try {
           // AAD: no method field — real method is inside sealed payload
           const reqHdr = { type: 'req' as const, from: msg.from, id: reqBody.id };
-          const { seq, data } = unsealPayload(this.recvKey, this.channelId, reqBody.sealed, reqHdr);
+          const { seq, data, plaintext } = unsealPayload(this.recvKey, this.channelId, reqBody.sealed, reqHdr);
           if (seq <= this.recvSeq) break; // replay — silently drop
           this.recvSeq = seq;
 
           // Extract _method from decrypted payload
-          let method = '';
-          let params: unknown = data ?? {};
-          if (data && typeof data === 'object' && '_method' in (data as any)) {
-            method = (data as any)._method;
-            const { _method: _, ...rest } = data as Record<string, unknown>;
-            params = rest;
+          if (!data || typeof data !== 'object' || typeof (data as any)._method !== 'string' || (data as any)._method.length === 0) {
+            this.reject(reqBody.id, 'invalid_params', 'Request payload missing _method');
+            break;
           }
+          const method = (data as any)._method;
+          const { _method: _, ...rest } = data as Record<string, unknown>;
+          const params: unknown = rest;
+          const paramsHash = sha256Hex(plaintext);
+
+          const cachedBroadcast = this.broadcastResponseCache.get(reqBody.id);
+          if (cachedBroadcast) {
+            if (cachedBroadcast.paramsHash !== paramsHash) {
+              this.reject(reqBody.id, 'invalid_params', 'Duplicate request ID with different params');
+              break;
+            }
+            this.sendResponse(reqBody.id, cachedBroadcast.ok, cachedBroadcast.data);
+            break;
+          }
+
+          const cached = this.idempotencyCache.get(reqBody.id);
+          if (cached) {
+            if (cached.paramsHash !== paramsHash) {
+              this.reject(reqBody.id, 'invalid_params', 'Duplicate request ID with different params');
+              break;
+            }
+            this.touchIdempotencyEntry(reqBody.id, cached);
+            if (!cached.tooLarge) {
+              this.sendResponse(reqBody.id, cached.ok, cached.data);
+              break;
+            }
+          }
+
+          const pending = this.pendingRequestRecords.get(reqBody.id);
+          if (pending) {
+            if (pending.paramsHash !== paramsHash) {
+              this.reject(reqBody.id, 'invalid_params', 'Duplicate request ID with different params');
+            }
+            break;
+          }
+
+          this.pendingRequestRecords.set(reqBody.id, { paramsHash, method });
 
           this.emit('request', { id: reqBody.id, method, params });
         } catch {
@@ -384,6 +428,9 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
           this.transport.disconnect();
           this.startReconnect();
         } else if (this.phase !== 'disconnected') {
+          this.pendingRequestRecords.clear();
+          this.idempotencyCache.clear();
+          this.broadcastResponseCache.clear();
           this.setPhase('closed');
           this.intentionalClose = true;
         }
@@ -393,11 +440,72 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       case 'terminate': {
         // Adapter-sent termination — treat like close
         if (this.phase !== 'disconnected') {
+          this.pendingRequestRecords.clear();
+          this.idempotencyCache.clear();
+          this.broadcastResponseCache.clear();
           this.setPhase('closed');
           this.intentionalClose = true;
         }
         break;
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Internal: responses and request idempotency
+  // -------------------------------------------------------------------------
+
+  private sendResponse(requestId: string, ok: boolean, data: unknown): boolean {
+    if (!this.sendKey) return false;
+    const seq = this.nextSendSeq();
+    if (seq == null) return false;
+    const hdr = { type: 'res' as const, from: this.pubKeyB64, id: requestId, ok };
+    const sealed = sealPayload(this.sendKey, this.channelId, seq, data, hdr);
+    this.sendRaw({
+      v: 1, t: 'res', ch: this.channelId,
+      ts: Date.now(), from: this.pubKeyB64,
+      body: { id: requestId, ok, sealed },
+    } as ProtocolMessage);
+    return true;
+  }
+
+  private cacheProcessedResponse(requestId: string, ok: boolean, data: unknown): void {
+    const pending = this.pendingRequestRecords.get(requestId);
+    if (!pending) return;
+    this.pendingRequestRecords.delete(requestId);
+
+    const serialized = JSON.stringify(data ?? null);
+    const tooLarge = new TextEncoder().encode(serialized).length > IDEMPOTENCY_RESPONSE_LIMIT_BYTES;
+    const entry: CachedRequestResponse = {
+      ...pending,
+      ok,
+      data: tooLarge ? null : data,
+      tooLarge,
+    };
+
+    this.idempotencyCache.set(requestId, entry);
+    this.evictIdempotencyCache();
+
+    if (pending.method === 'wallet_sendTransaction' && ok) {
+      this.broadcastResponseCache.set(requestId, {
+        ...pending,
+        ok,
+        data,
+        tooLarge: false,
+      });
+    }
+  }
+
+  private touchIdempotencyEntry(requestId: string, entry: CachedRequestResponse): void {
+    this.idempotencyCache.delete(requestId);
+    this.idempotencyCache.set(requestId, entry);
+  }
+
+  private evictIdempotencyCache(): void {
+    while (this.idempotencyCache.size > IDEMPOTENCY_CACHE_LIMIT) {
+      const oldest = this.idempotencyCache.keys().next().value as string | undefined;
+      if (!oldest) return;
+      this.idempotencyCache.delete(oldest);
     }
   }
 

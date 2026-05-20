@@ -9,7 +9,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { DAppSession } from './dapp-session.js';
 import { WalletSession } from './wallet-session.js';
-import { MockTransport, MockRelay } from './test-helpers.js';
+import { makeJoinBody, MockTransport, MockRelay } from './test-helpers.js';
 import {
   generateX25519KeyPair,
   generateChannelId,
@@ -48,7 +48,7 @@ async function connectDAppManual(ctx: ReturnType<typeof setupDAppManual>) {
   transport.receive({
     v: 1, t: 'join', ch: session.channelId,
     ts: Date.now(), from: walletKp.publicKeyB64,
-    body: { sealed_join: null, resume: null },
+    body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
   } as ProtocolMessage);
 
   session.acceptWallet();
@@ -56,7 +56,7 @@ async function connectDAppManual(ctx: ReturnType<typeof setupDAppManual>) {
   transport.receive({
     v: 1, t: 'ready', ch: session.channelId,
     ts: Date.now(), from: '_adapter',
-    body: { state: 'connected', resume: 'tok', remote: null },
+    body: { state: 'connected', resume: 'tok', remote: walletKp.publicKeyB64 },
   } as ProtocolMessage);
 
   // Derive the wallet's send key (walletToDappKey) which is what
@@ -85,7 +85,7 @@ async function connectWalletManual(ctx: ReturnType<typeof setupWalletManual>) {
   transport.receive({
     v: 1, t: 'ready', ch: channelId,
     ts: Date.now(), from: '_adapter',
-    body: { state: 'connected', resume: 'tok', remote: null },
+    body: { state: 'connected', resume: 'tok', remote: dappKp.publicKeyB64 },
   } as ProtocolMessage);
 
   // The wallet's recvKey is dappToWalletKey

@@ -222,10 +222,11 @@ relay cannot observe transaction type capabilities.
 
 ## 5. Methods
 
-All methods use the WalletPair `req` / `res` message flow. The `method` field
-in the `req` message is the method name. Parameters are encrypted in the
-`sealed` field. The decrypted content of `sealed` is the `params` object (for
-requests) or the `result` / `error` object (for responses).
+All methods use the WalletPair `req` / `res` message flow. The method name is
+never a plaintext `req` field. For requests, the decrypted content of
+`body.sealed` MUST be `{ "_method": "<method_name>", ...params }`. For
+responses, the decrypted content of `body.sealed` is the `result` object or
+the error object.
 
 ### 5.1 wallet_getAccounts
 

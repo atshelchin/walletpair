@@ -570,15 +570,16 @@ join_plaintext = canonical_json({
   "meta": { ... }
 })
 
-join_nonce     = HMAC-SHA256(join_encryption_key, "walletpair-v1-join-nonce")[0:12]
+join_nonce     = random_96_bits()
 join_aad       = channel_id_bytes || 0x04   // type byte 0x04 = sealed_join
 sealed_join    = AEAD_encrypt(join_encryption_key, join_nonce, join_plaintext, join_aad)
-envelope       = base64url_no_pad(sealed_join_ciphertext || tag)
+envelope       = base64url_no_pad(join_nonce || sealed_join_ciphertext || tag)
 ```
 
-The nonce is deterministic because `sealed_join` is a one-shot
-encryption per channel — the wallet sends exactly one `join` per
-channel, so the (key, nonce) pair is never reused.
+The wallet MUST generate a fresh uniformly random 96-bit nonce for every
+`sealed_join` encryption. The dApp MUST parse the first 12 bytes of the
+decoded envelope as `join_nonce` and reject envelopes shorter than
+`12 + 16` bytes.
 
 The type byte `0x04` is reserved for `sealed_join` in protocol
 version 1.
@@ -1070,8 +1071,9 @@ Rules:
 2. Only the wallet sends `res`.
 3. `res.id` must equal the matching `req.id`.
 4. A request receives exactly one response.
-5. The decrypted content of `sealed` is the JSON value of `params`, `result`,
-   or `error`, owned by the upper-layer service.
+5. The decrypted content of `req.sealed` is `{ "_method": "<name>",
+   ...params }`; the decrypted content of `res.sealed` is the JSON
+   result or error object.
 6. **Request idempotency.** The wallet MUST cache every processed
    request ID, its params hash, and its decrypted response (result or
    error object). The cache MUST hold at least the most recent 1024
@@ -1951,8 +1953,9 @@ The following are always encrypted and invisible to the relay:
 A malicious relay can still observe traffic patterns (message frequency,
 timing, message sizes) and the `from` field (public key). However, the
 relay cannot determine: what chains the user uses, what methods the
-wallet supports, the wallet brand, what operations are being performed,
-or whether requests succeed or fail (when response privacy mode is used).
+wallet supports, the wallet brand, or what operations are being performed.
+In v1, the relay can still observe whether responses carry `ok=true` or
+`ok=false`.
 
 Relay operators MUST NOT log, index, or retain `join` message content
 beyond the immediate delivery.
@@ -1965,15 +1968,12 @@ deliver error responses without needing to decrypt them (relevant for relay
 diagnostics and error routing). The `ok` field is bound into the AEAD's AAD
 (§7.4), so the relay cannot flip it without causing decryption failure.
 
-Implementations SHOULD support a **response privacy mode** where the
-sender always sets `ok` to `true` on the wire and encodes the real
-success/failure status inside the encrypted `sealed` payload. In this
-mode, the decrypted payload MUST include a `"_ok"` boolean field
-(`true` or `false`); the receiver MUST use `_ok` as the authoritative
-status and ignore the wire `ok` value. This mode is negotiated via the
-`"response_privacy": true` capability flag. When both peers declare
-this capability, response privacy mode MUST be used. When not
-negotiated, the wire `ok` field is authoritative (backward compatible).
+Response privacy mode is not part of WalletPair v1. Implementations MUST
+NOT advertise or require a `"response_privacy": true` capability under
+this version. A future extension MAY define a mode where the wire `ok`
+value is constant and the authoritative success/failure status is carried
+inside `sealed`; that extension must define a separate capability name,
+payload schema, AAD rules, and downgrade behavior.
 
 A future protocol version SHOULD consider removing `ok` from the
 plaintext wire format entirely.
@@ -2346,8 +2346,8 @@ join_plaintext = canonical_json({
   "meta": {"name":"MyWallet"}
 })
 
-join_nonce     = HMAC-SHA256(join_encryption_key, "walletpair-v1-join-nonce")[0:12]
-               = 09474eabe263432ebc7e4756
+join_nonce     = 09474eabe263432ebc7e4756
+               // fixed test vector nonce; production uses random_96_bits()
 
 join_aad       = channel_id_bytes || 0x04
                = a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b204
@@ -2364,12 +2364,12 @@ ciphertext+tag = 1f21896b618b3413d711bfb4bcad479530a642b67011da91
                  5abce7b95910d662d4e17004874fc8a457a3983a8a5e11f1
                  e6d028de7389
 
-sealed_join (base64url) = HyGJa2GLNBPXEb-0vK1HlTCmQrZwEdqRRb0iyBX9ZHGkv74L6J24LMM2AVFsrXV9pjcCmtLx21fkj6ves8rd-RtjyW6WS44-qo87sn36IpLjhItuUjq_elDUr_qCOpwhoVIrFC29b7n_9q8UdbMAd5HwdKNiKFLrb91_rWhVj3H_y78fyft8LiHb52p0yF2RWB5m0-vZh0A9Rk9HBL9amsEPnOQozkhpWrznuVkQ1mLU4XAEh0_IpFejmDqKXhHx5tAo3nOJ
+sealed_join (base64url) = CUdOq-JjQy68fkdWHyGJa2GLNBPXEb-0vK1HlTCmQrZwEdqRRb0iyBX9ZHGkv74L6J24LMM2AVFsrXV9pjcCmtLx21fkj6ves8rd-RtjyW6WS44-qo87sn36IpLjhItuUjq_elDUr_qCOpwhoVIrFC29b7n_9q8UdbMAd5HwdKNiKFLrb91_rWhVj3H_y78fyft8LiHb52p0yF2RWB5m0-vZh0A9Rk9HBL9amsEPnOQozkhpWrznuVkQ1mLU4XAEh0_IpFejmDqKXhHx5tAo3nOJ
 ```
 
 Implementations MUST verify that decrypting the above `sealed_join`
-with the computed `join_encryption_key`, `join_nonce`, and `join_aad`
-produces the expected plaintext.
+by parsing the first 12 bytes as `join_nonce` and using the computed
+`join_encryption_key` and `join_aad` produces the expected plaintext.
 
 ### A.2 Transcript and Traffic Keys
 

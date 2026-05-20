@@ -2,7 +2,54 @@
  * Shared test helpers — mock transport for unit testing sessions.
  */
 
-import type { Transport, TransportState, ProtocolMessage } from './types.js';
+import type { Capabilities, Transport, TransportState, ProtocolMessage, WalletMeta } from './types.js';
+import {
+  b64urlDecode,
+  computeSharedSecret,
+  deriveJoinEncryptionKey,
+  deriveSessionKey,
+  sealJoin,
+} from './crypto.js';
+import type { X25519KeyPair } from './crypto.js';
+
+export const DEFAULT_TEST_CAPABILITIES: Capabilities = {
+  methods: ['wallet_getAccounts', 'wallet_signMessage'],
+  events: ['accountsChanged', 'chainChanged'],
+  chains: ['eip155:1'],
+};
+
+export const DEFAULT_TEST_WALLET_META: WalletMeta = { name: 'Test Wallet' };
+
+export function makeSealedJoin(
+  channelId: string,
+  dappPubKeyB64: string,
+  walletKp: X25519KeyPair,
+  capabilities: Capabilities = DEFAULT_TEST_CAPABILITIES,
+  meta: WalletMeta = DEFAULT_TEST_WALLET_META,
+): string {
+  const dappPub = b64urlDecode(dappPubKeyB64);
+  const shared = computeSharedSecret(walletKp.privateKey, dappPub);
+  const rootKey = deriveSessionKey(shared, channelId);
+  const joinKey = deriveJoinEncryptionKey(rootKey, channelId);
+  const sealed = sealJoin(joinKey, channelId, capabilities, meta);
+  shared.fill(0);
+  rootKey.fill(0);
+  joinKey.fill(0);
+  return sealed;
+}
+
+export function makeJoinBody(
+  channelId: string,
+  dappPubKeyB64: string,
+  walletKp: X25519KeyPair,
+  capabilities: Capabilities = DEFAULT_TEST_CAPABILITIES,
+  meta: WalletMeta = DEFAULT_TEST_WALLET_META,
+): { sealed_join: string; resume: null } {
+  return {
+    sealed_join: makeSealedJoin(channelId, dappPubKeyB64, walletKp, capabilities, meta),
+    resume: null,
+  };
+}
 
 /**
  * In-memory transport for testing. Two MockTransports can be linked

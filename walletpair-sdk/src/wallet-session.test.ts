@@ -54,6 +54,14 @@ describe('WalletSession', () => {
     });
   }
 
+  function receiveConnected(resume = 'tok'): void {
+    transport.receive({
+      v: 1, t: 'ready', ch: channelId,
+      ts: Date.now(), from: '_adapter',
+      body: { state: 'connected', resume, remote: dappKp.publicKeyB64 },
+    } as ProtocolMessage);
+  }
+
   describe('joinFromUri', () => {
     it('starts in idle phase', () => {
       expect(session.phase).toBe('idle');
@@ -115,15 +123,28 @@ describe('WalletSession', () => {
 
       await session.joinFromUri(makePairingUri());
 
+      receiveConnected('wallet-tok');
+
+      expect(session.phase).toBe('connected');
+      expect(phases).toContain('waiting');
+      expect(phases).toContain('connected');
+    });
+
+    it('rejects ready.connected with missing remote', async () => {
+      const errorHandler = vi.fn();
+      session.on('error', errorHandler);
+
+      await session.joinFromUri(makePairingUri());
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
         ts: Date.now(), from: '_adapter',
         body: { state: 'connected', resume: 'wallet-tok', remote: null },
       } as ProtocolMessage);
 
-      expect(session.phase).toBe('connected');
-      expect(phases).toContain('waiting');
-      expect(phases).toContain('connected');
+      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('remote does not match'),
+      }));
+      expect(session.phase).toBe('closed');
     });
   });
 
@@ -155,11 +176,7 @@ describe('WalletSession', () => {
       walletToDappKey = keys.walletToDappKey;
 
       // Connect
-      transport.receive({
-        v: 1, t: 'ready', ch: channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected();
     });
 
     it('emits request event with decrypted params', () => {
@@ -216,6 +233,24 @@ describe('WalletSession', () => {
       expect(resMsg).toBeTruthy();
       expect(resMsg.body.ok).toBe(false);
     });
+
+    it('rejects sealed request missing _method with invalid_params', () => {
+      const handler = vi.fn();
+      session.on('request', handler);
+
+      transport.receive({
+        v: 1, t: 'req', ch: channelId,
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-missing-method', sealed: sealPayload(dappToWalletKey, channelId, 0, { message: 'no method' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-missing-method' }) },
+      } as ProtocolMessage);
+
+      expect(handler).not.toHaveBeenCalled();
+      const resMsg = transport.sent.find(m => m.t === 'res') as any;
+      expect(resMsg).toBeTruthy();
+      expect(resMsg.body.ok).toBe(false);
+      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: transport.sent.find(m => m.t === 'join')!.from!, id: 'req-missing-method', ok: false });
+      expect(data).toMatchObject({ code: 'invalid_params' });
+    });
   });
 
   describe('approve/reject', () => {
@@ -243,11 +278,7 @@ describe('WalletSession', () => {
       dappToWalletKey = keys.dappToWalletKey;
       walletToDappKey = keys.walletToDappKey;
 
-      transport.receive({
-        v: 1, t: 'ready', ch: channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected();
     });
 
     it('approve sends encrypted ok response', () => {
@@ -305,6 +336,57 @@ describe('WalletSession', () => {
       const sealedSet = new Set(responses.map((r: any) => r.body.sealed));
       expect(sealedSet.size).toBe(3);
     });
+
+    it('re-encrypts cached response for duplicate request id with same params', () => {
+      const handler = vi.fn();
+      session.on('request', handler);
+      const requestPayload = { _method: 'wallet_getAccounts' };
+
+      transport.receive({
+        v: 1, t: 'req', ch: channelId,
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'dup-1', sealed: sealPayload(dappToWalletKey, channelId, 0, requestPayload, { type: 'req', from: dappKp.publicKeyB64, id: 'dup-1' }) },
+      } as ProtocolMessage);
+      session.approve('dup-1', ['0xabc123']);
+
+      transport.receive({
+        v: 1, t: 'req', ch: channelId,
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'dup-1', sealed: sealPayload(dappToWalletKey, channelId, 1, requestPayload, { type: 'req', from: dappKp.publicKeyB64, id: 'dup-1' }) },
+      } as ProtocolMessage);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      const responses = transport.sent.filter(m => m.t === 'res') as any[];
+      expect(responses).toHaveLength(2);
+      expect(responses[0]!.body.sealed).not.toBe(responses[1]!.body.sealed);
+      const { data } = unsealPayload(walletToDappKey, channelId, responses[1]!.body.sealed, { type: 'res', from: walletPubB64, id: 'dup-1', ok: true });
+      expect(data).toEqual(['0xabc123']);
+    });
+
+    it('rejects duplicate request id with different params', () => {
+      const handler = vi.fn();
+      session.on('request', handler);
+
+      transport.receive({
+        v: 1, t: 'req', ch: channelId,
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'dup-2', sealed: sealPayload(dappToWalletKey, channelId, 0, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'dup-2' }) },
+      } as ProtocolMessage);
+      session.approve('dup-2', ['0xabc123']);
+
+      transport.receive({
+        v: 1, t: 'req', ch: channelId,
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'dup-2', sealed: sealPayload(dappToWalletKey, channelId, 1, { _method: 'wallet_getAccounts', changed: true }, { type: 'req', from: dappKp.publicKeyB64, id: 'dup-2' }) },
+      } as ProtocolMessage);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      const responses = transport.sent.filter(m => m.t === 'res') as any[];
+      const duplicateResponse = responses[1]!;
+      expect(duplicateResponse.body.ok).toBe(false);
+      const { data } = unsealPayload(walletToDappKey, channelId, duplicateResponse.body.sealed, { type: 'res', from: walletPubB64, id: 'dup-2', ok: false });
+      expect(data).toMatchObject({ code: 'invalid_params' });
+    });
   });
 
   describe('pushEvent', () => {
@@ -330,11 +412,7 @@ describe('WalletSession', () => {
       const keys = deriveDirectionalSessionKeys(rootKey, channelId, context);
       walletToDappKey = keys.walletToDappKey;
 
-      transport.receive({
-        v: 1, t: 'ready', ch: channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected();
     });
 
     it('sends encrypted event message', () => {
@@ -372,11 +450,7 @@ describe('WalletSession', () => {
   describe('ping/pong', () => {
     beforeEach(async () => {
       await session.joinFromUri(makePairingUri());
-      transport.receive({
-        v: 1, t: 'ready', ch: channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected();
     });
 
     it('responds to ping with pong', () => {
@@ -412,11 +486,7 @@ describe('WalletSession', () => {
     it('round-trips session state', async () => {
       await session.joinFromUri(makePairingUri());
 
-      transport.receive({
-        v: 1, t: 'ready', ch: channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected();
 
       const json = session.serialize();
       const newSession = new WalletSession({
@@ -454,11 +524,7 @@ describe('WalletSession', () => {
   describe('close message handling', () => {
     it('transitions to closed on close message from dApp', async () => {
       await session.joinFromUri(makePairingUri());
-      transport.receive({
-        v: 1, t: 'ready', ch: channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected();
 
       transport.receive({
         v: 1, t: 'close', ch: channelId,

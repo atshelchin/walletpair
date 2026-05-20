@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WalletPairProvider } from './eip1193.js';
 import { DAppSession } from '../dapp-session.js';
-import { MockTransport } from '../test-helpers.js';
+import { makeJoinBody, MockTransport } from '../test-helpers.js';
 import {
   generateX25519KeyPair,
   computeSharedSecret,
@@ -36,7 +36,7 @@ describe('WalletPairProvider', () => {
     transport.receive({
       v: 1, t: 'join', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { sealed_join: null, resume: null },
+      body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
     } as ProtocolMessage);
 
     // Responses/events from the manual wallet use the wallet->dApp key.
@@ -50,7 +50,7 @@ describe('WalletPairProvider', () => {
     transport.receive({
       v: 1, t: 'ready', ch: session.channelId,
       ts: Date.now(), from: '_adapter',
-      body: { state: 'connected', resume: 'tok', remote: null },
+      body: { state: 'connected', resume: 'tok', remote: walletKp.publicKeyB64 },
     } as ProtocolMessage);
   }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DAppSession } from './dapp-session.js';
 import { WalletSession } from './wallet-session.js';
-import { MockTransport, MockRelay } from './test-helpers.js';
+import { makeJoinBody, MockTransport, MockRelay } from './test-helpers.js';
 import {
   generateX25519KeyPair,
   computeSharedSecret,
@@ -17,6 +17,35 @@ import type { ProtocolMessage } from './types.js';
 
 function flushMicrotasks(): Promise<void> {
   return new Promise((r) => setTimeout(r, 10));
+}
+
+function dappPubKeyFromCreate(transport: MockTransport): string {
+  return transport.sent.find(m => m.t === 'create')!.from!;
+}
+
+function receiveFreshJoin(
+  transport: MockTransport,
+  session: DAppSession,
+  walletKp: ReturnType<typeof generateX25519KeyPair>,
+): void {
+  transport.receive({
+    v: 1, t: 'join', ch: session.channelId,
+    ts: Date.now(), from: walletKp.publicKeyB64,
+    body: makeJoinBody(session.channelId, dappPubKeyFromCreate(transport), walletKp),
+  } as ProtocolMessage);
+}
+
+function receiveConnected(
+  transport: MockTransport,
+  session: DAppSession,
+  walletPubKeyB64: string,
+  resume = 'tok',
+): void {
+  transport.receive({
+    v: 1, t: 'ready', ch: session.channelId,
+    ts: Date.now(), from: '_adapter',
+    body: { state: 'connected', resume, remote: walletPubKeyB64 },
+  } as ProtocolMessage);
 }
 
 describe('DAppSession', () => {
@@ -79,11 +108,7 @@ describe('DAppSession', () => {
       const phases: string[] = [];
       session.on('phase', (p) => phases.push(p));
 
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       expect(session.phase).toBe('pending_accept');
       expect(phases).toContain('pending_accept');
@@ -93,11 +118,7 @@ describe('DAppSession', () => {
       const handler = vi.fn();
       session.on('pairingCode', handler);
 
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       expect(handler).toHaveBeenCalled();
       expect(session.pairingCode).toMatch(/^\d{4}$/);
@@ -107,16 +128,11 @@ describe('DAppSession', () => {
       const handler = vi.fn();
       session.on('walletJoined', handler);
 
-      // For this test, join with no sealed_join — capabilities will be undefined
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       expect(handler).toHaveBeenCalledWith({
-        capabilities: undefined,
-        meta: undefined,
+        capabilities: expect.objectContaining({ methods: expect.any(Array) }),
+        meta: { name: 'Test Wallet' },
       });
     });
   });
@@ -126,11 +142,7 @@ describe('DAppSession', () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       expect(session.phase).toBe('pending_accept');
       session.acceptWallet();
@@ -141,13 +153,30 @@ describe('DAppSession', () => {
       expect((acceptMsg as any).body.target).toBe(walletKp.publicKeyB64);
 
       // Simulate relay responding with ready.connected
+      receiveConnected(transport, session, walletKp.publicKeyB64, 'token-123');
+
+      expect(session.phase).toBe('connected');
+    });
+
+    it('rejects ready.connected with missing remote', async () => {
+      await session.createPairing();
+      const walletKp = generateX25519KeyPair();
+      const errorHandler = vi.fn();
+      session.on('error', errorHandler);
+
+      receiveFreshJoin(transport, session, walletKp);
+      session.acceptWallet();
+
       transport.receive({
         v: 1, t: 'ready', ch: session.channelId,
         ts: Date.now(), from: '_adapter',
         body: { state: 'connected', resume: 'token-123', remote: null },
       } as ProtocolMessage);
 
-      expect(session.phase).toBe('connected');
+      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('remote does not match'),
+      }));
+      expect(session.phase).toBe('closed');
     });
 
     it('does nothing if not in pending_accept phase', async () => {
@@ -162,11 +191,7 @@ describe('DAppSession', () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       session.rejectWallet();
 
@@ -187,11 +212,7 @@ describe('DAppSession', () => {
       walletKp = generateX25519KeyPair();
 
       // Simulate join
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       // Derive session key from wallet side
       const dappPubB64 = transport.sent[0]!.from!;
@@ -201,11 +222,7 @@ describe('DAppSession', () => {
 
       // Accept and connect
       session.acceptWallet();
-      transport.receive({
-        v: 1, t: 'ready', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'token-123', remote: null },
-      } as ProtocolMessage);
+      receiveConnected(transport, session, walletKp.publicKeyB64, 'token-123');
       walletToDappKey = (session as any).recvKey;
     });
 
@@ -318,22 +335,14 @@ describe('DAppSession', () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       const dappPub = b64urlDecode(transport.sent[0]!.from!);
       const shared = computeSharedSecret(walletKp.privateKey, dappPub);
       deriveSessionKey(shared, session.channelId);
 
       session.acceptWallet();
-      transport.receive({
-        v: 1, t: 'ready', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected(transport, session, walletKp.publicKeyB64);
 
       const handler = vi.fn();
       session.on('event', handler);
@@ -355,11 +364,8 @@ describe('DAppSession', () => {
   describe('ping/pong', () => {
     it('responds to ping with pong', async () => {
       await session.createPairing();
-      transport.receive({
-        v: 1, t: 'ready', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      (session as any).remotePubKey = b64urlDecode('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      receiveConnected(transport, session, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
 
       transport.receive({
         v: 1, t: 'ping', ch: session.channelId,
@@ -373,11 +379,8 @@ describe('DAppSession', () => {
 
     it('sends ping', async () => {
       await session.createPairing();
-      transport.receive({
-        v: 1, t: 'ready', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      (session as any).remotePubKey = b64urlDecode('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      receiveConnected(transport, session, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
 
       session.ping();
       const ping = transport.sent.find(m => m.t === 'ping');
@@ -400,17 +403,9 @@ describe('DAppSession', () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
       session.acceptWallet();
-      transport.receive({
-        v: 1, t: 'ready', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected(transport, session, walletKp.publicKeyB64);
 
       const promise = session.request('test');
       session.close();
@@ -424,11 +419,7 @@ describe('DAppSession', () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
 
       const json = session.serialize();
       expect(json).toBeTruthy();
@@ -452,18 +443,10 @@ describe('DAppSession', () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      // First join — no sealed_join (capabilities will be undefined)
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      // First join carries sealed capabilities/meta.
+      receiveFreshJoin(transport, session, walletKp);
       session.acceptWallet();
-      transport.receive({
-        v: 1, t: 'ready', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected(transport, session, walletKp.publicKeyB64);
 
       // Second join (rejoin) with resume — should auto-accept (same wallet, same approved scope)
       transport.receive({
@@ -483,41 +466,15 @@ describe('DAppSession', () => {
       const walletKp2 = generateX25519KeyPair();
 
       // First join
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp);
       session.acceptWallet();
-      transport.receive({
-        v: 1, t: 'ready', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
-        body: { state: 'connected', resume: 'tok', remote: null },
-      } as ProtocolMessage);
+      receiveConnected(transport, session, walletKp.publicKeyB64);
 
-      // Different wallet joins — the remotePubKey is set to the new key before
-      // isSameApprovedWallet runs, but the transcript hash will differ because
-      // the DH shared secret changes, producing different directional keys.
-      // With the new protocol, a different wallet pubkey means a different DH
-      // and thus different keys — the session context changes.
-      // Auto-accept should NOT happen because the second wallet produces a
-      // different walletPubKeyB64 in the canonical transcript, which means
-      // the approved scope hash differs.
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp2.publicKeyB64,
-        body: { sealed_join: null, resume: null },
-      } as ProtocolMessage);
+      receiveFreshJoin(transport, session, walletKp2);
 
-      // With both wallets having undefined capabilities (no sealed_join),
-      // but different pubkeys, canonicalJson of capabilities/meta will match.
-      // However, the `isSameApprovedWallet` compares pubkey identity after
-      // remotePubKey is already overwritten, so it always matches.
-      // This is expected behavior: the pairing code will differ, and the user
-      // must verify the new code. The actual security comes from code comparison.
-      // Accept count may be 2 (auto-accepted) because scope looks identical.
       const acceptMessages = transport.sent.filter(m => m.t === 'accept');
-      expect(acceptMessages.length).toBeGreaterThanOrEqual(1);
+      expect(acceptMessages).toHaveLength(1);
+      expect(session.phase).toBe('pending_accept');
     });
   });
 

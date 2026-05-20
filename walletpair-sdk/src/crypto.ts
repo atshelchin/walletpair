@@ -170,7 +170,7 @@ export function deriveJoinEncryptionKey(
 
 /**
  * Encrypt capabilities + meta for private handshake (§7.5).
- * Returns base64url(ciphertext || tag).
+ * Returns base64url(nonce || ciphertext || tag).
  */
 export function sealJoin(
   joinEncryptionKey: Uint8Array,
@@ -180,10 +180,10 @@ export function sealJoin(
 ): string {
   const plainObj: Record<string, unknown> = { capabilities, meta: meta ?? {} };
   const plaintext = utf8ToBytes(canonicalJson(plainObj));
-  const nonce = hmac(sha256, joinEncryptionKey, utf8ToBytes('walletpair-v1-join-nonce')).slice(0, 12);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
   const aad = concatBytes(hexToBytes(channelIdHex), new Uint8Array([0x04]));
   const ciphertext = chacha20poly1305(joinEncryptionKey, nonce, aad).encrypt(plaintext);
-  return b64urlEncode(ciphertext);
+  return b64urlEncode(concatBytes(nonce, ciphertext));
 }
 
 /**
@@ -195,8 +195,12 @@ export function unsealJoin(
   channelIdHex: string,
   sealedJoin: string,
 ): { capabilities: unknown; meta?: unknown } {
-  const ciphertext = b64urlDecode(sealedJoin);
-  const nonce = hmac(sha256, joinEncryptionKey, utf8ToBytes('walletpair-v1-join-nonce')).slice(0, 12);
+  const envelope = b64urlDecode(sealedJoin);
+  if (envelope.length < 12 + 16) {
+    throw new Error('Invalid sealed_join envelope');
+  }
+  const nonce = envelope.slice(0, 12);
+  const ciphertext = envelope.slice(12);
   const aad = concatBytes(hexToBytes(channelIdHex), new Uint8Array([0x04]));
   const plaintext = chacha20poly1305(joinEncryptionKey, nonce, aad).decrypt(ciphertext);
   return JSON.parse(new TextDecoder().decode(plaintext));
@@ -263,7 +267,7 @@ export function unsealPayload(
   channelIdHex: string,
   sealed: string,
   header?: AadHeader,
-): { seq: number; data: unknown } {
+): { seq: number; data: unknown; plaintext: Uint8Array; plaintextJson: string } {
   const bytes = b64urlDecode(sealed);
   const seqBytes = bytes.slice(0, 4);
   const ciphertext = bytes.slice(4);
@@ -271,7 +275,12 @@ export function unsealPayload(
   const aad = buildAad(channelIdHex, header);
   const plaintext = chacha20poly1305(encryptionKey, nonce, aad).decrypt(ciphertext);
   const seq = new DataView(seqBytes.buffer, seqBytes.byteOffset, 4).getUint32(0);
-  return { seq, data: JSON.parse(new TextDecoder().decode(plaintext)) };
+  const plaintextJson = new TextDecoder().decode(plaintext);
+  return { seq, data: JSON.parse(plaintextJson), plaintext, plaintextJson };
+}
+
+export function sha256Hex(bytes: Uint8Array): string {
+  return bytesToHex(sha256(bytes));
 }
 
 // ---------------------------------------------------------------------------

@@ -71,6 +71,7 @@ export {
   b64urlDecode,
   bytesToHex,
   hexToBytes,
+  sha256Hex,
 } from './crypto.js';
 export type { X25519KeyPair, SessionCryptoContext, DirectionalSessionKeys } from './crypto.js';
 
