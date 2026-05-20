@@ -309,6 +309,7 @@ const S = {
   bleWriteChar: null,
   bleNotifyChar: null,
   bleDefrag: new BleDefragmenter(),
+  recvSeq: -1,
 };
 
 const BACKOFF = [1000, 2000, 5000, 10000, 30000];
@@ -563,6 +564,7 @@ function freshConnectBle() {
   S.pubKeyB64 = b64urlEncode(S.pubKey);
   S.channelId = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
   S.sendSeq = 0;
+  S.recvSeq = -1;
   S.remotePubKey = null;
   S.sessionKey = null;
   S.reqCounter = 0;
@@ -592,6 +594,7 @@ function freshConnect() {
   S.pubKeyB64 = b64urlEncode(S.pubKey);
   S.channelId = bytesToHex(crypto.getRandomValues(new Uint8Array(32)));
   S.sendSeq = 0;
+  S.recvSeq = -1;
   S.remotePubKey = null;
   S.sessionKey = null;
   S.reqCounter = 0;
@@ -740,8 +743,13 @@ function handleMessage(msg, ws) {
       let resDataStr = '';
       if (msg.sealed && S.sessionKey) {
         try {
-          const { data } = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
-          resDataStr = JSON.stringify(data);
+          const unsealed = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          if (unsealed.seq <= S.recvSeq) {
+            log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
+            break;
+          }
+          S.recvSeq = unsealed.seq;
+          resDataStr = JSON.stringify(unsealed.data);
           detail += ` ${resDataStr.length > 200 ? resDataStr.slice(0, 200) + '...' : resDataStr}`;
         } catch { detail += ' (decrypt failed)'; }
       }
@@ -768,8 +776,13 @@ function handleMessage(msg, ws) {
       let detail = `event=${msg.event}`;
       if (msg.sealed && S.sessionKey) {
         try {
-          const { data } = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
-          detail += ` ${JSON.stringify(data)}`;
+          const unsealed = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          if (unsealed.seq <= S.recvSeq) {
+            log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
+            break;
+          }
+          S.recvSeq = unsealed.seq;
+          detail += ` ${JSON.stringify(unsealed.data)}`;
         } catch { detail += ' (decrypt failed)'; }
       }
       log('in', 'evt', detail);
@@ -903,7 +916,7 @@ btnSend.onclick = doSendRequest;
 btnPing.onclick = doPing;
 btnClose.onclick = doFullClose;
 methodSel.onchange = () => {
-  if (methodSel.value === 'wallet_signMessage') paramsEl.value = '{"message": "Hello WalletPair!"}';
+  if (methodSel.value === 'wallet_signMessage') paramsEl.value = '{"chain": "eip155:1", "address": "", "message": "Hello WalletPair!"}';
   else paramsEl.value = '{}';
 };
 

@@ -44,6 +44,7 @@ interface Session {
   relayUrl: string;
   ethKeyHex: string;
   ethAddr: string;
+  recvSeq: number;
 }
 
 const BACKOFF = [1000, 2000, 5000, 10000, 30000];
@@ -177,7 +178,15 @@ export default function WalletScreen() {
       case 'req': {
         let params: Record<string, unknown> = {};
         if (msg.sealed && s.sessionKey) {
-          try { params = wp.unsealPayload(s.sessionKey, s.channelId, msg.sealed).data as Record<string, unknown>; }
+          try {
+            const unsealed = wp.unsealPayload(s.sessionKey, s.channelId, msg.sealed);
+            if (unsealed.seq <= s.recvSeq) {
+              addLog('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${s.recvSeq}`);
+              break;
+            }
+            s.recvSeq = unsealed.seq;
+            params = unsealed.data as Record<string, unknown>;
+          }
           catch { addLog('err', 'decrypt', `failed to decrypt req ${msg.id}`); }
         }
         addLog('in', 'req', `${msg.method} #${msg.id}`);
@@ -373,6 +382,7 @@ export default function WalletScreen() {
       relayUrl: '',
       ethKeyHex: ethKeyInput,
       ethAddr,
+      recvSeq: -1,
     };
     transportRef.current = 'ble';
     setRequests([]);
@@ -505,6 +515,7 @@ export default function WalletScreen() {
       relayUrl: parsed.relay,
       ethKeyHex: ethKeyInput,
       ethAddr,
+      recvSeq: -1,
     };
 
     setRequests([]);
@@ -544,6 +555,7 @@ export default function WalletScreen() {
         relayUrl: saved.relayUrl,
         ethKeyHex: saved.ethKeyHex,
         ethAddr: eth.privateKeyToAddress(saved.ethKeyHex),
+        recvSeq: -1,
       };
 
       setPairingCode(wp.computePairingCode(sessionKey, saved.channelId));
@@ -567,7 +579,7 @@ export default function WalletScreen() {
       let result: unknown;
       switch (req.method) {
         case 'wallet_getAccounts':
-          result = [s.ethAddr];
+          result = { accounts: [{ address: s.ethAddr, chains: ['eip155:1'] }] };
           break;
         case 'wallet_signMessage':
           result = { signature: eth.personalSign(s.ethKeyHex, String(req.params.message ?? '')), address: s.ethAddr };
@@ -596,7 +608,7 @@ export default function WalletScreen() {
   const pushEvent = useCallback((eventName: string) => {
     const s = session.current;
     if (!s || !s.sessionKey || phaseRef.current !== 'connected') return;
-    const data = eventName === 'accountsChanged' ? { accounts: [s.ethAddr] } : { chainId: 'eip155:1' };
+    const data = eventName === 'accountsChanged' ? { accounts: [{ address: s.ethAddr, chains: ['eip155:1'] }] } : { chain: 'eip155:1' };
     const msg: Record<string, unknown> = { v: 1, t: 'evt', ch: s.channelId, from: s.pubKeyB64, event: eventName };
     msg.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, data);
     sendRaw(msg);

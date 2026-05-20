@@ -256,6 +256,7 @@ const S = {
   phase: 'idle',
   pendingReqs: [],
   intentionalClose: false,
+  recvSeq: -1,
 };
 
 const BACKOFF = [1000, 2000, 5000, 10000, 30000];
@@ -506,7 +507,15 @@ function handleMessage(msg) {
     case 'req': {
       let params = {};
       if (msg.sealed && S.sessionKey) {
-        try { params = unsealPayload(S.sessionKey, S.channelId, msg.sealed).data; }
+        try {
+          const unsealed = unsealPayload(S.sessionKey, S.channelId, msg.sealed);
+          if (unsealed.seq <= S.recvSeq) {
+            log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
+            break;
+          }
+          S.recvSeq = unsealed.seq;
+          params = unsealed.data;
+        }
         catch { log('err', 'decrypt', `failed to decrypt req ${msg.id}`); }
       }
       log('in', 'req', `id=${msg.id} method=${msg.method}`);
@@ -561,7 +570,7 @@ function handleRequestAction(reqId, action) {
     let result;
     switch (req.method) {
       case 'wallet_getAccounts':
-        result = [S.ethAddr];
+        result = { accounts: [{ address: S.ethAddr, chains: ['eip155:1'] }] };
         break;
       case 'wallet_signMessage': {
         const message = req.params.message || '';
@@ -591,7 +600,7 @@ function handleRequestAction(reqId, action) {
 function pushEvent() {
   if (S.phase !== 'connected') return;
   const event = eventNameEl.value;
-  const data = event === 'accountsChanged' ? { accounts: [S.ethAddr] } : { chainId: 'eip155:1' };
+  const data = event === 'accountsChanged' ? { accounts: [{ address: S.ethAddr, chains: ['eip155:1'] }] } : { chain: 'eip155:1' };
   const msg = { v: 1, t: 'evt', ch: S.channelId, from: S.pubKeyB64, event };
   msg.sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, data);
   sendRaw(msg);
