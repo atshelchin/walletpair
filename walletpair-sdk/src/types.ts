@@ -33,13 +33,11 @@ export interface ProtocolMessageBase {
 
 export interface CreateMessage extends ProtocolMessageBase {
   t: 'create';
-  pubkey: string;
   resume?: string | undefined;
 }
 
 export interface JoinMessage extends ProtocolMessageBase {
   t: 'join';
-  pubkey: string;
   capabilities?: Capabilities | undefined;
   meta?: WalletMeta | undefined;
   /** Encrypted capabilities + meta for private handshake (§7.5). */

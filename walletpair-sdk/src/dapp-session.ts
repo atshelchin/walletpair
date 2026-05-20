@@ -175,7 +175,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     this.setPhase('waiting');
     this.sendRaw({
       v: 1, t: 'create', ch: this.channelId,
-      from: this.pubKeyB64, pubkey: this.pubKeyB64,
+      from: this.pubKeyB64,
     });
   }
 
@@ -361,13 +361,8 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
 
       case 'join': {
         const joinPubKey = msg.from!;
-        if (!joinPubKey || msg.pubkey !== joinPubKey) {
-          this.sendRaw({
-            v: 1, t: 'close', ch: this.channelId,
-            from: this.pubKeyB64, target: joinPubKey,
-            reason: 'protocol_error',
-          } as any);
-          this.emit('error', new Error('Malformed wallet join'));
+        if (!joinPubKey) {
+          this.emit('error', new Error('Malformed wallet join: missing from'));
           break;
         }
         let remoteBytes: Uint8Array;
@@ -649,7 +644,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       await this.transport.connect();
       const msg: ProtocolMessage = {
         v: 1, t: 'create', ch: this.channelId,
-        from: this.pubKeyB64, pubkey: this.pubKeyB64,
+        from: this.pubKeyB64,
       };
       if (useResume && this.resumeToken) (msg as any).resume = this.resumeToken;
       this.sendRaw(msg);

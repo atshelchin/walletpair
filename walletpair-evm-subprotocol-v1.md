@@ -1122,15 +1122,16 @@ WalletPair message (wire):
   "ch": "aabb...eeff",
   "id": "req-001",
   "from": "base64url-dapp-pubkey",
-  "method": "wallet_getAccounts",
+  "method": "encrypted",
   "sealed": "<encrypted params>"
 }
 ```
 
-Decrypted `sealed` (params):
+Decrypted `sealed` (params — includes `_method`):
 
 ```json
 {
+  "_method": "wallet_getAccounts",
   "chain": "eip155:1"
 }
 ```
@@ -1175,7 +1176,7 @@ WalletPair message (wire):
   "ch": "aabb...eeff",
   "id": "req-002",
   "from": "base64url-dapp-pubkey",
-  "method": "wallet_sendTransaction",
+  "method": "encrypted",
   "sealed": "<encrypted params>"
 }
 ```
@@ -1184,6 +1185,7 @@ Decrypted `sealed` (params):
 
 ```json
 {
+  "_method": "wallet_sendTransaction",
   "chain": "eip155:1",
   "address": "0xab16a96D359eC26a11e2C2b3d8f8B8942d5Bfcdb",
   "tx": {
@@ -1239,7 +1241,7 @@ WalletPair message (wire):
   "t": "evt",
   "ch": "aabb...eeff",
   "from": "base64url-wallet-pubkey",
-  "event": "chainChanged",
+  "event": "encrypted",
   "sealed": "<encrypted data>"
 }
 ```
@@ -1248,6 +1250,7 @@ Decrypted `sealed` (data):
 
 ```json
 {
+  "_event": "chainChanged",
   "chain": "eip155:137"
 }
 ```

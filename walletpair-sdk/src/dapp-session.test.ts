@@ -57,7 +57,7 @@ describe('DAppSession', () => {
       await session.createPairing();
       expect(transport.sent).toHaveLength(1);
       expect(transport.sent[0]!.t).toBe('create');
-      expect((transport.sent[0] as any).pubkey).toBeTruthy();
+      expect(transport.sent[0]!.from).toBeTruthy();
     });
 
     it('pairing URI is parseable', async () => {
@@ -81,7 +81,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
         capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
       } as ProtocolMessage);
 
@@ -95,7 +95,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalled();
@@ -111,7 +111,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
         capabilities, meta,
       } as ProtocolMessage);
 
@@ -132,7 +132,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
       } as ProtocolMessage);
 
       expect(session.phase).toBe('pending_accept');
@@ -166,7 +166,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
       } as ProtocolMessage);
 
       session.rejectWallet();
@@ -190,7 +190,7 @@ describe('DAppSession', () => {
       // Simulate join
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
       } as ProtocolMessage);
 
       // Derive session key from wallet side
@@ -321,7 +321,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
       } as ProtocolMessage);
 
       const dappPub = b64urlDecode(transport.sent[0]!.from!);
@@ -397,7 +397,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
       } as ProtocolMessage);
       session.acceptWallet();
       transport.receive({
@@ -419,7 +419,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
       } as ProtocolMessage);
 
       const json = session.serialize();
@@ -449,7 +449,7 @@ describe('DAppSession', () => {
       // First join with capabilities
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
         capabilities, meta,
       } as ProtocolMessage);
       session.acceptWallet();
@@ -461,7 +461,7 @@ describe('DAppSession', () => {
       // Second join (rejoin) with same capabilities — should auto-accept
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
         capabilities, meta,
       } as ProtocolMessage);
 
@@ -478,7 +478,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
         capabilities, meta,
       } as ProtocolMessage);
       session.acceptWallet();
@@ -489,7 +489,7 @@ describe('DAppSession', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+        from: walletKp.publicKeyB64,
         capabilities: { methods: ['wallet_getAccounts', 'wallet_signMessage'], events: [], chains: ['eip155:1'] },
         meta,
       } as ProtocolMessage);

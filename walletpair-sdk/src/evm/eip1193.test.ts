@@ -35,7 +35,7 @@ describe('WalletPairProvider', () => {
     // Join
     transport.receive({
       v: 1, t: 'join', ch: session.channelId,
-      from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
+      from: walletKp.publicKeyB64,
     } as ProtocolMessage);
 
     // Responses/events from the manual wallet use the wallet->dApp key.

@@ -406,7 +406,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     const caps = this.effectiveCapabilities;
     const msg: ProtocolMessage = {
       v: 1, t: 'join', ch: this.channelId,
-      from: this.pubKeyB64, pubkey: this.pubKeyB64,
+      from: this.pubKeyB64,
     };
     if (useResume && this.resumeToken) (msg as any).resume = this.resumeToken;
 
