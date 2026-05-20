@@ -186,9 +186,18 @@ All messages share the same top-level envelope fields:
 | `v`    | yes | Protocol version. Must be `1`. |
 | `t`    | yes | Message type. |
 | `ch`   | yes | Channel ID (hex, 64 chars). |
-| `ts`   | yes | Sender timestamp in milliseconds (Unix epoch). |
+| `ts`   | yes | Sender timestamp in milliseconds (Unix epoch). Informational only (see below). |
 | `from` | yes | Sender identity. X25519 public key (base64url) for peer messages, `"_adapter"` for adapter messages. |
 | `body` | yes | Type-specific payload. Schema determined by `t`. |
+
+**`ts` validation.** The `ts` field is the sender's local wall-clock time
+and is informational. Receivers MUST NOT reject messages solely based on
+`ts`. Clock skew between peers is expected. Implementations MAY use `ts`
+for display, logging, or request-timeout heuristics, but MUST NOT use it
+as a security-critical input (e.g., replay detection relies on sequence
+counters, not timestamps). The relay MAY reject messages with `ts` that
+deviates more than 5 minutes from server time as a protocol-error
+heuristic, but this is an availability measure, not a security boundary.
 
 ### 5.2 Body Schemas
 
@@ -204,7 +213,7 @@ is `null` on first connection, `remote` is `null` when state is
 | `accept` | `target` |
 | `ready` | `state`, `role`, `self`, `remote`, `resume` |
 | `req` | `id`, `sealed` |
-| `res` | `id`, `ok`, `sealed` |
+| `res` | `id`, `sealed` |
 | `evt` | `id`, `sealed` |
 | `ping` | (empty object) |
 | `pong` | (empty object) |
@@ -225,7 +234,6 @@ Body field descriptions:
 | `remote` | `ready` | Remote peer ID (base64url public key). `null` when `state` is `"waiting"`. |
 | `id` | `req`, `res`, `evt` | Request or event ID. |
 | `sealed` | `req`, `res`, `evt` | Encrypted payload, base64url. See Section 7.4. |
-| `ok` | `res` | Boolean. Whether the request succeeded. |
 | `reason` | `close`, `terminate` | Close or termination reason. |
 
 ### 5.3 Sealed Payload Content
@@ -237,20 +245,29 @@ plaintext. The decrypted content depends on the message type:
 | Message type | Decrypted `sealed` content |
 |-------------|---------------------------|
 | `req` | `{ "_method": "<method_name>", ...params }` |
-| `res` with `ok=true` | result object (e.g., `{ "txHash": "0x..." }`) or `null` |
-| `res` with `ok=false` | `{ "code": "<error_code>", "message": "<description>" }` |
+| `res` (success) | `{ "_ok": true, "_result": <result> }` |
+| `res` (error) | `{ "_ok": false, "code": "<error_code>", "message": "<description>" }` |
 | `evt` | `{ "_event": "<event_name>", ...data }` |
 
 The `_method` and `_event` fields are required. If missing after
-decryption, the receiver MUST reject with `invalid_params`.
+decryption, the receiver MUST reject with `invalid_params`. The `_ok`
+field is required in all `res` payloads. If missing after decryption,
+the receiver MUST reject with `protocol_error`.
+
+The `_result` field carries the response value. It may be any JSON
+value: an object (e.g., `{ "txHash": "0x..." }`), `null`, or a
+primitive. When the result is logically empty, use `{ "_ok": true,
+"_result": null }`.
 
 When the payload is logically empty, encrypt `{ "_method": "<name>" }`
-(for req), `null` (for result), or `{ "_event": "<name>" }` (for evt).
+(for req) or `{ "_event": "<name>" }` (for evt).
 Every `req`, `res`, and `evt` MUST carry a `sealed` field — a message
 without `sealed` after `ready.connected` MUST be rejected.
 
 Note: The plaintext fields `params`, `result`, `error`, and `data` never
 appear on the wire. Their content is encrypted into the `sealed` field.
+The success/failure status of a response is also inside the encrypted
+payload (the `_ok` field), not visible to the relay.
 The receiver decrypts `sealed` to recover the original JSON value. See
 Section 7.4 for encryption details.
 
@@ -279,9 +296,9 @@ ready     (adapter -> peer)           channel state notification
 terminate (adapter -> peer)           adapter-initiated termination
 ```
 
-There is no separate `error` message. Request errors use `res.body.ok = false`.
-Channel errors and rejection use `close`. Adapter-initiated shutdown uses
-`terminate`.
+There is no separate `error` message. Request errors are indicated by
+`_ok = false` inside the encrypted `res` payload. Channel errors and
+rejection use `close`. Adapter-initiated shutdown uses `terminate`.
 
 ## 7. Key Exchange and Encryption
 
@@ -477,7 +494,7 @@ length-prefixed encoding to avoid delimiter ambiguity:
 lp(s) = uint16_be(byte_length(utf8(s))) || utf8(s)
 
 req:  aad_header = 0x01 || lp(from) || lp(id)
-res:  aad_header = 0x02 || lp(from) || lp(id) || (ok ? 0x01 : 0x00)
+res:  aad_header = 0x02 || lp(from) || lp(id)
 evt:  aad_header = 0x03 || lp(from) || lp(id)
 ```
 
@@ -492,8 +509,7 @@ all AAD fields (`from`, `id`) are short strings well within this limit.
 
 The leading type byte (`0x01`/`0x02`/`0x03`) and length-prefixed fields
 ensure unambiguous parsing regardless of field content. If a relay
-modifies any plaintext field (`from`, `id`, `ok`), AEAD decryption will
-fail.
+modifies any plaintext field (`from`, `id`), AEAD decryption will fail.
 
 **AAD test vector** (for cross-implementation verification):
 
@@ -583,6 +599,13 @@ decoded envelope as `join_nonce` and reject envelopes shorter than
 
 The type byte `0x04` is reserved for `sealed_join` in protocol
 version 1.
+
+**Retry behavior.** If the wallet needs to retry `join` (e.g., no
+`ready` received due to network timeout), it MUST re-encrypt
+`sealed_join` with a fresh random nonce. The wallet MUST NOT change
+the capabilities or metadata between retries on the same channel —
+changing them would cause a transcript hash mismatch if the dApp
+already processed an earlier `join`.
 
 #### Wire format
 
@@ -1021,8 +1044,6 @@ The decrypted `sealed` contains `{ "_method": "wallet_signTransaction", ...param
 
 The wallet replies with exactly one `res`:
 
-Successful response:
-
 ```json
 {
   "v": 1,
@@ -1032,34 +1053,28 @@ Successful response:
   "from": "base64url-wallet-pubkey",
   "body": {
     "id": "req-001",
-    "ok": true,
-    "sealed": "base64url-encrypted-result"
+    "sealed": "base64url-encrypted-response"
   }
 }
 ```
 
-Failed response:
+The decrypted `sealed` contains a `_ok` boolean that indicates success or
+failure:
+
+Successful response (decrypted):
 
 ```json
 {
-  "v": 1,
-  "t": "res",
-  "ch": "aabb01...eeff",
-  "ts": 1779170000000,
-  "from": "base64url-wallet-pubkey",
-  "body": {
-    "id": "req-001",
-    "ok": false,
-    "sealed": "base64url-encrypted-error"
-  }
+  "_ok": true,
+  "_result": { "txHash": "0x..." }
 }
 ```
 
-The decrypted `sealed` in a failed response is an error object with required
-fields `code` (string) and `message` (string):
+Failed response (decrypted):
 
 ```json
 {
+  "_ok": false,
   "code": "user_rejected",
   "message": "User rejected the request"
 }
@@ -1071,9 +1086,9 @@ Rules:
 2. Only the wallet sends `res`.
 3. `res.id` must equal the matching `req.id`.
 4. A request receives exactly one response.
-5. The decrypted content of `req.sealed` is `{ "_method": "<name>",
-   ...params }`; the decrypted content of `res.sealed` is the JSON
-   result or error object.
+5. The decrypted `req.sealed` is `{ "_method": "<name>", ...params }`.
+   The decrypted `res.sealed` contains `_ok` (boolean) and either
+   `_result` (on success) or `code`/`message` (on error). See §5.3.
 6. **Request idempotency.** The wallet MUST cache every processed
    request ID, its params hash, and its decrypted response (result or
    error object). The cache MUST hold at least the most recent 1024
@@ -1105,7 +1120,7 @@ Rules:
      the channel is closed.
 
    **Cache entry size limit.** Each cached entry MUST store at most the
-   params hash (32 bytes), the response status (ok/error), and the
+   params hash (32 bytes), the response status (`_ok`), and the
    serialized response JSON. The wallet MUST cap individual cached
    response entries at 16 KB. If a response exceeds this limit, the
    wallet stores only the params hash and a flag indicating "response
@@ -1470,6 +1485,8 @@ pending_accept
   -> user rejects -> send close -----------------> closed
   -> receive terminate --------------------------> closed
   -> timeout ------------------------------------> closed
+  (A second `join` in this state MUST be rejected by the adapter
+   with `already_connected` per §16 rule 4.)
 connected
   -> send req
   -> receive res
@@ -1857,7 +1874,7 @@ The relay operator, network attacker, or eavesdropper should not be able to:
 | Peer impersonation | Peer ID is the X25519 public key; relay verifies on reconnect.     |
 | Replay             | Sequence-number-based nonce; receiver rejects out-of-order seq.    |
 | Channel hijack     | Channel ID is 32 random bytes (256-bit entropy).                   |
-| Relay compromise   | Relay only sees encrypted `sealed` blobs and routing metadata.   |
+| Relay compromise   | Relay only sees encrypted `sealed` blobs and routing metadata. Response success/failure (`_ok`) is encrypted. |
 
 ### 20.2.1 Pairing Code Security Analysis
 
@@ -1953,30 +1970,12 @@ The following are always encrypted and invisible to the relay:
 A malicious relay can still observe traffic patterns (message frequency,
 timing, message sizes) and the `from` field (public key). However, the
 relay cannot determine: what chains the user uses, what methods the
-wallet supports, the wallet brand, or what operations are being performed.
-In v1, the relay can still observe whether responses carry `ok=true` or
-`ok=false`.
+wallet supports, the wallet brand, what operations are being performed,
+or whether requests succeed or fail (the `_ok` status is inside the
+encrypted `sealed` payload, not visible on the wire).
 
 Relay operators MUST NOT log, index, or retain `join` message content
 beyond the immediate delivery.
-
-**Response success/failure leakage.** The `ok` field in `res` messages is
-plaintext on the wire. A malicious relay can observe whether requests
-succeed or fail — for example, how many transaction signing requests the
-user rejects. This is a known tradeoff: `ok` is plaintext so the relay can
-deliver error responses without needing to decrypt them (relevant for relay
-diagnostics and error routing). The `ok` field is bound into the AEAD's AAD
-(§7.4), so the relay cannot flip it without causing decryption failure.
-
-Response privacy mode is not part of WalletPair v1. Implementations MUST
-NOT advertise or require a `"response_privacy": true` capability under
-this version. A future extension MAY define a mode where the wire `ok`
-value is constant and the authoritative success/failure status is carried
-inside `sealed`; that extension must define a separate capability name,
-payload schema, AAD rules, and downgrade behavior.
-
-A future protocol version SHOULD consider removing `ok` from the
-plaintext wire format entirely.
 
 ### 20.5 Terminate Message Trust
 
@@ -2257,11 +2256,12 @@ The decrypted `sealed` contains `{ "_method": "wallet_signTransaction", ...param
   "from": "base64url-wallet-pubkey",
   "body": {
     "id": "req-001",
-    "ok": true,
-    "sealed": "base64url-encrypted-result"
+    "sealed": "base64url-encrypted-response"
   }
 }
 ```
+
+The decrypted `sealed` contains `{ "_ok": true, "_result": { "signature": "0x..." } }`.
 
 ### Wallet pushes encrypted event (seq=1)
 
