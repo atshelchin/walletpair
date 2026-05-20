@@ -244,8 +244,51 @@ transcript_hash = SHA256(
 )
 ```
 
-`canonical_json` is UTF-8 JSON with object keys sorted lexicographically,
-no insignificant whitespace, and `undefined` represented as `null`.
+`canonical_json` is UTF-8 JSON with the following deterministic rules:
+
+1. **Object keys** are sorted lexicographically by their UTF-8 byte
+   representation (not by Unicode code point — in practice these are
+   identical for ASCII keys used in this protocol).
+2. **No insignificant whitespace** — no spaces after `:` or `,`, no
+   newlines or indentation.
+3. **`undefined`** is represented as `null`.
+4. **Numbers** use the shortest decimal representation with no trailing
+   zeroes (e.g., `1` not `1.0`, `0` not `0.0`). No leading zeroes. No
+   `+` prefix. Negative zero is serialized as `0`.
+5. **Strings** use `\uXXXX` escaping only for control characters
+   (U+0000–U+001F). Printable characters including non-ASCII Unicode
+   are serialized as literal UTF-8, not escaped. The mandatory JSON
+   escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`) use the
+   short form. Forward slash `/` MUST NOT be escaped.
+6. **`null`**, **`true`**, **`false`** use their literal JSON forms.
+7. Sorting is recursive: nested objects also have their keys sorted.
+
+**Canonical JSON test vectors:**
+
+```text
+Input:  { "methods": ["wallet_signTransaction", "wallet_signMessage"],
+          "events": ["accountsChanged", "chainChanged"],
+          "chains": ["eip155:1", "eip155:137"] }
+
+canonical_json output (UTF-8 bytes):
+{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]}
+
+SHA-256 of above bytes:
+4da366e2aae26b47b3d90fff52410752348733350ce2525dce7d64510f571333
+```
+
+```text
+Input:  null
+canonical_json output: null
+```
+
+```text
+Input:  { "name": "MyWallet" }
+canonical_json output: {"name":"MyWallet"}
+```
+
+Implementations MUST verify their canonical JSON output matches these test
+vectors byte-for-byte before deployment.
 
 The traffic keys are direction-specific:
 
@@ -879,6 +922,16 @@ Rules:
    (minimum 128 entries) and MUST document the reduced cache size in
    their capability declaration.
 
+   **Cache security.** The idempotency cache contains decrypted
+   response data, which may include signed transactions, signatures,
+   or account information. Wallet implementations MUST store the cache
+   in memory that is not swappable to disk, or encrypt the cache at
+   rest using a key derived from the session's traffic key. The cache
+   MUST be securely erased (zeroed) when the channel is closed. On
+   platforms that do not support memory locking (e.g., browser
+   environments), implementations SHOULD minimize cache lifetime and
+   clear entries as soon as the dApp acknowledges receipt.
+
 ## 11. Wallet Events
 
 The wallet can push an event to the dApp with `evt`.
@@ -1312,6 +1365,24 @@ has the channel. Since the root and traffic keys are derived from the peer
 keys and handshake transcript (not the relay), switching relays does not
 affect encryption.
 
+**Relay affinity after pairing.** Once pairing completes on a specific
+relay, both peers hold `resume` tokens valid only on that relay. If that
+relay becomes unavailable, the `resume` tokens cannot be used on other
+relays (each relay generates its own opaque tokens). In this case:
+
+- The peer connecting to a different relay will receive
+  `channel_not_found` or `invalid_resume`.
+- Both peers MUST fall back to fresh pairing if the active relay is
+  permanently unavailable. This is equivalent to creating a new channel.
+- To mitigate this, the dApp SHOULD create the channel on all listed
+  relays and maintain a heartbeat on the active relay. If the active
+  relay fails, the dApp creates a new channel on the next relay and
+  presents a new QR code or deep link to the user.
+- Implementations that require seamless relay failover without
+  re-pairing SHOULD persist the channel's cryptographic state (keys,
+  sequence counters) and use a relay-independent reconnect mechanism
+  (outside the scope of v1).
+
 ## 19. Bluetooth Binding
 
 ### 19.1 Overview
@@ -1504,6 +1575,19 @@ Relay operators MUST NOT log, index, or retain `join` message content
 beyond the immediate delivery. A future protocol version may address this
 by splitting the handshake into a key-exchange phase followed by an
 encrypted capability exchange.
+
+**Response success/failure leakage.** The `ok` field in `res` messages is
+plaintext on the wire. A malicious relay can observe whether requests
+succeed or fail — for example, how many transaction signing requests the
+user rejects. This is a known tradeoff: `ok` is plaintext so the relay can
+deliver error responses without needing to decrypt them (relevant for relay
+diagnostics and error routing). The `ok` field is bound into the AEAD's AAD
+(§7.4), so the relay cannot flip it without causing decryption failure.
+Implementations that require full response privacy may set `ok` to `true`
+for all responses and encode the real success/failure status inside the
+encrypted `sealed` payload. This approach is compatible with the protocol
+(the receiver checks the decrypted content for actual status) but requires
+both peers to agree on this convention via a capability flag.
 
 ### 20.5 Close Message Trust
 

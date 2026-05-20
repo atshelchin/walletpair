@@ -287,7 +287,7 @@ network.
 | `tx.accessList` | array | no | EIP-2930 access list. Each entry: `{ address: string, storageKeys: string[] }`. |
 | `tx.maxFeePerBlobGas` | string | no | Max fee per blob gas for EIP-4844 (type 3) transactions, hex-encoded. |
 | `tx.blobVersionedHashes` | string[] | no | Versioned hashes for EIP-4844 (each 32-byte hex with `0x01` version prefix). The wallet cannot verify that actual blob data exists for these hashes — it trusts the dApp to provide correct hashes. See validation rule 5 for type 3 constraints. |
-| `tx.authorizationList` | array | no | EIP-7702 authorization tuples. Each entry: `{ chainId: string, address: string, nonce: string, yParity: string, r: string, s: string }`. All hex-encoded. These are pre-signed authorizations attached to the transaction; this method does not define a generic dApp-driven flow for creating new authorizations. |
+| `tx.authorizationList` | array | no | EIP-7702 authorization tuples. Each entry: `{ chainId: string, address: string, nonce: string, yParity: string, r: string, s: string, authority: string (optional) }`. All hex-encoded. These are pre-signed authorizations attached to the transaction; this method does not define a generic dApp-driven flow for creating new authorizations. The optional `authority` field is the expected recovered authority address (see validation rule 5b). |
 
 **Validation rules:**
 
@@ -337,6 +337,13 @@ The wallet MUST enforce the following before signing:
          where `chainId`, `address`, and `nonce` are from the
          authorization tuple. Recovery uses `yParity`, `r`, `s`.
          If recovery fails, reject with `invalid_params`.
+         If the optional `authority` field is present in the
+         authorization entry, the wallet MUST verify that the
+         recovered address matches `authority` (case-insensitive).
+         On mismatch, reject with `invalid_params`. DApps SHOULD
+         include the `authority` field to enable wallet-side
+         verification without requiring the user to manually
+         identify the recovered address.
      (c) Verify the entry's `chainId` is either `"0x0"`
          (chain-agnostic) or matches the transaction's chain.
      (d) If the recovered authority is an account managed by this
@@ -683,8 +690,25 @@ Requests the wallet to add a new EVM chain to its configuration.
 `wallet_addChain` is a special case: it may target a chain that is not yet in
 `capabilities.chains`, but only if `wallet_addChain` itself is in
 `capabilities.methods`. A successful add does not automatically expand the
-current session's chain scope; the dApp MUST request a new session or an
-explicit wallet-defined scope update before using the new chain.
+current session's chain scope.
+
+**Session scope after adding a chain.** To use the newly added chain, the
+dApp has two options:
+
+1. **New session (recommended).** Close the current session and initiate a
+   fresh pairing. The wallet will include the new chain in the next
+   session's `capabilities.chains` if the user approves.
+2. **In-session scope update (future extension).** WalletPair v1 does not
+   define an in-session scope expansion mechanism. A future version may add
+   a `wallet_updateScope` method that allows the wallet to expand
+   `capabilities.chains` within an existing session, subject to user
+   approval and a new `chainChanged` event. Until such a method is
+   standardized, dApps MUST NOT assume the added chain is usable in the
+   current session.
+
+The wallet MUST reject requests targeting the newly added chain in the
+current session with `unsupported_chain` until a new session is established
+that includes it in `capabilities.chains`.
 
 **Method:** `wallet_addChain`
 
