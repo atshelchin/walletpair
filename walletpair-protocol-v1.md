@@ -321,8 +321,8 @@ transcript_hash = SHA256(
   channel_id_bytes ||
   lp(dapp_pubkey_base64url) ||
   lp(wallet_pubkey_base64url) ||
-  lp(canonical_json(join.capabilities or null)) ||
-  lp(canonical_json(join.meta or null)) ||
+  lp(canonical_json(capabilities or null)) ||   // from decrypted sealed_join
+  lp(canonical_json(meta or null)) ||            // from decrypted sealed_join
   lp(dapp_name_from_pairing_uri or "")
 )
 ```
@@ -700,8 +700,9 @@ includes `methods` and `chains`, the wallet MUST compute the intersection
 trip.
 
 After `ready.connected`, the dApp calls `wallet_getAccounts` to discover
-the approved accounts. The combination of `join.capabilities` (methods,
-chains) and the `wallet_getAccounts` response (accounts) constitutes the
+the approved accounts. The combination of `capabilities` from the
+decrypted `sealed_join` (methods, chains) and the `wallet_getAccounts`
+response (accounts) constitutes the
 complete approved session scope.
 
 Account authorization is intentionally not placed in the plaintext `join`
@@ -1643,7 +1644,7 @@ rotating IP addresses.
 The relay MUST also enforce global resource limits:
 
 - Maximum concurrent channels (recommended: 10,000). When exceeded,
-  new `create` messages receive `close` with `rate_limited`.
+  new `create` messages receive `terminate` with `rate_limited`.
 - Maximum total bandwidth (recommended: 100 MB/min aggregate). When
   exceeded, the relay SHOULD throttle new messages with backpressure
   rather than dropping existing channels.
@@ -2372,7 +2373,7 @@ produces the expected plaintext.
 
 ### A.2 Transcript and Traffic Keys
 
-Handshake context (test data only — production wallets MUST use generic
+Handshake context (test data only — production wallets SHOULD use generic
 names per §20.4):
 
 ```text
