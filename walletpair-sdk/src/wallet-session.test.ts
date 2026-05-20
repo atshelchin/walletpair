@@ -268,7 +268,7 @@ describe('WalletSession', () => {
       expect(evtMsg.sealed).toBeTruthy();
 
       // Verify dApp can decrypt
-      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed, { type: 'evt', from: walletPubB64, event: 'accountsChanged' });
+      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed, { type: 'evt', from: walletPubB64, event: 'accountsChanged', id: evtMsg.id });
       expect(data).toEqual({ accounts: ['0xnew'] });
     });
 
@@ -287,7 +287,7 @@ describe('WalletSession', () => {
       const evtMsg = transport.sent.find(m => m.t === 'evt') as any;
       expect(evtMsg.event).toBe('chainChanged');
 
-      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed, { type: 'evt', from: walletPubB64, event: 'chainChanged' });
+      const { data } = unsealPayload(sessionKey, channelId, evtMsg.sealed, { type: 'evt', from: walletPubB64, event: 'chainChanged', id: evtMsg.id });
       expect(data).toEqual({ chainId: 'eip155:137' });
     });
   });

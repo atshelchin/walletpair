@@ -91,6 +91,15 @@ When both formats are present in a single request (e.g., `chain` and
 `tx.chainId`), the wallet MUST verify they refer to the same chain.
 See §5.2 for validation rules.
 
+All numeric chain IDs in this sub-protocol MUST be representable as
+safe integers (≤ 2^53 - 1). The wallet MUST reject any chain ID,
+nonce, gas value, or `typedData.domain.chainId` that exceeds this
+limit with `invalid_params`. Hex-encoded values (`tx.chainId`,
+`tx.nonce`, `tx.gas`, etc.) MUST be parsed as arbitrary-precision
+integers and validated before use. JSON numeric `domain.chainId`
+values that exceed `Number.MAX_SAFE_INTEGER` (9007199254740991)
+MUST be rejected.
+
 ## 3. Account Identification
 
 Addresses are 20-byte EVM addresses, hex-encoded with the `0x` prefix.
@@ -284,13 +293,25 @@ The wallet MUST enforce the following before signing:
    - If `tx.type` is `"0x4"` (EIP-7702): `gasPrice` MUST NOT be
      present. `maxFeePerGas` MUST be used. `authorizationList` MUST
      be a non-empty array. For each authorization entry, the wallet
-     MUST: (a) recover the authority address from the `yParity`, `r`,
-     `s` fields; (b) verify the entry's `chainId` is either `"0x0"`
-     (chain-agnostic) or matches the transaction's chain; (c) display
-     to the user both the delegation target (`address`) and the
-     recovered authority address; (d) warn that EIP-7702 grants the
-     delegation target code execution authority over the authority's
-     account, including access to its balance and storage.
+     MUST:
+     (a) Validate `yParity` is `"0x0"` or `"0x1"`. Validate `r` and
+         `s` are 32-byte hex values within the secp256k1 curve order.
+         `s` MUST be in the lower half of the curve order (low-s per
+         EIP-2).
+     (b) Recover the authority address using the EIP-7702 signing
+         hash: `keccak256(0x05 || rlp([chainId, address, nonce]))`,
+         where `chainId`, `address`, and `nonce` are from the
+         authorization tuple. Recovery uses `yParity`, `r`, `s`.
+     (c) Verify the entry's `chainId` is either `"0x0"`
+         (chain-agnostic) or matches the transaction's chain.
+     (d) If the recovered authority is an account managed by this
+         wallet, the wallet MUST display a prominent warning that the
+         user is delegating their own account's code execution.
+     (e) Display to the user both the delegation target (`address`)
+         and the recovered authority address.
+     (f) Warn that EIP-7702 grants the delegation target code
+         execution authority over the authority's account, including
+         full access to its balance and storage.
    - If both `gasPrice` and `maxFeePerGas` are present regardless of
      `type`, reject with `invalid_params`.
    - If `tx.type` is absent, the wallet MAY infer it: presence of

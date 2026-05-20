@@ -108,7 +108,7 @@ export function computePairingCode(
 export type AadHeader =
   | { type: 'req'; from: string; id: string; method: string }
   | { type: 'res'; from: string; id: string; ok: boolean }
-  | { type: 'evt'; from: string; event: string };
+  | { type: 'evt'; from: string; event: string; id?: string };
 
 /** Length-prefix a UTF-8 string: uint16_be(byte_length) || utf8_bytes */
 function lp(s: string): Uint8Array {
@@ -130,7 +130,7 @@ function buildAad(channelIdHex: string, header?: AadHeader): Uint8Array {
     case 'res':
       return concatBytes(chBytes, new Uint8Array([0x02]), lp(header.from), lp(header.id), new Uint8Array([header.ok ? 0x01 : 0x00]));
     case 'evt':
-      return concatBytes(chBytes, new Uint8Array([0x03]), lp(header.from), lp(header.event));
+      return concatBytes(chBytes, new Uint8Array([0x03]), lp(header.from), lp(header.event), lp(header.id ?? ''));
   }
 }
 

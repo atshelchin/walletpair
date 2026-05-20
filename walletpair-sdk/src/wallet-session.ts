@@ -178,12 +178,13 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       this.close();
       return;
     }
+    const evtId = `evt-${++this.evtCounter}`;
     const msg: ProtocolMessage = {
       v: 1, t: 'evt', ch: this.channelId,
-      id: `evt-${++this.evtCounter}`,
+      id: evtId,
       from: this.pubKeyB64, event,
     };
-    const hdr = { type: 'evt' as const, from: this.pubKeyB64, event };
+    const hdr = { type: 'evt' as const, from: this.pubKeyB64, event, id: evtId };
     (msg as any).sealed = sealPayload(this.sessionKey, this.channelId, seq, data, hdr);
     this.sendRaw(msg);
   }

@@ -304,8 +304,13 @@ lp(s) = uint16_be(byte_length(utf8(s))) || utf8(s)
 
 req:  aad_header = 0x01 || lp(from) || lp(id) || lp(method)
 res:  aad_header = 0x02 || lp(from) || lp(id) || (ok ? 0x01 : 0x00)
-evt:  aad_header = 0x03 || lp(from) || lp(event)
+evt:  aad_header = 0x03 || lp(from) || lp(event) || lp(id or "")
 ```
+
+The leading type byte doubles as a `t`+`v` binding (type bytes `0x01`-`0x03`
+are defined for protocol version 1 only). The `ch` field is already bound
+via `channel_id_bytes` in the AAD prefix. For `evt`, if an `id` field is
+present it MUST be included in the AAD; if absent, an empty string is used.
 
 The leading type byte (`0x01`/`0x02`/`0x03`) and length-prefixed fields
 ensure unambiguous parsing regardless of field content. If a relay
@@ -417,13 +422,18 @@ MUST enforce these as a ceiling:
    session. Accounts authorized in one session MUST NOT leak into
    another.
 
-When the pairing URI includes `methods` and `chains` (Section 9.1), the
-wallet SHOULD further restrict the session scope to the intersection of
-the dApp's request and the wallet's capabilities. For example, if the
-dApp requests `[wallet_sendTransaction]` but the wallet supports
-`[wallet_sendTransaction, wallet_signTypedData]`, the wallet SHOULD
-only authorize `wallet_sendTransaction` for this session and reject
-`wallet_signTypedData` with `unsupported_method`.
+When the pairing URI includes `methods` and/or `chains` (Section 9.1),
+the wallet MUST restrict the session scope to the intersection of the
+dApp's declared intent and the wallet's capabilities. For example, if
+the dApp declares `methods=wallet_sendTransaction` but the wallet
+supports `[wallet_sendTransaction, wallet_signTypedData]`, the wallet
+MUST only authorize `wallet_sendTransaction` for this session and MUST
+reject `wallet_signTypedData` with `unsupported_method`.
+
+When the pairing URI omits `methods` and `chains`, the wallet MUST
+treat this as a broad scope request and MUST display a prominent
+warning to the user that the dApp did not declare its intent. The
+wallet MAY require explicit per-method user confirmation in this case.
 
 Session scope changes (account additions/removals, chain changes) are
 communicated via `accountsChanged` and `chainChanged` events. The wallet
@@ -700,10 +710,13 @@ Rules:
      response without re-executing the operation.
    - If the params hash differs, the wallet MUST reject with
      `invalid_params` ("Duplicate request ID with different params").
-   The **canonical params hash** is `SHA-256(sealed_ciphertext_bytes)` —
-   the raw bytes of the `sealed` field after base64url decoding. This
-   avoids JSON canonicalization issues because the ciphertext is
-   deterministic for identical plaintext + key + sequence number.
+   The **canonical params hash** is `SHA-256(plaintext_json_utf8)` —
+   the raw UTF-8 bytes of the decrypted params JSON, before any parsing.
+   The wallet computes this hash immediately after AEAD decryption and
+   stores it alongside the request ID. Because the dApp serializes
+   params to JSON once and this byte sequence is preserved through
+   encrypt→decrypt, the hash is stable across retries (which use
+   different sequence numbers and therefore different ciphertext).
    For `wallet_sendTransaction` specifically: if the wallet has already
    signed and broadcast a transaction for a given `req.id`, it MUST NOT
    sign or broadcast again — it MUST return the original `txHash`.

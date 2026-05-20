@@ -384,7 +384,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       case 'evt': {
         if (msg.sealed && this.sessionKey) {
           try {
-            const evtHdr = { type: 'evt' as const, from: msg.from!, event: msg.event };
+            const evtHdr = { type: 'evt' as const, from: msg.from!, event: msg.event, id: (msg as any).id ?? '' };
             const { seq, data } = unsealPayload(this.sessionKey, this.channelId, msg.sealed, evtHdr);
             if (seq <= this.recvSeq) break; // replay — silently drop
             this.recvSeq = seq;
