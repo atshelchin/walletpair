@@ -708,7 +708,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'join', ch: session.channelId,
         from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
         capabilities: { methods: 'not-an-array', events: [], chains: [] },
-      } as ProtocolMessage);
+      } as unknown as ProtocolMessage);
 
       expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
         message: expect.stringContaining('Malformed wallet capabilities'),
@@ -737,7 +737,7 @@ describe('Sequence validation', () => {
         v: 1, t: 'join', ch: session.channelId,
         from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
         capabilities: 'invalid',
-      } as ProtocolMessage);
+      } as unknown as ProtocolMessage);
 
       expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
         message: expect.stringContaining('Malformed wallet capabilities'),
