@@ -58,9 +58,15 @@ const defaultMapper: MethodMapper = {
       case 'eth_accounts':
         return { method: 'wallet_getAccounts' };
       case 'personal_sign': {
-        // personal_sign params: [message, address]
+        // personal_sign params: [message, address] where message is hex-encoded bytes
         const p = params as [string, string] | undefined;
-        return { method: 'wallet_signMessage', params: { message: p?.[0], address: p?.[1] } };
+        const msg = p?.[0];
+        // EIP-1193 personal_sign convention: message is hex-encoded bytes.
+        // Route to wallet_signRawMessage for hex data, wallet_signMessage for plain text.
+        if (msg && msg.startsWith('0x')) {
+          return { method: 'wallet_signRawMessage', params: { data: msg, address: p?.[1] } };
+        }
+        return { method: 'wallet_signMessage', params: { message: msg, address: p?.[1] } };
       }
       case 'eth_signTypedData_v4': {
         // params: [address, typedDataJSON]
@@ -122,6 +128,11 @@ const defaultMapper: MethodMapper = {
     if (method === 'eth_signTransaction') {
       const r = result as { signedTx?: string } | undefined;
       if (r?.signedTx) return r.signedTx;
+    }
+    // Unwrap wallet_signRawMessage result
+    if (method === 'wallet_signRawMessage') {
+      const r = result as { signature?: string } | undefined;
+      if (r?.signature) return r.signature;
     }
     // Unwrap signature results
     if (method === 'personal_sign' || method === 'eth_signTypedData_v4') {
@@ -221,6 +232,19 @@ export class WalletPairProvider implements EIP1193Provider {
     const mapped = this.mapper.mapRequest(method, params);
     if (!mapped) {
       throw Object.assign(new Error(`Unsupported method: ${method}`), { code: 4200 });
+    }
+
+    // Inject chain for methods that require it per EVM sub-protocol
+    const chainRequiredMethods = [
+      'wallet_signMessage', 'wallet_signRawMessage', 'wallet_signTypedData',
+      'wallet_signTransaction', 'wallet_sendTransaction',
+      'wallet_getAccounts', 'wallet_watchAsset',
+    ];
+    if (mapped.params && typeof mapped.params === 'object' && chainRequiredMethods.includes(mapped.method)) {
+      const p = mapped.params as Record<string, unknown>;
+      if (!p.chain) {
+        p.chain = `eip155:${this.chainId}`;
+      }
     }
 
     const result = await this.session.request(mapped.method, mapped.params);

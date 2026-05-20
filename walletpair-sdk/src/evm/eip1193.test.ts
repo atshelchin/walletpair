@@ -141,7 +141,7 @@ describe('WalletPairProvider', () => {
   // -----------------------------------------------------------------------
 
   describe('personal_sign', () => {
-    it('maps to wallet_signMessage with message and address', async () => {
+    it('maps hex data to wallet_signRawMessage', async () => {
       await setupConnectedSession();
 
       const promise = provider.request({
@@ -151,9 +151,26 @@ describe('WalletPairProvider', () => {
       await flushMicrotasks();
 
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('wallet_signMessage');
+      expect(reqMsg.method).toBe('wallet_signRawMessage');
 
       // Wallet responds with { signature }, mapResponse unwraps to just the string
+      respondToLatestReq({ signature: '0xsig...' });
+      const result = await promise;
+      expect(result).toBe('0xsig...');
+    });
+
+    it('maps plain text to wallet_signMessage', async () => {
+      await setupConnectedSession();
+
+      const promise = provider.request({
+        method: 'personal_sign',
+        params: ['Hello, WalletPair!', '0xabc'],
+      });
+      await flushMicrotasks();
+
+      const reqMsg = transport.sent.find(m => m.t === 'req') as any;
+      expect(reqMsg.method).toBe('wallet_signMessage');
+
       respondToLatestReq({ signature: '0xsig...' });
       const result = await promise;
       expect(result).toBe('0xsig...');
