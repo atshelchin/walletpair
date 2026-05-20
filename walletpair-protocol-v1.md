@@ -280,31 +280,41 @@ A `req` with no params, a `res` with `ok=true` and no return value, or an
 `evt` with no data, may omit `sealed`. A `res` with `ok=false` must always
 include `sealed` (the encrypted error object).
 
+All `req`, `res`, and `evt` messages MUST carry a `sealed` field, even
+when the payload is empty (`null` or `{}`). This ensures every
+application-layer message has AEAD authentication, a sequence number,
+and replay protection. A message without `sealed` after `ready.connected`
+MUST be rejected.
+
 Encryption uses ChaCha20-Poly1305:
 
 ```text
 nonce    = HMAC-SHA256(session_key, seq_bytes)[0:12]   // first 12 bytes
-aad      = concat(channel_id_bytes, utf8(aad_suffix))
+aad      = concat(channel_id_bytes, aad_header)
 sealed   = AEAD_encrypt(session_key, nonce, plaintext_json_utf8, aad)
 envelope = base64url_no_pad(seq_bytes || ciphertext || tag)
 ```
 
-The `aad_suffix` authenticates the plaintext header fields to prevent a
-compromised relay from tampering with routing metadata:
+The `aad_header` authenticates the plaintext envelope fields to prevent a
+compromised relay from tampering with routing metadata. It uses
+length-prefixed encoding to avoid delimiter ambiguity:
 
 ```text
-req:  aad_suffix = from + ":" + id + ":" + method
-res:  aad_suffix = from + ":" + id + ":" + (ok ? "ok" : "err")
-evt:  aad_suffix = from + ":" + event
+lp(s) = uint16_be(byte_length(utf8(s))) || utf8(s)
+
+req:  aad_header = 0x01 || lp(from) || lp(id) || lp(method)
+res:  aad_header = 0x02 || lp(from) || lp(id) || (ok ? 0x01 : 0x00)
+evt:  aad_header = 0x03 || lp(from) || lp(event)
 ```
 
-If a relay modifies `from`, `id`, `method`, `event`, or `ok`, the
-receiver's AEAD decryption will fail, rejecting the tampered message.
+The leading type byte (`0x01`/`0x02`/`0x03`) and length-prefixed fields
+ensure unambiguous parsing regardless of field content. If a relay
+modifies any plaintext field (`from`, `id`, `method`, `event`, `ok`),
+AEAD decryption will fail.
 
 Where `seq_bytes` is a 4-byte big-endian sequence number. Each peer maintains
 its own send counter, starting at 0 and incrementing by 1 for each message
-that carries a `sealed` field. Messages without `sealed` (e.g., a `req` with
-no params) do not consume a sequence number.
+that carries a `sealed` field.
 
 The receiver tracks the highest accepted sequence number from the remote peer
 (initially -1, meaning no message received yet). On receiving a message with
@@ -393,6 +403,32 @@ Capability fields:
 
 All three fields are required in `capabilities`. An empty array means the
 wallet explicitly supports none of that category.
+
+### 8.1 Session Scope Enforcement
+
+The wallet's declared `capabilities` define the session scope. The wallet
+MUST enforce these as a ceiling:
+
+1. The wallet MUST reject any `req` whose `method` is not in
+   `capabilities.methods` with error `unsupported_method`.
+2. The wallet MUST reject any request targeting a chain not in
+   `capabilities.chains` with error `unsupported_chain`.
+3. The wallet MUST only expose accounts that were authorized for this
+   session. Accounts authorized in one session MUST NOT leak into
+   another.
+
+When the pairing URI includes `methods` and `chains` (Section 9.1), the
+wallet SHOULD further restrict the session scope to the intersection of
+the dApp's request and the wallet's capabilities. For example, if the
+dApp requests `[wallet_sendTransaction]` but the wallet supports
+`[wallet_sendTransaction, wallet_signTypedData]`, the wallet SHOULD
+only authorize `wallet_sendTransaction` for this session and reject
+`wallet_signTypedData` with `unsupported_method`.
+
+Session scope changes (account additions/removals, chain changes) are
+communicated via `accountsChanged` and `chainChanged` events. The wallet
+MUST NOT expand the session's method scope after pairing without the
+dApp initiating a new session.
 
 ## 9. Pairing Flow
 
@@ -656,14 +692,18 @@ Rules:
 4. A request receives exactly one response.
 5. The decrypted content of `sealed` is the JSON value of `params`, `result`,
    or `error`, owned by the upper-layer service.
-6. The wallet MUST track recently processed request IDs and their
-   responses for at least 5 minutes. If the wallet receives a `req`
-   with an `id` it has already processed:
-   - If the params hash matches the original request, the wallet MUST
-     return the cached response without re-executing the operation.
+6. **Request idempotency.** The wallet MUST cache every processed
+   request ID, its params hash, and its response for the lifetime of
+   the channel (until close). If the wallet receives a `req` with an
+   `id` it has already processed:
+   - If the params hash matches, the wallet MUST return the cached
+     response without re-executing the operation.
    - If the params hash differs, the wallet MUST reject with
      `invalid_params` ("Duplicate request ID with different params").
-   This prevents duplicate signing or broadcast after reconnect retries.
+   The **canonical params hash** is `SHA-256(sealed_ciphertext_bytes)` —
+   the raw bytes of the `sealed` field after base64url decoding. This
+   avoids JSON canonicalization issues because the ciphertext is
+   deterministic for identical plaintext + key + sequence number.
    For `wallet_sendTransaction` specifically: if the wallet has already
    signed and broadcast a transaction for a given `req.id`, it MUST NOT
    sign or broadcast again — it MUST return the original `txHash`.
@@ -872,7 +912,9 @@ After reconnect:
 
 1. The dApp may retry pending requests with the same `req.id` (using new
    sequence numbers for encryption).
-2. The wallet should deduplicate duplicate request IDs within a short window.
+2. The wallet MUST deduplicate duplicate request IDs per Section 10 rule 6.
+   The wallet's idempotency cache persists for the channel lifetime, so
+   retried requests after reconnect are handled correctly.
 3. The dApp should refresh state by calling a method like `wallet_getAccounts`
    if missed events matter.
 

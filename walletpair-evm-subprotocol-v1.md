@@ -283,9 +283,14 @@ The wallet MUST enforce the following before signing:
      present (blob transactions cannot create contracts).
    - If `tx.type` is `"0x4"` (EIP-7702): `gasPrice` MUST NOT be
      present. `maxFeePerGas` MUST be used. `authorizationList` MUST
-     be a non-empty array. The wallet MUST display each authorization
-     entry to the user and warn that EIP-7702 grants code execution
-     authority to the account.
+     be a non-empty array. For each authorization entry, the wallet
+     MUST: (a) recover the authority address from the `yParity`, `r`,
+     `s` fields; (b) verify the entry's `chainId` is either `"0x0"`
+     (chain-agnostic) or matches the transaction's chain; (c) display
+     to the user both the delegation target (`address`) and the
+     recovered authority address; (d) warn that EIP-7702 grants the
+     delegation target code execution authority over the authority's
+     account, including access to its balance and storage.
    - If both `gasPrice` and `maxFeePerGas` are present regardless of
      `type`, reject with `invalid_params`.
    - If `tx.type` is absent, the wallet MAY infer it: presence of
@@ -471,12 +476,21 @@ Signs typed structured data using [EIP-712](https://eips.ethereum.org/EIPS/eip-7
    coercion fails, reject with `invalid_params`. The resulting numeric
    value MUST equal the numeric chain ID from the `chain` parameter. On
    mismatch, reject with `invalid_params`.
-   If `typedData.domain.chainId` is absent AND the typed data represents
-   a high-risk pattern (Permit, approval, or any spending allowance),
-   the wallet MUST reject with `invalid_params`. For other typed data
-   where `domain.chainId` is absent, the wallet MUST display a warning
-   that the signature is not chain-bound and may be replayed on other
-   chains.
+   If `typedData.domain.chainId` is absent AND the typed data matches a
+   high-risk pattern (see below), the wallet MUST reject with
+   `invalid_params`. For other typed data where `domain.chainId` is
+   absent, the wallet MUST display a warning that the signature is not
+   chain-bound and may be replayed on other chains.
+   **High-risk pattern detection:** The wallet MUST treat typed data as
+   high-risk if ANY of the following are true:
+   - `primaryType` is `Permit` and `types` contains fields `owner`,
+     `spender`, `value` (ERC-2612 / ERC-20 Permit).
+   - `primaryType` is `Permit` and `types` contains fields `owner`,
+     `spender`, `tokenId` (ERC-721 Permit).
+   - `primaryType` is `PermitBatch` or `PermitSingle` (Permit2).
+   - Any type in `types` contains a field named `allowance` or
+     `permitted` with a struct type referencing `amount` or `token`.
+   - `primaryType` contains the substring `Permit` (case-insensitive).
 4. The wallet MUST verify that `typedData.primaryType` references a type
    defined in `typedData.types`. If not, reject with `invalid_params`.
 5. The wallet MUST verify that `typedData.types` contains
