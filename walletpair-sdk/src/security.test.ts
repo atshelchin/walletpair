@@ -47,16 +47,16 @@ async function connectDAppManual(ctx: ReturnType<typeof setupDAppManual>) {
 
   transport.receive({
     v: 1, t: 'join', ch: session.channelId,
-    from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-    capabilities: { methods: ['wallet_getAccounts'], events: ['accountsChanged'], chains: ['eip155:1'] },
-    meta: { name: 'TestWallet' },
+    ts: Date.now(), from: walletKp.publicKeyB64,
+    body: { sealed_join: null, resume: null },
   } as ProtocolMessage);
 
   session.acceptWallet();
 
   transport.receive({
     v: 1, t: 'ready', ch: session.channelId,
-    state: 'connected', resume: 'tok',
+    ts: Date.now(), from: '_adapter',
+    body: { state: 'connected', resume: 'tok', remote: null },
   } as ProtocolMessage);
 
   // Derive the wallet's send key (walletToDappKey) which is what
@@ -84,7 +84,8 @@ async function connectWalletManual(ctx: ReturnType<typeof setupWalletManual>) {
 
   transport.receive({
     v: 1, t: 'ready', ch: channelId,
-    state: 'connected', resume: 'tok',
+    ts: Date.now(), from: '_adapter',
+    body: { state: 'connected', resume: 'tok', remote: null },
   } as ProtocolMessage);
 
   // The wallet's recvKey is dappToWalletKey
@@ -108,12 +109,13 @@ describe('Security: Replay detection', () => {
     const p0 = session.request('wallet_getAccounts');
     await wait(20);
     const req0 = transport.sent.find(m => m.t === 'req') as any;
+    const req0Id = req0.body.id;
 
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: req0.id, from: walletKp.publicKeyB64, ok: true,
-      sealed: sealPayload(recvKey, session.channelId, 0, ['0xa'],
-        { type: 'res', from: walletKp.publicKeyB64, id: req0.id, ok: true }),
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: req0Id, ok: true, sealed: sealPayload(recvKey, session.channelId, 0, ['0xa'],
+        { type: 'res', from: walletKp.publicKeyB64, id: req0Id, ok: true }) },
     } as ProtocolMessage);
     expect(await p0).toEqual(['0xa']);
 
@@ -121,12 +123,13 @@ describe('Security: Replay detection', () => {
     const p1 = session.request('wallet_getAccounts');
     await wait(20);
     const req1 = transport.sent.filter(m => m.t === 'req')[1] as any;
+    const req1Id = req1.body.id;
 
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: req1.id, from: walletKp.publicKeyB64, ok: true,
-      sealed: sealPayload(recvKey, session.channelId, 0, ['replay'],
-        { type: 'res', from: walletKp.publicKeyB64, id: req1.id, ok: true }),
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: req1Id, ok: true, sealed: sealPayload(recvKey, session.channelId, 0, ['replay'],
+        { type: 'res', from: walletKp.publicKeyB64, id: req1Id, ok: true }) },
     } as ProtocolMessage);
     await expect(p1).rejects.toThrow('Replay detected');
   });
@@ -140,11 +143,12 @@ describe('Security: Replay detection', () => {
     const p0 = session.request('wallet_getAccounts');
     await wait(20);
     const req0 = transport.sent.find(m => m.t === 'req') as any;
+    const r0id = req0.body.id;
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: req0.id, from: walletKp.publicKeyB64, ok: true,
-      sealed: sealPayload(recvKey, session.channelId, 5, 'ok',
-        { type: 'res', from: walletKp.publicKeyB64, id: req0.id, ok: true }),
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: r0id, ok: true, sealed: sealPayload(recvKey, session.channelId, 5, 'ok',
+        { type: 'res', from: walletKp.publicKeyB64, id: r0id, ok: true }) },
     } as ProtocolMessage);
     expect(await p0).toBe('ok');
 
@@ -152,11 +156,12 @@ describe('Security: Replay detection', () => {
     const p1 = session.request('wallet_getAccounts');
     await wait(20);
     const req1 = transport.sent.filter(m => m.t === 'req')[1] as any;
+    const r1id = req1.body.id;
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: req1.id, from: walletKp.publicKeyB64, ok: true,
-      sealed: sealPayload(recvKey, session.channelId, 3, 'stale',
-        { type: 'res', from: walletKp.publicKeyB64, id: req1.id, ok: true }),
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: r1id, ok: true, sealed: sealPayload(recvKey, session.channelId, 3, 'stale',
+        { type: 'res', from: walletKp.publicKeyB64, id: r1id, ok: true }) },
     } as ProtocolMessage);
     await expect(p1).rejects.toThrow('Replay detected');
   });
@@ -170,11 +175,12 @@ describe('Security: Replay detection', () => {
     const p0 = session.request('wallet_getAccounts');
     await wait(20);
     const req0 = transport.sent.find(m => m.t === 'req') as any;
+    const r0id = req0.body.id;
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: req0.id, from: walletKp.publicKeyB64, ok: true,
-      sealed: sealPayload(recvKey, session.channelId, 0, 'first',
-        { type: 'res', from: walletKp.publicKeyB64, id: req0.id, ok: true }),
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: r0id, ok: true, sealed: sealPayload(recvKey, session.channelId, 0, 'first',
+        { type: 'res', from: walletKp.publicKeyB64, id: r0id, ok: true }) },
     } as ProtocolMessage);
     expect(await p0).toBe('first');
 
@@ -182,11 +188,12 @@ describe('Security: Replay detection', () => {
     const p1 = session.request('wallet_getAccounts');
     await wait(20);
     const req1 = transport.sent.filter(m => m.t === 'req')[1] as any;
+    const r1id = req1.body.id;
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: req1.id, from: walletKp.publicKeyB64, ok: true,
-      sealed: sealPayload(recvKey, session.channelId, 10, 'second',
-        { type: 'res', from: walletKp.publicKeyB64, id: req1.id, ok: true }),
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: r1id, ok: true, sealed: sealPayload(recvKey, session.channelId, 10, 'second',
+        { type: 'res', from: walletKp.publicKeyB64, id: r1id, ok: true }) },
     } as ProtocolMessage);
     expect(await p1).toBe('second');
   });
@@ -198,25 +205,12 @@ describe('Security: Replay detection', () => {
 
 describe('Security: AAD tampering', () => {
 
-  it('tampered AAD (wrong method) causes decryption failure', () => {
-    const key = new Uint8Array(32);
-    crypto.getRandomValues(key);
-    const channelId = generateChannelId();
-
-    const hdr = { type: 'req' as const, from: 'dapp', id: 'req-1', method: 'wallet_getAccounts' };
-    const sealed = sealPayload(key, channelId, 0, { foo: 'bar' }, hdr);
-
-    // Unseal with wrong method in AAD
-    const tamperedHdr = { ...hdr, method: 'wallet_signMessage' };
-    expect(() => unsealPayload(key, channelId, sealed, tamperedHdr)).toThrow();
-  });
-
   it('tampered AAD (wrong id) causes decryption failure', () => {
     const key = new Uint8Array(32);
     crypto.getRandomValues(key);
     const channelId = generateChannelId();
 
-    const hdr = { type: 'req' as const, from: 'dapp', id: 'req-1', method: 'wallet_getAccounts' };
+    const hdr = { type: 'req' as const, from: 'dapp', id: 'req-1' };
     const sealed = sealPayload(key, channelId, 0, { foo: 'bar' }, hdr);
 
     const tamperedHdr = { ...hdr, id: 'req-999' };
@@ -228,7 +222,7 @@ describe('Security: AAD tampering', () => {
     crypto.getRandomValues(key);
     const channelId = generateChannelId();
 
-    const hdr = { type: 'req' as const, from: 'dapp', id: 'req-1', method: 'wallet_getAccounts' };
+    const hdr = { type: 'req' as const, from: 'dapp', id: 'req-1' };
     const sealed = sealPayload(key, channelId, 0, {}, hdr);
 
     const tamperedHdr = { ...hdr, from: 'evil-relay' };
@@ -247,7 +241,7 @@ describe('Security: Ciphertext and key tampering', () => {
     crypto.getRandomValues(key);
     const channelId = generateChannelId();
 
-    const hdr = { type: 'req' as const, from: 'dapp', id: 'req-1', method: 'wallet_getAccounts' };
+    const hdr = { type: 'req' as const, from: 'dapp', id: 'req-1' };
     const sealed = sealPayload(key, channelId, 0, { secret: true }, hdr);
 
     // Decode, flip a byte in the ciphertext, re-encode
@@ -326,12 +320,14 @@ describe('Security: Mandatory encryption', () => {
     const p = session.request('wallet_getAccounts');
     await wait(20);
     const req = transport.sent.find(m => m.t === 'req') as any;
+    const reqId = req.body.id;
 
     // Send a response without sealed field
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: req.id, from: walletKp.publicKeyB64, ok: true,
-      // no sealed field
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: reqId, ok: true },
+      // no sealed field in body
     } as ProtocolMessage);
 
     await expect(p).rejects.toThrow('Response must be encrypted');
@@ -345,11 +341,11 @@ describe('Security: Mandatory encryption', () => {
     const requestHandler = vi.fn();
     session.on('request', requestHandler);
 
-    // Send a request without sealed field
+    // Send a request without sealed field in body
     transport.receive({
       v: 1, t: 'req', ch: channelId,
-      id: 'req-unseal', from: dappKp.publicKeyB64,
-      method: 'wallet_getAccounts',
+      ts: Date.now(), from: dappKp.publicKeyB64,
+      body: { id: 'req-unseal' },
       // no sealed field
     } as ProtocolMessage);
 
@@ -357,9 +353,9 @@ describe('Security: Mandatory encryption', () => {
     expect(requestHandler).not.toHaveBeenCalled();
 
     // Wallet should have sent a rejection response
-    const rejectionMsg = transport.sent.find(m => m.t === 'res' && (m as any).id === 'req-unseal') as any;
+    const rejectionMsg = transport.sent.find(m => m.t === 'res' && (m as any).body?.id === 'req-unseal') as any;
     expect(rejectionMsg).toBeTruthy();
-    expect(rejectionMsg.ok).toBe(false);
+    expect(rejectionMsg.body.ok).toBe(false);
   });
 
   it('DAppSession drops unsealed events', async () => {
@@ -370,10 +366,11 @@ describe('Security: Mandatory encryption', () => {
     const eventHandler = vi.fn();
     session.on('event', eventHandler);
 
-    // Send an event without sealed field
+    // Send an event without sealed field in body
     transport.receive({
       v: 1, t: 'evt', ch: session.channelId,
-      from: walletKp.publicKeyB64, event: 'accountsChanged',
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: 'evt-1' },
       // no sealed field
     } as ProtocolMessage);
 

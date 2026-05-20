@@ -100,21 +100,23 @@ export class MockRelay {
     if (msg.t === 'create') {
       queueMicrotask(() => {
         this.dappTransport.receive({
-          v: 1, t: 'ready', ch: msg.ch, state: 'waiting',
-          resume: 'dapp-resume-token',
+          v: 1, t: 'ready', ch: msg.ch,
+          ts: Date.now(), from: '_adapter',
+          body: { state: 'waiting', resume: 'dapp-resume-token', remote: null },
         } as ProtocolMessage);
       });
     } else if (msg.t === 'accept') {
       queueMicrotask(() => {
+        const target = (msg.body as any).target;
         this.dappTransport.receive({
-          v: 1, t: 'ready', ch: msg.ch, state: 'connected',
-          resume: 'dapp-resume-token-2',
-          remote: (msg as any).target,
+          v: 1, t: 'ready', ch: msg.ch,
+          ts: Date.now(), from: '_adapter',
+          body: { state: 'connected', resume: 'dapp-resume-token-2', remote: target },
         } as ProtocolMessage);
         this.walletTransport.receive({
-          v: 1, t: 'ready', ch: msg.ch, state: 'connected',
-          resume: 'wallet-resume-token-2',
-          remote: msg.from,
+          v: 1, t: 'ready', ch: msg.ch,
+          ts: Date.now(), from: '_adapter',
+          body: { state: 'connected', resume: 'wallet-resume-token-2', remote: msg.from },
         } as ProtocolMessage);
       });
     } else if (msg.t === 'req') {
@@ -133,8 +135,9 @@ export class MockRelay {
       queueMicrotask(() => {
         // Relay sends ready.waiting to wallet
         this.walletTransport.receive({
-          v: 1, t: 'ready', ch: msg.ch, state: 'waiting',
-          resume: 'wallet-resume-token',
+          v: 1, t: 'ready', ch: msg.ch,
+          ts: Date.now(), from: '_adapter',
+          body: { state: 'waiting', resume: 'wallet-resume-token', remote: null },
         } as ProtocolMessage);
         // Relay forwards join to dApp
         this.dappTransport.receive(msg);

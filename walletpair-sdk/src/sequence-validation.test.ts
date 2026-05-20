@@ -110,8 +110,8 @@ async function connectDAppManually(ctx: ReturnType<typeof setupDAppWithManualWal
   // Simulate wallet join
   transport.receive({
     v: 1, t: 'join', ch: session.channelId,
-    from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-    capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+    ts: Date.now(), from: walletKp.publicKeyB64,
+    body: { sealed_join: null, resume: null },
   } as ProtocolMessage);
 
   // Derive root key from wallet side. Responses/events use wallet->dApp key,
@@ -125,7 +125,8 @@ async function connectDAppManually(ctx: ReturnType<typeof setupDAppWithManualWal
   session.acceptWallet();
   transport.receive({
     v: 1, t: 'ready', ch: session.channelId,
-    state: 'connected', resume: 'tok',
+    ts: Date.now(), from: '_adapter',
+    body: { state: 'connected', resume: 'tok', remote: null },
   } as ProtocolMessage);
 
   return { sessionKey: (session as any).recvKey as Uint8Array, dappPubB64 };
@@ -172,7 +173,8 @@ async function connectWalletManually(ctx: ReturnType<typeof setupWalletWithManua
   // Connect
   transport.receive({
     v: 1, t: 'ready', ch: channelId,
-    state: 'connected', resume: 'tok',
+    ts: Date.now(), from: '_adapter',
+    body: { state: 'connected', resume: 'tok', remote: null },
   } as ProtocolMessage);
 
   return { sessionKey: (session as any).recvKey as Uint8Array, walletPubB64 };
@@ -201,9 +203,8 @@ describe('Sequence validation', () => {
       // Wallet responds with seq=0 -> should be accepted
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
-        id: req0.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, ['0xabc'], { type: 'res', from: walletKp.publicKeyB64, id: req0.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: req0.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 0, ['0xabc'], { type: 'res', from: walletKp.publicKeyB64, id: req0.body.id, ok: true }) },
       } as ProtocolMessage);
 
       const result0 = await p0;
@@ -217,9 +218,8 @@ describe('Sequence validation', () => {
       // Wallet responds with seq=0 again (replay) -> should be rejected
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
-        id: req1.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, ['0xreplay'], { type: 'res', from: walletKp.publicKeyB64, id: req1.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: req1.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 0, ['0xreplay'], { type: 'res', from: walletKp.publicKeyB64, id: req1.body.id, ok: true }) },
       } as ProtocolMessage);
 
       await expect(p1).rejects.toThrow('Replay detected');
@@ -232,9 +232,8 @@ describe('Sequence validation', () => {
       // Wallet responds with seq=1 -> should be accepted
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
-        id: req2.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 1, ['0xdef'], { type: 'res', from: walletKp.publicKeyB64, id: req2.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: req2.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 1, ['0xdef'], { type: 'res', from: walletKp.publicKeyB64, id: req2.body.id, ok: true }) },
       } as ProtocolMessage);
 
       const result2 = await p2;
@@ -252,8 +251,8 @@ describe('Sequence validation', () => {
       // First event with seq=0 -> accepted
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
-        from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xa'] }, { type: 'evt', from: walletKp.publicKeyB64, event: 'accountsChanged' }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: 'evt-test', sealed: sealPayload(sessionKey, session.channelId, 0, { _event: 'accountsChanged', accounts: ['0xa'] }, { type: 'evt', from: walletKp.publicKeyB64, id: 'evt-test' }) },
       } as ProtocolMessage);
 
       expect(eventHandler).toHaveBeenCalledTimes(1);
@@ -261,8 +260,8 @@ describe('Sequence validation', () => {
       // Replay same event with seq=0 -> silently dropped
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
-        from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xa'] }, { type: 'evt', from: walletKp.publicKeyB64, event: 'accountsChanged' }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: 'evt-test', sealed: sealPayload(sessionKey, session.channelId, 0, { _event: 'accountsChanged', accounts: ['0xa'] }, { type: 'evt', from: walletKp.publicKeyB64, id: 'evt-test' }) },
       } as ProtocolMessage);
 
       expect(eventHandler).toHaveBeenCalledTimes(1); // still 1
@@ -270,8 +269,8 @@ describe('Sequence validation', () => {
       // New event with seq=1 -> accepted
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
-        from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 1, { accounts: ['0xb'] }, { type: 'evt', from: walletKp.publicKeyB64, event: 'accountsChanged' }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: 'evt-test', sealed: sealPayload(sessionKey, session.channelId, 1, { _event: 'accountsChanged', accounts: ['0xb'] }, { type: 'evt', from: walletKp.publicKeyB64, id: 'evt-test' }) },
       } as ProtocolMessage);
 
       expect(eventHandler).toHaveBeenCalledTimes(2);
@@ -293,9 +292,8 @@ describe('Sequence validation', () => {
       // Request with seq=0 -> accepted
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-1', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 0, { foo: 'bar' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1', method: 'wallet_getAccounts' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-1', sealed: sealPayload(sessionKey, channelId, 0, { _method: 'wallet_getAccounts', foo: 'bar' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1' }) },
       } as ProtocolMessage);
 
       expect(requestHandler).toHaveBeenCalledTimes(1);
@@ -308,9 +306,8 @@ describe('Sequence validation', () => {
       // Replay same request with seq=0 -> silently dropped
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-1-replay', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 0, { foo: 'bar' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1-replay', method: 'wallet_getAccounts' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-1-replay', sealed: sealPayload(sessionKey, channelId, 0, { _method: 'wallet_getAccounts', foo: 'bar' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1-replay' }) },
       } as ProtocolMessage);
 
       expect(requestHandler).toHaveBeenCalledTimes(1); // still 1
@@ -318,9 +315,8 @@ describe('Sequence validation', () => {
       // Request with seq=1 -> accepted
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-2', from: dappKp.publicKeyB64,
-        method: 'wallet_signMessage',
-        sealed: sealPayload(sessionKey, channelId, 1, { message: 'hello' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2', method: 'wallet_signMessage' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-2', sealed: sealPayload(sessionKey, channelId, 1, { _method: 'wallet_signMessage', message: 'hello' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2' }) },
       } as ProtocolMessage);
 
       expect(requestHandler).toHaveBeenCalledTimes(2);
@@ -348,9 +344,8 @@ describe('Sequence validation', () => {
 
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
-        id: req0.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 0, 'first', { type: 'res', from: walletKp.publicKeyB64, id: req0.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: req0.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 0, 'first', { type: 'res', from: walletKp.publicKeyB64, id: req0.body.id, ok: true }) },
       } as ProtocolMessage);
 
       expect(await p0).toBe('first');
@@ -362,9 +357,8 @@ describe('Sequence validation', () => {
 
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
-        id: req1.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 5, 'second', { type: 'res', from: walletKp.publicKeyB64, id: req1.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: req1.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 5, 'second', { type: 'res', from: walletKp.publicKeyB64, id: req1.body.id, ok: true }) },
       } as ProtocolMessage);
 
       expect(await p1).toBe('second');
@@ -376,9 +370,8 @@ describe('Sequence validation', () => {
 
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
-        id: req2.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, session.channelId, 3, 'replay-attempt', { type: 'res', from: walletKp.publicKeyB64, id: req2.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: req2.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 3, 'replay-attempt', { type: 'res', from: walletKp.publicKeyB64, id: req2.body.id, ok: true }) },
       } as ProtocolMessage);
 
       await expect(p2).rejects.toThrow('Replay detected');
@@ -395,27 +388,24 @@ describe('Sequence validation', () => {
       // seq=0 -> accepted
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'r1', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 0, {}, { type: 'req', from: dappKp.publicKeyB64, id: 'r1', method: 'wallet_getAccounts' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'r1', sealed: sealPayload(sessionKey, channelId, 0, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'r1' }) },
       } as ProtocolMessage);
       expect(requestHandler).toHaveBeenCalledTimes(1);
 
       // seq=5 (gap) -> accepted
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'r2', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 5, {}, { type: 'req', from: dappKp.publicKeyB64, id: 'r2', method: 'wallet_getAccounts' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'r2', sealed: sealPayload(sessionKey, channelId, 5, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'r2' }) },
       } as ProtocolMessage);
       expect(requestHandler).toHaveBeenCalledTimes(2);
 
       // seq=3 (below 5) -> dropped
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'r3', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 3, {}, { type: 'req', from: dappKp.publicKeyB64, id: 'r3', method: 'wallet_getAccounts' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'r3', sealed: sealPayload(sessionKey, channelId, 3, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'r3' }) },
       } as ProtocolMessage);
       expect(requestHandler).toHaveBeenCalledTimes(2); // still 2
     });
@@ -439,9 +429,8 @@ describe('Sequence validation', () => {
 
         transport.receive({
           v: 1, t: 'res', ch: session.channelId,
-          id: req.id, from: walletKp.publicKeyB64,
-          ok: true,
-          sealed: sealPayload(sessionKey, session.channelId, seq, `result-${seq}`, { type: 'res', from: walletKp.publicKeyB64, id: req.id, ok: true }),
+          ts: Date.now(), from: walletKp.publicKeyB64,
+          body: { id: req.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, seq, `result-${seq}`, { type: 'res', from: walletKp.publicKeyB64, id: req.body.id, ok: true }) },
         } as ProtocolMessage);
 
         await p;
@@ -463,9 +452,8 @@ describe('Sequence validation', () => {
 
       newTransport.receive({
         v: 1, t: 'res', ch: restored.channelId,
-        id: reqMsg.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, restored.channelId, 1, 'stale', { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: reqMsg.body.id, ok: true, sealed: sealPayload(sessionKey, restored.channelId, 1, 'stale', { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.body.id, ok: true }) },
       } as ProtocolMessage);
 
       await expect(p).rejects.toThrow('Replay detected');
@@ -477,9 +465,8 @@ describe('Sequence validation', () => {
 
       newTransport.receive({
         v: 1, t: 'res', ch: restored.channelId,
-        id: reqMsg2.id, from: walletKp.publicKeyB64,
-        ok: true,
-        sealed: sealPayload(sessionKey, restored.channelId, 3, 'fresh', { type: 'res', from: walletKp.publicKeyB64, id: reqMsg2.id, ok: true }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: reqMsg2.body.id, ok: true, sealed: sealPayload(sessionKey, restored.channelId, 3, 'fresh', { type: 'res', from: walletKp.publicKeyB64, id: reqMsg2.body.id, ok: true }) },
       } as ProtocolMessage);
 
       expect(await p2).toBe('fresh');
@@ -497,9 +484,8 @@ describe('Sequence validation', () => {
       for (let seq = 0; seq <= 2; seq++) {
         transport.receive({
           v: 1, t: 'req', ch: channelId,
-          id: `req-${seq}`, from: dappKp.publicKeyB64,
-          method: 'wallet_getAccounts',
-          sealed: sealPayload(sessionKey, channelId, seq, {}, { type: 'req', from: dappKp.publicKeyB64, id: `req-${seq}`, method: 'wallet_getAccounts' }),
+          ts: Date.now(), from: dappKp.publicKeyB64,
+          body: { id: `req-${seq}`, sealed: sealPayload(sessionKey, channelId, seq, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: `req-${seq}` }) },
         } as ProtocolMessage);
       }
       expect(handler).toHaveBeenCalledTimes(3);
@@ -519,18 +505,16 @@ describe('Sequence validation', () => {
       // Old seq=1 -> dropped
       newTransport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'replay-1', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 1, {}, { type: 'req', from: dappKp.publicKeyB64, id: 'replay-1', method: 'wallet_getAccounts' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'replay-1', sealed: sealPayload(sessionKey, channelId, 1, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'replay-1' }) },
       } as ProtocolMessage);
       expect(handler2).toHaveBeenCalledTimes(0);
 
       // seq=3 -> accepted
       newTransport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'fresh-3', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
-        sealed: sealPayload(sessionKey, channelId, 3, {}, { type: 'req', from: dappKp.publicKeyB64, id: 'fresh-3', method: 'wallet_getAccounts' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'fresh-3', sealed: sealPayload(sessionKey, channelId, 3, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'fresh-3' }) },
       } as ProtocolMessage);
       expect(handler2).toHaveBeenCalledTimes(1);
     });
@@ -634,8 +618,8 @@ describe('Sequence validation', () => {
       // Simulate wallet join
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-        capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { sealed_join: null, resume: null },
       } as ProtocolMessage);
 
       expect(session.phase).toBe('pending_accept');
@@ -652,7 +636,7 @@ describe('Sequence validation', () => {
       // Should have sent a close message with user_rejected
       const closeMsg = transport.sent.find(m => m.t === 'close');
       expect(closeMsg).toBeTruthy();
-      expect((closeMsg as any).reason).toBe('user_rejected');
+      expect((closeMsg as any).body.reason).toBe('user_rejected');
     });
 
     it('does not timeout if acceptWallet() is called in time', async () => {
@@ -664,8 +648,8 @@ describe('Sequence validation', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-        capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { sealed_join: null, resume: null },
       } as ProtocolMessage);
 
       expect(session.phase).toBe('pending_accept');
@@ -685,7 +669,25 @@ describe('Sequence validation', () => {
   // 7. Capabilities validation
   // -----------------------------------------------------------------------
   describe('capabilities validation', () => {
-    it('rejects join with capabilities.methods not an array', async () => {
+    it('accepts join with no sealed_join (capabilities will be undefined)', async () => {
+      const transport = new MockTransport();
+      const session = new DAppSession({ transport, name: 'Test dApp' });
+      const walletKp = generateX25519KeyPair();
+
+      await session.createPairing();
+
+      transport.receive({
+        v: 1, t: 'join', ch: session.channelId,
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { sealed_join: null, resume: null },
+      } as ProtocolMessage);
+
+      expect(session.phase).toBe('pending_accept');
+      // No sealed_join means no capabilities decrypted
+      expect(session.walletCapabilities).toBeUndefined();
+    });
+
+    it('rejects join with invalid sealed_join (decryption failure)', async () => {
       const transport = new MockTransport();
       const session = new DAppSession({ transport, name: 'Test dApp' });
       const walletKp = generateX25519KeyPair();
@@ -697,101 +699,21 @@ describe('Sequence validation', () => {
 
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-        capabilities: { methods: 'not-an-array', events: [], chains: [] },
-      } as unknown as ProtocolMessage);
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { sealed_join: 'invalid-ciphertext', resume: null },
+      } as ProtocolMessage);
 
       expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
-        message: expect.stringContaining('Malformed wallet capabilities'),
+        message: expect.stringContaining('Failed to decrypt sealed_join'),
       }));
 
-      // Should have sent a close with protocol_error
+      // Should have sent a close with decryption_failed
       const closeMsg = transport.sent.find(m => m.t === 'close');
       expect(closeMsg).toBeTruthy();
-      expect((closeMsg as any).reason).toBe('protocol_error');
+      expect((closeMsg as any).body.reason).toBe('decryption_failed');
 
       // Should NOT have transitioned to pending_accept
       expect(session.phase).not.toBe('pending_accept');
-    });
-
-    it('rejects join with capabilities as non-object', async () => {
-      const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
-      const walletKp = generateX25519KeyPair();
-
-      await session.createPairing();
-
-      const errorHandler = vi.fn();
-      session.on('error', errorHandler);
-
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-        capabilities: 'invalid',
-      } as unknown as ProtocolMessage);
-
-      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
-        message: expect.stringContaining('Malformed wallet capabilities'),
-      }));
-    });
-
-    it('accepts join with valid capabilities', async () => {
-      const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
-      const walletKp = generateX25519KeyPair();
-
-      await session.createPairing();
-
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-        capabilities: { methods: ['wallet_getAccounts'], events: ['accountsChanged'], chains: ['eip155:1'] },
-      } as ProtocolMessage);
-
-      expect(session.phase).toBe('pending_accept');
-      expect(session.walletCapabilities).toEqual({
-        methods: ['wallet_getAccounts'],
-        events: ['accountsChanged'],
-        chains: ['eip155:1'],
-      });
-    });
-
-    it('accepts join with null/undefined capabilities (optional field)', async () => {
-      const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
-      const walletKp = generateX25519KeyPair();
-
-      await session.createPairing();
-
-      // capabilities omitted entirely — the validateCapabilities check only
-      // runs when capabilities != null, so omitting it should be fine
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-      } as ProtocolMessage);
-
-      expect(session.phase).toBe('pending_accept');
-    });
-
-    it('rejects join with capabilities missing events array', async () => {
-      const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
-      const walletKp = generateX25519KeyPair();
-
-      await session.createPairing();
-
-      const errorHandler = vi.fn();
-      session.on('error', errorHandler);
-
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        from: walletKp.publicKeyB64, pubkey: walletKp.publicKeyB64,
-        capabilities: { methods: ['wallet_getAccounts'], chains: ['eip155:1'] },
-      } as ProtocolMessage);
-
-      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
-        message: expect.stringContaining('Malformed wallet capabilities'),
-      }));
     });
   });
 });

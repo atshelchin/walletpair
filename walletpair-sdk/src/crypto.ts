@@ -178,8 +178,7 @@ export function sealJoin(
   capabilities: unknown,
   meta?: unknown,
 ): string {
-  const plainObj: Record<string, unknown> = { capabilities };
-  if (meta != null) plainObj.meta = meta;
+  const plainObj: Record<string, unknown> = { capabilities, meta: meta ?? {} };
   const plaintext = utf8ToBytes(canonicalJson(plainObj));
   const nonce = hmac(sha256, joinEncryptionKey, utf8ToBytes('walletpair-v1-join-nonce')).slice(0, 12);
   const aad = concatBytes(hexToBytes(channelIdHex), new Uint8Array([0x04]));
@@ -212,9 +211,9 @@ export function unsealJoin(
  * Uses length-prefixed binary encoding per protocol §7.4.
  */
 export type AadHeader =
-  | { type: 'req'; from: string; id: string; method: string }
+  | { type: 'req'; from: string; id: string }
   | { type: 'res'; from: string; id: string; ok: boolean }
-  | { type: 'evt'; from: string; event: string; id?: string };
+  | { type: 'evt'; from: string; id: string };
 
 /** Length-prefix a UTF-8 string: uint16_be(byte_length) || utf8_bytes */
 function lp(s: string): Uint8Array {
@@ -235,11 +234,11 @@ function buildAad(channelIdHex: string, header?: AadHeader): Uint8Array {
   if (!header) return chBytes;
   switch (header.type) {
     case 'req':
-      return concatBytes(chBytes, new Uint8Array([0x01]), lp(header.from), lp(header.id), lp(header.method));
+      return concatBytes(chBytes, new Uint8Array([0x01]), lp(header.from), lp(header.id));
     case 'res':
       return concatBytes(chBytes, new Uint8Array([0x02]), lp(header.from), lp(header.id), new Uint8Array([header.ok ? 0x01 : 0x00]));
     case 'evt':
-      return concatBytes(chBytes, new Uint8Array([0x03]), lp(header.from), lp(header.event), lp(header.id ?? ''));
+      return concatBytes(chBytes, new Uint8Array([0x03]), lp(header.from), lp(header.id));
   }
 }
 
@@ -296,16 +295,12 @@ export function buildPairingUri(params: {
   methods?: string[] | undefined;
   /** CAIP-2 chains the dApp intends to use (§9.1). */
   chains?: string[] | undefined;
-  /** Request private handshake (§7.5). Default true for new implementations. */
-  privateJoin?: boolean | undefined;
 }): string {
   let uri = `walletpair:?ch=${params.channelId}&pubkey=${params.pubkeyB64}`;
   if (params.relayUrl) uri += `&relay=${encodeURIComponent(params.relayUrl)}`;
   if (params.name) uri += `&name=${encodeURIComponent(params.name)}`;
   if (params.methods?.length) uri += `&methods=${params.methods.join(',')}`;
   if (params.chains?.length) uri += `&chains=${params.chains.join(',')}`;
-  // Default to private_join=1 per §7.5 (new implementations MUST include)
-  if (params.privateJoin !== false) uri += '&private_join=1';
   return uri;
 }
 
@@ -324,6 +319,5 @@ export function parsePairingUri(uri: string): PairingParams {
     name: params.get('name') ?? undefined,
     methods: methodsStr ? methodsStr.split(',').filter(Boolean) : undefined,
     chains: chainsStr ? chainsStr.split(',').filter(Boolean) : undefined,
-    privateJoin: params.get('private_join') === '1',
   };
 }

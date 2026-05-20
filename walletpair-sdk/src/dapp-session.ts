@@ -175,8 +175,9 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     this.setPhase('waiting');
     this.sendRaw({
       v: 1, t: 'create', ch: this.channelId,
-      from: this.pubKeyB64,
-    });
+      ts: Date.now(), from: this.pubKeyB64,
+      body: { meta: this.name ? { name: this.name } : {}, resume: null },
+    } as ProtocolMessage);
   }
 
   /** Accept the wallet after pairing code verification. */
@@ -191,9 +192,9 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     if (!this.remotePubKey) return;
     this.sendRaw({
       v: 1, t: 'close', ch: this.channelId,
-      from: this.pubKeyB64, target: b64urlEncode(this.remotePubKey),
-      reason: 'user_rejected',
-    } as any);
+      ts: Date.now(), from: this.pubKeyB64,
+      body: { reason: 'user_rejected' },
+    } as ProtocolMessage);
     this.close();
   }
 
@@ -204,12 +205,6 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     }
 
     const id = `req-${++this.reqCounter}`;
-    // Privacy mode (§7.4): encrypt real method name inside sealed payload
-    const wireMethod = 'encrypted';
-    const msg: ProtocolMessage = {
-      v: 1, t: 'req', ch: this.channelId, id,
-      from: this.pubKeyB64, method: wireMethod,
-    };
 
     // Always seal: even parameterless requests must be authenticated via AEAD
     // to prevent method injection by a malicious relay.
@@ -219,10 +214,16 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     } catch (error) {
       return Promise.reject(error as Error);
     }
-    // AAD uses the wire method ("encrypted"), real method goes inside sealed payload
-    const hdr = { type: 'req' as const, from: this.pubKeyB64, id, method: wireMethod };
+    // AAD: no method field — real method goes inside sealed payload
+    const hdr = { type: 'req' as const, from: this.pubKeyB64, id };
     const sealedParams = { _method: method, ...(params && typeof params === 'object' ? params as Record<string, unknown> : { _params: params ?? {} }) };
-    (msg as any).sealed = sealPayload(this.sendKey, this.channelId, seq, sealedParams, hdr);
+    const sealed = sealPayload(this.sendKey, this.channelId, seq, sealedParams, hdr);
+
+    const msg: ProtocolMessage = {
+      v: 1, t: 'req', ch: this.channelId,
+      ts: Date.now(), from: this.pubKeyB64,
+      body: { id, sealed },
+    } as ProtocolMessage;
 
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -238,7 +239,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   /** Send ping. */
   ping(): void {
     if (this.phase !== 'connected') return;
-    this.sendRaw({ v: 1, t: 'ping', ch: this.channelId, from: this.pubKeyB64, ts: Date.now() });
+    this.sendRaw({ v: 1, t: 'ping', ch: this.channelId, ts: Date.now(), from: this.pubKeyB64, body: {} } as ProtocolMessage);
   }
 
   /** Gracefully close the session. */
@@ -253,7 +254,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     }
     this.pendingRequests.clear();
     if (this.channelId) {
-      this.sendRaw({ v: 1, t: 'close', ch: this.channelId, from: this.pubKeyB64, reason: reason as any });
+      this.sendRaw({ v: 1, t: 'close', ch: this.channelId, ts: Date.now(), from: this.pubKeyB64, body: { reason } } as ProtocolMessage);
     }
     this.transport.disconnect();
     this.setPhase('closed');
@@ -338,29 +339,32 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
 
   private handleMessage(msg: ProtocolMessage): void {
     switch (msg.t) {
-      case 'ready':
-        this.resumeToken = msg.resume ?? null;
+      case 'ready': {
+        const readyBody = msg.body as { state?: string; resume?: string | null; remote?: string | null };
+        this.resumeToken = readyBody.resume ?? null;
         this.stopReconnect();
         if (
-          msg.state === 'connected' &&
-          msg.remote &&
+          readyBody.state === 'connected' &&
+          readyBody.remote &&
           this.remotePubKey &&
-          msg.remote !== b64urlEncode(this.remotePubKey)
+          readyBody.remote !== b64urlEncode(this.remotePubKey)
         ) {
           this.emit('error', new Error('Connected remote does not match paired wallet'));
           this.close();
           break;
         }
-        if (msg.state === 'waiting') {
+        if (readyBody.state === 'waiting') {
           this.setPhase('waiting');
-        } else if (msg.state === 'connected') {
+        } else if (readyBody.state === 'connected') {
           this.setPhase('connected');
           this.startSessionTtl();
         }
         break;
+      }
 
       case 'join': {
-        const joinPubKey = msg.from!;
+        const joinBody = msg.body as { sealed_join?: string | null; resume?: string | null };
+        const joinPubKey = msg.from;
         if (!joinPubKey) {
           this.emit('error', new Error('Malformed wallet join: missing from'));
           break;
@@ -372,21 +376,10 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         } catch {
           this.sendRaw({
             v: 1, t: 'close', ch: this.channelId,
-            from: this.pubKeyB64, target: joinPubKey,
-            reason: 'protocol_error',
-          } as any);
+            ts: Date.now(), from: this.pubKeyB64,
+            body: { reason: 'protocol_error' },
+          } as ProtocolMessage);
           this.emit('error', new Error('Malformed wallet public key'));
-          break;
-        }
-
-        // §7.5: Both sealed_join and plaintext capabilities must not coexist
-        if (msg.sealed_join && msg.capabilities) {
-          this.sendRaw({
-            v: 1, t: 'close', ch: this.channelId,
-            from: this.pubKeyB64, target: joinPubKey,
-            reason: 'protocol_error',
-          } as any);
-          this.emit('error', new Error('Both sealed_join and plaintext capabilities present'));
           break;
         }
 
@@ -396,13 +389,18 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         // §20.7: erase shared_secret immediately
         shared.fill(0);
 
-        // Decrypt sealed_join if present (private handshake §7.5)
-        let joinCapabilities = msg.capabilities;
-        let joinMeta = msg.meta;
-        if (msg.sealed_join) {
+        // For reconnect (resume set), skip sealed_join decryption
+        let joinCapabilities: Capabilities | undefined;
+        let joinMeta: WalletMeta | undefined;
+        if (joinBody.resume) {
+          // Reconnect — capabilities/meta come from previously approved scope
+          joinCapabilities = this.approvedCapabilities;
+          joinMeta = this.approvedWalletMeta;
+        } else if (joinBody.sealed_join) {
+          // Decrypt sealed_join (private handshake §7.5)
           try {
             const joinKey = deriveJoinEncryptionKey(rootKey, this.channelId);
-            const decrypted = unsealJoin(joinKey, this.channelId, msg.sealed_join);
+            const decrypted = unsealJoin(joinKey, this.channelId, joinBody.sealed_join);
             // §20.7: erase join_encryption_key
             joinKey.fill(0);
             joinCapabilities = decrypted.capabilities as Capabilities | undefined;
@@ -410,9 +408,9 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
           } catch {
             this.sendRaw({
               v: 1, t: 'close', ch: this.channelId,
-              from: this.pubKeyB64, target: joinPubKey,
-              reason: 'decryption_failed',
-            } as any);
+              ts: Date.now(), from: this.pubKeyB64,
+              body: { reason: 'decryption_failed' },
+            } as ProtocolMessage);
             this.emit('error', new Error('Failed to decrypt sealed_join'));
             rootKey.fill(0);
             break;
@@ -423,9 +421,9 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         if (joinCapabilities != null && !validateCapabilities(joinCapabilities)) {
           this.sendRaw({
             v: 1, t: 'close', ch: this.channelId,
-            from: this.pubKeyB64, target: joinPubKey,
-            reason: 'protocol_error',
-          } as any);
+            ts: Date.now(), from: this.pubKeyB64,
+            body: { reason: 'protocol_error' },
+          } as ProtocolMessage);
           this.emit('error', new Error('Malformed wallet capabilities'));
           rootKey.fill(0);
           break;
@@ -451,7 +449,6 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         } else {
           this.emit('pairingCode', this.pairingCode);
           this.emit('walletJoined', {
-            pubkey: joinPubKey,
             capabilities: joinCapabilities,
             meta: joinMeta,
           });
@@ -474,27 +471,29 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       }
 
       case 'res': {
+        const resBody = msg.body as { id?: string; ok?: boolean; sealed?: string };
         if (this.remotePubKey && msg.from !== b64urlEncode(this.remotePubKey)) break;
-        const pending = this.pendingRequests.get(msg.id);
+        if (!resBody.id) break;
+        const pending = this.pendingRequests.get(resBody.id);
         if (!pending) break;
-        this.pendingRequests.delete(msg.id);
+        this.pendingRequests.delete(resBody.id);
         if (pending.timer) clearTimeout(pending.timer);
 
         // All responses MUST be sealed — reject unsealed to prevent forgery.
-        if (!msg.sealed || !this.recvKey) {
+        if (!resBody.sealed || !this.recvKey) {
           pending.reject(new Error('Response must be encrypted'));
           break;
         }
 
         try {
-          const resHdr = { type: 'res' as const, from: msg.from!, id: msg.id, ok: msg.ok };
-          const { seq, data } = unsealPayload(this.recvKey, this.channelId, msg.sealed, resHdr);
+          const resHdr = { type: 'res' as const, from: msg.from, id: resBody.id, ok: !!resBody.ok };
+          const { seq, data } = unsealPayload(this.recvKey, this.channelId, resBody.sealed, resHdr);
           if (seq <= this.recvSeq) {
             pending.reject(new Error('Replay detected'));
             break;
           }
           this.recvSeq = seq;
-          if (msg.ok) {
+          if (resBody.ok) {
             pending.resolve(data);
           } else {
             const err = data as { code?: string; message?: string };
@@ -502,7 +501,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
             (error as any).code = err.code;
             pending.reject(error);
           }
-          this.emit('response', { id: msg.id, ok: msg.ok, data });
+          this.emit('response', { id: resBody.id, ok: !!resBody.ok, data });
         } catch {
           pending.reject(new Error('Decryption failed'));
         }
@@ -510,48 +509,62 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       }
 
       case 'evt': {
+        const evtBody = msg.body as { id?: string; sealed?: string };
         if (this.remotePubKey && msg.from !== b64urlEncode(this.remotePubKey)) break;
         // Events MUST be sealed — drop unsealed events to prevent forgery.
-        if (!msg.sealed || !this.recvKey) break;
+        if (!evtBody.sealed || !evtBody.id || !this.recvKey) break;
         try {
-          const evtHdr = { type: 'evt' as const, from: msg.from!, event: msg.event, id: (msg as any).id ?? '' };
-          const { seq, data } = unsealPayload(this.recvKey, this.channelId, msg.sealed, evtHdr);
+          const evtHdr = { type: 'evt' as const, from: msg.from, id: evtBody.id };
+          const { seq, data } = unsealPayload(this.recvKey, this.channelId, evtBody.sealed, evtHdr);
           if (seq <= this.recvSeq) break; // replay — silently drop
           this.recvSeq = seq;
 
           // Privacy mode (§7.4): real event name is inside the encrypted payload
-          let event = msg.event;
+          let event: string | undefined;
           let eventData: unknown = data;
-          if (event === 'encrypted' && data && typeof data === 'object' && '_event' in (data as any)) {
+          if (data && typeof data === 'object' && '_event' in (data as any)) {
             event = (data as any)._event;
             const { _event: _, ...rest } = data as Record<string, unknown>;
             eventData = Object.keys(rest).length === 1 && '_data' in rest ? rest._data : rest;
           }
 
-          this.emit('event', { event, data: eventData });
+          if (event) {
+            this.emit('event', { event, data: eventData });
+          }
         } catch { /* drop events that fail decryption */ }
         break;
       }
 
       case 'ping':
-        this.sendRaw({ v: 1, t: 'pong', ch: this.channelId, from: this.pubKeyB64, ts: Date.now() });
+        this.sendRaw({ v: 1, t: 'pong', ch: this.channelId, ts: Date.now(), from: this.pubKeyB64, body: {} } as ProtocolMessage);
         break;
 
       case 'pong':
         break;
 
-      case 'close':
-        if (msg.reason === 'invalid_resume') {
+      case 'close': {
+        const closeBody = msg.body as { reason?: string };
+        if (closeBody.reason === 'invalid_resume') {
           this.resumeToken = null;
           this.transport.disconnect();
           this.doReconnectAttempt(false);
-        } else if (msg.reason === 'channel_exists') {
+        } else if (closeBody.reason === 'channel_exists') {
           this.startReconnect();
         } else if (this.phase !== 'disconnected') {
           this.setPhase('closed');
           this.intentionalClose = true;
         }
         break;
+      }
+
+      case 'terminate': {
+        // Adapter-sent termination — treat like close
+        if (this.phase !== 'disconnected') {
+          this.setPhase('closed');
+          this.intentionalClose = true;
+        }
+        break;
+      }
     }
   }
 
@@ -563,8 +576,9 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     const walletPubB64 = b64urlEncode(this.remotePubKey!);
     this.sendRaw({
       v: 1, t: 'accept', ch: this.channelId,
-      from: this.pubKeyB64, target: walletPubB64,
-    });
+      ts: Date.now(), from: this.pubKeyB64,
+      body: { target: walletPubB64 },
+    } as ProtocolMessage);
   }
 
   private sessionContext(
@@ -576,7 +590,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       dappPubKeyB64: this.pubKeyB64,
       walletPubKeyB64,
       capabilities: capabilities ?? null,
-      walletMeta: walletMeta ?? null,
+      walletMeta: walletMeta ?? {},
       dappName: this.name,
     };
   }
@@ -642,12 +656,11 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     if (this.intentionalClose || this.phase === 'closed') return;
     try {
       await this.transport.connect();
-      const msg: ProtocolMessage = {
+      this.sendRaw({
         v: 1, t: 'create', ch: this.channelId,
-        from: this.pubKeyB64,
-      };
-      if (useResume && this.resumeToken) (msg as any).resume = this.resumeToken;
-      this.sendRaw(msg);
+        ts: Date.now(), from: this.pubKeyB64,
+        body: { meta: this.name ? { name: this.name } : {}, resume: (useResume && this.resumeToken) ? this.resumeToken : null },
+      } as ProtocolMessage);
     } catch {
       this.scheduleReconnect();
     }

@@ -35,7 +35,8 @@ describe('WalletPairProvider', () => {
     // Join
     transport.receive({
       v: 1, t: 'join', ch: session.channelId,
-      from: walletKp.publicKeyB64,
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { sealed_join: null, resume: null },
     } as ProtocolMessage);
 
     // Responses/events from the manual wallet use the wallet->dApp key.
@@ -48,7 +49,8 @@ describe('WalletPairProvider', () => {
     session.acceptWallet();
     transport.receive({
       v: 1, t: 'ready', ch: session.channelId,
-      state: 'connected', resume: 'tok',
+      ts: Date.now(), from: '_adapter',
+      body: { state: 'connected', resume: 'tok', remote: null },
     } as ProtocolMessage);
   }
 
@@ -57,11 +59,12 @@ describe('WalletPairProvider', () => {
   function respondToLatestReq(result: unknown, ok = true) {
     const reqMsg = [...transport.sent].reverse().find(m => m.t === 'req') as any;
     if (!reqMsg) throw new Error('No req found');
-    const hdr: AadHeader = { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.id, ok };
+    const reqId = reqMsg.body.id;
+    const hdr: AadHeader = { type: 'res', from: walletKp.publicKeyB64, id: reqId, ok };
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
-      id: reqMsg.id, from: walletKp.publicKeyB64, ok,
-      sealed: sealPayload(sessionKey, session.channelId, walletSendSeq++, result, hdr),
+      ts: Date.now(), from: walletKp.publicKeyB64,
+      body: { id: reqId, ok, sealed: sealPayload(sessionKey, session.channelId, walletSendSeq++, result, hdr) },
     } as ProtocolMessage);
   }
 
@@ -104,7 +107,7 @@ describe('WalletPairProvider', () => {
 
       // Verify it sent wallet_getAccounts
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('encrypted'); // privacy mode: real method inside sealed
+      expect(reqMsg.body.sealed).toBeTruthy(); // method inside sealed
 
       respondToLatestReq(['0xabc123']);
       const result = await promise;
@@ -131,7 +134,7 @@ describe('WalletPairProvider', () => {
       await flushMicrotasks();
 
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('encrypted'); // privacy mode: real method inside sealed
+      expect(reqMsg.body.sealed).toBeTruthy(); // method inside sealed
 
       respondToLatestReq(['0x456']);
       const result = await promise;
@@ -154,7 +157,7 @@ describe('WalletPairProvider', () => {
       await flushMicrotasks();
 
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('encrypted'); // privacy mode
+      expect(reqMsg.body.sealed).toBeTruthy(); // method inside sealed
 
       // Wallet responds with { signature }, mapResponse unwraps to just the string
       respondToLatestReq({ signature: '0xsig...' });
@@ -172,7 +175,7 @@ describe('WalletPairProvider', () => {
       await flushMicrotasks();
 
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('encrypted'); // privacy mode
+      expect(reqMsg.body.sealed).toBeTruthy(); // method inside sealed
 
       respondToLatestReq({ signature: '0xsig...' });
       const result = await promise;
@@ -196,7 +199,7 @@ describe('WalletPairProvider', () => {
       await flushMicrotasks();
 
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('encrypted'); // privacy mode
+      expect(reqMsg.body.sealed).toBeTruthy(); // method inside sealed
 
       // mapResponse unwraps { txHash } to just the hash string
       respondToLatestReq({ txHash: '0xtx...' });
@@ -220,7 +223,7 @@ describe('WalletPairProvider', () => {
       await flushMicrotasks();
 
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('encrypted'); // privacy mode
+      expect(reqMsg.body.sealed).toBeTruthy(); // method inside sealed
 
       respondToLatestReq({ success: true });
       await promise;
@@ -255,8 +258,8 @@ describe('WalletPairProvider', () => {
 
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
-        from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0xnew'] }, { type: 'evt', from: walletKp.publicKeyB64, event: 'accountsChanged' }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: 'evt-1', sealed: sealPayload(sessionKey, session.channelId, 0, { _event: 'accountsChanged', accounts: ['0xnew'] }, { type: 'evt', from: walletKp.publicKeyB64, id: 'evt-1' }) },
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith(['0xnew']);
@@ -270,8 +273,8 @@ describe('WalletPairProvider', () => {
 
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
-        from: walletKp.publicKeyB64, event: 'chainChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { chainId: 'eip155:137' }, { type: 'evt', from: walletKp.publicKeyB64, event: 'chainChanged' }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: 'evt-2', sealed: sealPayload(sessionKey, session.channelId, 0, { _event: 'chainChanged', chainId: 'eip155:137' }, { type: 'evt', from: walletKp.publicKeyB64, id: 'evt-2' }) },
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith('0x89');
@@ -284,8 +287,8 @@ describe('WalletPairProvider', () => {
 
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
-        from: walletKp.publicKeyB64, event: 'chainChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { chainId: '0x89' }, { type: 'evt', from: walletKp.publicKeyB64, event: 'chainChanged' }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: 'evt-3', sealed: sealPayload(sessionKey, session.channelId, 0, { _event: 'chainChanged', chainId: '0x89' }, { type: 'evt', from: walletKp.publicKeyB64, id: 'evt-3' }) },
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith('0x89');
@@ -299,8 +302,8 @@ describe('WalletPairProvider', () => {
 
       transport.receive({
         v: 1, t: 'evt', ch: session.channelId,
-        from: walletKp.publicKeyB64, event: 'accountsChanged',
-        sealed: sealPayload(sessionKey, session.channelId, 0, { accounts: ['0x1'] }, { type: 'evt', from: walletKp.publicKeyB64, event: 'accountsChanged' }),
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: { id: 'evt-4', sealed: sealPayload(sessionKey, session.channelId, 0, { _event: 'accountsChanged', accounts: ['0x1'] }, { type: 'evt', from: walletKp.publicKeyB64, id: 'evt-4' }) },
       } as ProtocolMessage);
 
       expect(handler).not.toHaveBeenCalled();
@@ -351,7 +354,7 @@ describe('WalletPairProvider', () => {
       await flushMicrotasks();
 
       const reqMsg = transport.sent.find(m => m.t === 'req') as any;
-      expect(reqMsg.method).toBe('encrypted'); // privacy mode
+      expect(reqMsg.body.sealed).toBeTruthy(); // method inside sealed
 
       respondToLatestReq('0x1234');
       const result = await promise;

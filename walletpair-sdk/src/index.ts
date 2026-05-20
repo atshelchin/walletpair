@@ -27,6 +27,7 @@ export type {
   PingMessage,
   PongMessage,
   CloseMessage,
+  TerminateMessage,
   CloseReason,
   Capabilities,
   WalletMeta,

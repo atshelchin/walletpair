@@ -28,71 +28,65 @@ export interface ProtocolMessageBase {
   v: 1;
   t: string;
   ch: string;
-  from?: string;
+  ts: number;
+  from: string;
+  body: Record<string, unknown>;
 }
 
 export interface CreateMessage extends ProtocolMessageBase {
   t: 'create';
-  resume?: string | undefined;
+  body: { meta: WalletMeta | Record<string, never>; resume: string | null };
 }
 
 export interface JoinMessage extends ProtocolMessageBase {
   t: 'join';
-  capabilities?: Capabilities | undefined;
-  meta?: WalletMeta | undefined;
-  /** Encrypted capabilities + meta for private handshake (§7.5). */
-  sealed_join?: string | undefined;
-  resume?: string | undefined;
+  body: { sealed_join: string | null; resume: string | null };
 }
 
 export interface AcceptMessage extends ProtocolMessageBase {
   t: 'accept';
-  target: string;
+  body: { target: string };
 }
 
 export interface ReadyMessage extends ProtocolMessageBase {
   t: 'ready';
-  state: 'waiting' | 'connected';
-  resume?: string | undefined;
-  remote?: string | undefined;
-  role?: string | undefined;
-  self?: string | undefined;
+  body: { state: 'waiting' | 'connected'; role?: string; self?: string; remote: string | null; resume: string | null };
 }
 
 export interface RequestMessage extends ProtocolMessageBase {
   t: 'req';
-  id: string;
-  method: string;
-  sealed?: string | undefined;
+  body: { id: string; sealed: string };
 }
 
 export interface ResponseMessage extends ProtocolMessageBase {
   t: 'res';
-  id: string;
-  ok: boolean;
-  sealed?: string | undefined;
+  body: { id: string; ok: boolean; sealed: string };
 }
 
 export interface EventMessage extends ProtocolMessageBase {
   t: 'evt';
-  id?: string | undefined;
-  event: string;
-  sealed?: string | undefined;
+  body: { id: string; sealed: string };
 }
 
 export interface PingMessage extends ProtocolMessageBase {
   t: 'ping';
-  ts: number;
+  body: Record<string, never>;
 }
 
 export interface PongMessage extends ProtocolMessageBase {
   t: 'pong';
-  ts: number;
+  body: Record<string, never>;
 }
 
 export interface CloseMessage extends ProtocolMessageBase {
   t: 'close';
-  reason: CloseReason;
+  body: { reason: CloseReason };
+}
+
+export interface TerminateMessage extends ProtocolMessageBase {
+  t: 'terminate';
+  from: '_adapter';
+  body: { reason: CloseReason };
 }
 
 export type ProtocolMessage =
@@ -105,7 +99,8 @@ export type ProtocolMessage =
   | EventMessage
   | PingMessage
   | PongMessage
-  | CloseMessage;
+  | CloseMessage
+  | TerminateMessage;
 
 export type CloseReason =
   | 'normal'
@@ -174,7 +169,7 @@ export interface DAppSessionEvents {
   phase: DAppPhase;
   pairingUri: string;
   pairingCode: string;
-  walletJoined: { pubkey: string; capabilities?: Capabilities | undefined; meta?: WalletMeta | undefined };
+  walletJoined: { capabilities?: Capabilities | undefined; meta?: WalletMeta | undefined };
   response: { id: string; ok: boolean; data: unknown };
   event: { event: string; data: unknown };
   error: Error;
@@ -202,8 +197,6 @@ export interface PairingParams {
   methods?: string[] | undefined;
   /** Comma-separated CAIP-2 chains the dApp intends to use (§9.1). */
   chains?: string[] | undefined;
-  /** Whether private handshake is requested (§7.5). */
-  privateJoin?: boolean | undefined;
 }
 
 // ---------------------------------------------------------------------------

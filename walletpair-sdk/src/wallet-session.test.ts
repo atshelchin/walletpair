@@ -46,12 +46,11 @@ describe('WalletSession', () => {
     relayUrl = 'ws://localhost:8080/v1';
   });
 
-  function makePairingUri(opts?: { privateJoin?: boolean }): string {
+  function makePairingUri(): string {
     return buildPairingUri({
       channelId,
       pubkeyB64: dappKp.publicKeyB64,
       relayUrl,
-      privateJoin: opts?.privateJoin ?? false,  // default off in tests for simplicity
     });
   }
 
@@ -60,7 +59,7 @@ describe('WalletSession', () => {
       expect(session.phase).toBe('idle');
     });
 
-    it('parses URI and sends join message', async () => {
+    it('parses URI and sends join message with sealed_join', async () => {
       const uri = makePairingUri();
       await session.joinFromUri(uri);
 
@@ -69,8 +68,9 @@ describe('WalletSession', () => {
 
       const joinMsg = transport.sent.find(m => m.t === 'join');
       expect(joinMsg).toBeTruthy();
-      expect((joinMsg as any).capabilities.methods).toContain('wallet_getAccounts');
-      expect((joinMsg as any).meta.name).toBe('Test Wallet');
+      // Capabilities are now inside sealed_join, not plaintext
+      expect((joinMsg as any).body.sealed_join).toBeTruthy();
+      expect((joinMsg as any).body.resume).toBeNull();
     });
 
     it('computes and emits pairing code', async () => {
@@ -117,7 +117,8 @@ describe('WalletSession', () => {
 
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
-        state: 'connected', resume: 'wallet-tok',
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'wallet-tok', remote: null },
       } as ProtocolMessage);
 
       expect(session.phase).toBe('connected');
@@ -156,21 +157,21 @@ describe('WalletSession', () => {
       // Connect
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
-        state: 'connected', resume: 'tok',
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'tok', remote: null },
       } as ProtocolMessage);
     });
 
-    it('emits request event with decrypted params (privacy mode)', () => {
+    it('emits request event with decrypted params', () => {
       const handler = vi.fn();
       session.on('request', handler);
 
-      // Privacy mode (§7.4): wire method is "encrypted", real method inside sealed
+      // Real method inside sealed payload
       const sealedParams = { _method: 'wallet_signMessage', message: 'Hello World' };
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-1', from: dappKp.publicKeyB64,
-        method: 'encrypted',
-        sealed: sealPayload(dappToWalletKey, channelId, 0, sealedParams, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1', method: 'encrypted' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-1', sealed: sealPayload(dappToWalletKey, channelId, 0, sealedParams, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1' }) },
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith({
@@ -184,13 +185,11 @@ describe('WalletSession', () => {
       const handler = vi.fn();
       session.on('request', handler);
 
-      // Privacy mode: method inside sealed, empty params
       const sealedParams = { _method: 'wallet_getAccounts' };
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-2', from: dappKp.publicKeyB64,
-        method: 'encrypted',
-        sealed: sealPayload(dappToWalletKey, channelId, 1, sealedParams, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2', method: 'encrypted' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-2', sealed: sealPayload(dappToWalletKey, channelId, 1, sealedParams, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2' }) },
       } as ProtocolMessage);
 
       expect(handler).toHaveBeenCalledWith({
@@ -206,8 +205,8 @@ describe('WalletSession', () => {
 
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-3', from: dappKp.publicKeyB64,
-        method: 'wallet_getAccounts',
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-3' },
       } as ProtocolMessage);
 
       // Should NOT emit request - unsealed requests are rejected
@@ -215,7 +214,7 @@ describe('WalletSession', () => {
       // Should send a rejection response
       const resMsg = transport.sent.find(m => m.t === 'res') as any;
       expect(resMsg).toBeTruthy();
-      expect(resMsg.ok).toBe(false);
+      expect(resMsg.body.ok).toBe(false);
     });
   });
 
@@ -246,49 +245,47 @@ describe('WalletSession', () => {
 
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
-        state: 'connected', resume: 'tok',
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'tok', remote: null },
       } as ProtocolMessage);
     });
 
     it('approve sends encrypted ok response', () => {
-      // Send a properly sealed request (privacy mode: wire method "encrypted")
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-1', from: dappKp.publicKeyB64,
-        method: 'encrypted',
-        sealed: sealPayload(dappToWalletKey, channelId, 0, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1', method: 'encrypted' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-1', sealed: sealPayload(dappToWalletKey, channelId, 0, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-1' }) },
       } as ProtocolMessage);
 
       session.approve('req-1', ['0xabc123']);
 
       const resMsg = transport.sent.find(m => m.t === 'res') as any;
       expect(resMsg).toBeTruthy();
-      expect(resMsg.id).toBe('req-1');
-      expect(resMsg.ok).toBe(true);
-      expect(resMsg.sealed).toBeTruthy();
+      expect(resMsg.body.id).toBe('req-1');
+      expect(resMsg.body.ok).toBe(true);
+      expect(resMsg.body.sealed).toBeTruthy();
 
-      // Verify dApp can decrypt the response (wallet→dApp uses walletToDappKey)
-      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.sealed, { type: 'res', from: walletPubB64, id: 'req-1', ok: true });
+      // Verify dApp can decrypt the response (wallet->dApp uses walletToDappKey)
+      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: walletPubB64, id: 'req-1', ok: true });
       expect(data).toEqual(['0xabc123']);
     });
 
     it('reject sends encrypted error response', () => {
       transport.receive({
         v: 1, t: 'req', ch: channelId,
-        id: 'req-2', from: dappKp.publicKeyB64,
-        method: 'encrypted',
-        sealed: sealPayload(dappToWalletKey, channelId, 0, { _method: 'wallet_signMessage', message: 'test' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2', method: 'encrypted' }),
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'req-2', sealed: sealPayload(dappToWalletKey, channelId, 0, { _method: 'wallet_signMessage', message: 'test' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2' }) },
       } as ProtocolMessage);
 
       session.reject('req-2', 'user_rejected', 'User said no');
 
       const resMsg = transport.sent.find(m => m.t === 'res') as any;
       expect(resMsg).toBeTruthy();
-      expect(resMsg.id).toBe('req-2');
-      expect(resMsg.ok).toBe(false);
-      expect(resMsg.sealed).toBeTruthy();
+      expect(resMsg.body.id).toBe('req-2');
+      expect(resMsg.body.ok).toBe(false);
+      expect(resMsg.body.sealed).toBeTruthy();
 
-      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.sealed, { type: 'res', from: walletPubB64, id: 'req-2', ok: false });
+      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: walletPubB64, id: 'req-2', ok: false });
       expect(data).toEqual({ code: 'user_rejected', message: 'User said no' });
     });
 
@@ -296,9 +293,8 @@ describe('WalletSession', () => {
       for (let i = 0; i < 3; i++) {
         transport.receive({
           v: 1, t: 'req', ch: channelId,
-          id: `req-${i}`, from: dappKp.publicKeyB64,
-          method: 'encrypted',
-          sealed: sealPayload(dappToWalletKey, channelId, i, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: `req-${i}`, method: 'encrypted' }),
+          ts: Date.now(), from: dappKp.publicKeyB64,
+          body: { id: `req-${i}`, sealed: sealPayload(dappToWalletKey, channelId, i, { _method: 'wallet_getAccounts' }, { type: 'req', from: dappKp.publicKeyB64, id: `req-${i}` }) },
         } as ProtocolMessage);
         session.approve(`req-${i}`, ['0x123']);
       }
@@ -306,7 +302,7 @@ describe('WalletSession', () => {
       // All 3 responses should have different sealed payloads (different seqs)
       const responses = transport.sent.filter(m => m.t === 'res') as any[];
       expect(responses).toHaveLength(3);
-      const sealedSet = new Set(responses.map((r: any) => r.sealed));
+      const sealedSet = new Set(responses.map((r: any) => r.body.sealed));
       expect(sealedSet.size).toBe(3);
     });
   });
@@ -336,21 +332,21 @@ describe('WalletSession', () => {
 
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
-        state: 'connected', resume: 'tok',
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'tok', remote: null },
       } as ProtocolMessage);
     });
 
-    it('sends encrypted event message (privacy mode)', () => {
+    it('sends encrypted event message', () => {
       session.pushEvent('accountsChanged', { accounts: ['0xnew'] });
 
       const evtMsg = transport.sent.find(m => m.t === 'evt') as any;
       expect(evtMsg).toBeTruthy();
-      // Privacy mode (§7.4): wire event is "encrypted"
-      expect(evtMsg.event).toBe('encrypted');
-      expect(evtMsg.sealed).toBeTruthy();
+      expect(evtMsg.body.id).toBeTruthy();
+      expect(evtMsg.body.sealed).toBeTruthy();
 
-      // Verify dApp can decrypt (wallet→dApp uses walletToDappKey)
-      const { data } = unsealPayload(walletToDappKey, channelId, evtMsg.sealed, { type: 'evt', from: walletPubB64, event: 'encrypted', id: evtMsg.id });
+      // Verify dApp can decrypt (wallet->dApp uses walletToDappKey)
+      const { data } = unsealPayload(walletToDappKey, channelId, evtMsg.body.sealed, { type: 'evt', from: walletPubB64, id: evtMsg.body.id });
       // Real event name and data are inside sealed payload
       expect(data).toEqual({ _event: 'accountsChanged', accounts: ['0xnew'] });
     });
@@ -364,13 +360,11 @@ describe('WalletSession', () => {
       // Should not throw, just no-op
     });
 
-    it('sends chainChanged event (privacy mode)', () => {
+    it('sends chainChanged event', () => {
       session.pushEvent('chainChanged', { chainId: 'eip155:137' });
 
       const evtMsg = transport.sent.find(m => m.t === 'evt') as any;
-      expect(evtMsg.event).toBe('encrypted');
-
-      const { data } = unsealPayload(walletToDappKey, channelId, evtMsg.sealed, { type: 'evt', from: walletPubB64, event: 'encrypted', id: evtMsg.id });
+      const { data } = unsealPayload(walletToDappKey, channelId, evtMsg.body.sealed, { type: 'evt', from: walletPubB64, id: evtMsg.body.id });
       expect(data).toEqual({ _event: 'chainChanged', chainId: 'eip155:137' });
     });
   });
@@ -380,13 +374,15 @@ describe('WalletSession', () => {
       await session.joinFromUri(makePairingUri());
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
-        state: 'connected', resume: 'tok',
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'tok', remote: null },
       } as ProtocolMessage);
     });
 
     it('responds to ping with pong', () => {
       transport.receive({
-        v: 1, t: 'ping', ch: channelId, ts: 12345,
+        v: 1, t: 'ping', ch: channelId,
+        ts: 12345, from: '_adapter', body: {},
       } as ProtocolMessage);
 
       const pong = transport.sent.find(m => m.t === 'pong');
@@ -407,7 +403,7 @@ describe('WalletSession', () => {
 
       const closeMsg = transport.sent.find(m => m.t === 'close');
       expect(closeMsg).toBeTruthy();
-      expect((closeMsg as any).reason).toBe('normal');
+      expect((closeMsg as any).body.reason).toBe('normal');
       expect(session.phase).toBe('closed');
     });
   });
@@ -418,7 +414,8 @@ describe('WalletSession', () => {
 
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
-        state: 'connected', resume: 'tok',
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'tok', remote: null },
       } as ProtocolMessage);
 
       const json = session.serialize();
@@ -459,12 +456,14 @@ describe('WalletSession', () => {
       await session.joinFromUri(makePairingUri());
       transport.receive({
         v: 1, t: 'ready', ch: channelId,
-        state: 'connected', resume: 'tok',
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'tok', remote: null },
       } as ProtocolMessage);
 
       transport.receive({
         v: 1, t: 'close', ch: channelId,
-        reason: 'normal',
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { reason: 'normal' },
       } as ProtocolMessage);
 
       expect(session.phase).toBe('closed');
