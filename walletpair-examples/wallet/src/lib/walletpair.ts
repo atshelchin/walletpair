@@ -82,12 +82,16 @@ export function computeSharedSecret(
 // ---------------------------------------------------------------------------
 
 export function computeSessionFingerprint(
-  sessionKey: Uint8Array,
   channelIdHex: string,
+  dappPubKeyB64: string,
 ): string {
-  const codeBytes = hkdf(sha256, sessionKey, hexToBytes(channelIdHex), INFO_PAIRING, 4);
-  const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
-  return (view.getUint32(0) % 1000000).toString().padStart(6, '0');
+  const hash = sha256(concatBytes(
+    utf8ToBytes('walletpair-v1-session-fingerprint'),
+    hexToBytes(channelIdHex),
+    b64urlDecode(dappPubKeyB64),
+  ));
+  const view = new DataView(hash.buffer, hash.byteOffset, 4);
+  return (view.getUint32(0) % 10000).toString().padStart(4, '0');
 }
 
 // ---------------------------------------------------------------------------

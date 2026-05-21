@@ -369,7 +369,7 @@ export default function WalletScreen() {
     const remotePub = wp.b64urlDecode(parsed.pubkey);
     const shared = wp.computeSharedSecret(kp.privateKey, remotePub);
     const sessionKey = wp.deriveSessionKey(shared, parsed.ch);
-    setPairingCode(wp.computeSessionFingerprint(sessionKey, parsed.ch));
+    setPairingCode(wp.computeSessionFingerprint(parsed.ch, parsed.pubkey));
 
     session.current = {
       channelId: parsed.ch,
@@ -502,7 +502,7 @@ export default function WalletScreen() {
     const remotePub = wp.b64urlDecode(parsed.pubkey);
     const shared = wp.computeSharedSecret(kp.privateKey, remotePub);
     const sessionKey = wp.deriveSessionKey(shared, parsed.ch);
-    setPairingCode(wp.computeSessionFingerprint(sessionKey, parsed.ch));
+    setPairingCode(wp.computeSessionFingerprint(parsed.ch, parsed.pubkey));
 
     session.current = {
       channelId: parsed.ch,
@@ -558,7 +558,7 @@ export default function WalletScreen() {
         recvSeq: -1,
       };
 
-      setPairingCode(wp.computeSessionFingerprint(sessionKey, saved.channelId));
+      setPairingCode(wp.computeSessionFingerprint(saved.channelId, saved.remotePubKeyB64 ?? ''));
       addLog('in', 'restore', `ch=${saved.channelId.slice(0, 12)}...`);
       startReconnect();
     })();

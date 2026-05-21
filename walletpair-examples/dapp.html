@@ -167,10 +167,10 @@ function b64urlDecode(str) {
 function deriveSessionKey(sharedSecret, channelIdHex) {
   return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1', 32);
 }
-function computeSessionFingerprint(sessionKey, channelIdHex) {
-  const codeBytes = hkdf(sha256, sessionKey, hexToBytes(channelIdHex), 'walletpair-pairing-code', 4);
-  const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
-  return (view.getUint32(0) % 1000000).toString().padStart(6, '0');
+function computeSessionFingerprint(channelIdHex, dappPubKeyB64) {
+  const hash = sha256(concatBytes(utf8ToBytes('walletpair-v1-session-fingerprint'), hexToBytes(channelIdHex), b64urlDecode(dappPubKeyB64)));
+  const view = new DataView(hash.buffer, hash.byteOffset, 4);
+  return (view.getUint32(0) % 10000).toString().padStart(4, '0');
 }
 function sealPayload(sessionKey, channelIdHex, seq, data) {
   const seqBytes = new Uint8Array(4);
@@ -599,6 +599,11 @@ function freshConnect() {
     const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
     pairingUriEl.textContent = uri;
     renderQR(uri);
+    // Show session fingerprint alongside QR code
+    const fp = computeSessionFingerprint(S.channelId, S.pubKeyB64);
+    sessionFingerprintEl.textContent = fp;
+    sessionFingerprintWrap.classList.remove('hidden');
+    log('out', 'session_fingerprint', fp);
     saveState();
   });
 }
@@ -729,7 +734,7 @@ function handleMessage(msg, ws) {
       }
 
       // Auto-accept wallet (no manual confirmation needed)
-      const fingerprint = computeSessionFingerprint(S.sessionKey, S.channelId);
+      const fingerprint = computeSessionFingerprint(S.channelId, S.pubKeyB64);
       sessionFingerprintEl.textContent = fingerprint;
       sessionFingerprintWrap.classList.remove('hidden');
       log('in', 'session_fingerprint', fingerprint);
