@@ -5,7 +5,7 @@ describe('walletPair connector factory', () => {
   it('returns a CreateConnectorFn', () => {
     const factory = walletPair({
       relayUrl: 'ws://localhost:8080/v1',
-      name: 'Test dApp',
+      meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
     expect(typeof factory).toBe('function');
   });
@@ -13,7 +13,7 @@ describe('walletPair connector factory', () => {
   it('connector has correct id, name, type', () => {
     const factory = walletPair({
       relayUrl: 'ws://localhost:8080/v1',
-      name: 'My dApp',
+      meta: { name: 'My dApp', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
     const emitter = {
@@ -29,12 +29,15 @@ describe('walletPair connector factory', () => {
     });
 
     expect(connector.id).toBe('walletPair');
-    expect(connector.name).toBe('My dApp');
+    expect(connector.name).toBe('My dApp');  // connector.name comes from meta.name
     expect(connector.type).toBe('walletPair');
   });
 
-  it('connector uses default name if not provided', () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+  it('connector name comes from meta.name', () => {
+    const factory = walletPair({
+      relayUrl: 'ws://localhost:8080/v1',
+      meta: { name: 'WalletPair', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' },
+    });
 
     const connector = factory({
       chains: [{ id: 1, name: 'Ethereum' }] as any,
@@ -45,7 +48,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('connector has all required methods', () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
 
     const connector = factory({
       chains: [{ id: 1, name: 'Ethereum' }] as any,
@@ -65,7 +68,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('isAuthorized returns false with no storage', async () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
 
     const connector = factory({
       chains: [{ id: 1, name: 'Ethereum' }] as any,
@@ -77,7 +80,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('isAuthorized returns false when no saved session', async () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
 
     const storage = {
       getItem: vi.fn(() => Promise.resolve(null)),
@@ -96,7 +99,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('getProvider returns a WalletPairProvider', async () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
 
     const connector = factory({
       chains: [{ id: 1, name: 'Ethereum' }] as any,
@@ -111,7 +114,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('onAccountsChanged emits change event', () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const emit = vi.fn();
 
     const connector = factory({
@@ -124,7 +127,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('onChainChanged emits change event with numeric chainId', () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const emit = vi.fn();
 
     const connector = factory({
@@ -137,7 +140,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('onDisconnect emits disconnect event', () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const emit = vi.fn();
 
     const connector = factory({
@@ -150,7 +153,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('disconnect cleans up session and storage', async () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const storage = {
       getItem: vi.fn(() => Promise.resolve(null)),
       setItem: vi.fn(() => Promise.resolve()),
@@ -168,7 +171,7 @@ describe('walletPair connector factory', () => {
   });
 
   it('switchChain throws for unconfigured chain', async () => {
-    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1' });
+    const factory = walletPair({ relayUrl: 'ws://localhost:8080/v1', meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
 
     const connector = factory({
       chains: [{ id: 1, name: 'Ethereum' }] as any,

@@ -26,7 +26,7 @@ describe('WalletPairProvider', () => {
   async function setupConnectedSession(chainId = 1) {
     walletSendSeq = 0;
     transport = new MockTransport();
-    session = new DAppSession({ transport });
+    session = new DAppSession({ transport, meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     provider = new WalletPairProvider({ session, chainId });
 
     await session.createPairing();
@@ -45,8 +45,7 @@ describe('WalletPairProvider', () => {
     deriveSessionKey(shared, session.channelId);
     sessionKey = (session as any).recvKey;
 
-    // Accept and connect
-    session.acceptWallet();
+    // Connect
     transport.receive({
       v: 1, t: 'ready', ch: session.channelId,
       ts: Date.now(), from: '_adapter',

@@ -25,10 +25,10 @@ WalletPair replaces centralized pairing services with a zero-registration, relay
   |                              | <------- join (pubkey) ------|
   |<- join (pubkey, caps) ------ |                              |
   |                              |                              |
-  |   [Both sides derive root key, traffic keys, and code]      |
-  |   [User confirms codes match on both devices]               |
+  |   [Both sides derive traffic keys and session fingerprint]   |
+  |   [User can visually verify fingerprints match]             |
   |                              |                              |
-  |-- accept ------------------> |                              |
+  |-- accept (auto) -----------> |  (after sealed_join verify)  |
   |                              | ---- ready.connected ------->|
   |<- ready.connected ---------- |                              |
   |                              |                              |
@@ -75,8 +75,8 @@ const uri = await session.createPairing({
   chains: ['eip155:1', 'eip155:137'],
 });
 
-session.on('pairingCode', (code) => {
-  console.log('Confirm this code matches your wallet:', code);
+session.on('sessionFingerprint', (fingerprint) => {
+  console.log('Session fingerprint (verify matches wallet):', fingerprint);
 });
 
 session.on('ready', async () => {
@@ -96,11 +96,11 @@ const transport = new WebSocketTransport({
 });
 const session = new WalletSession(transport);
 
-// Parse scanned QR code
+// Parse scanned QR code and join
 await session.prepareJoin(pairingUri);
-console.log('Pairing code:', session.pairingCode);
+console.log('Session fingerprint:', session.sessionFingerprint);
 
-// Send join, then have the user compare this code with the dApp display
+// Send join (dApp auto-accepts after sealed_join verification)
 await session.confirmJoin();
 
 session.on('request', async (req) => {
@@ -120,7 +120,7 @@ const config = createConfig({
     walletPair({
       relayUrl: 'wss://relay.walletpair.org/v1',
       onPairingUri: (uri) => showQRCode(uri),
-      onPairingCode: (code) => displayCode(code),
+      onSessionFingerprint: (fingerprint) => displayFingerprint(fingerprint),
     }),
   ],
 });
@@ -169,7 +169,7 @@ cargo build --release
 - **Key exchange**: X25519 ephemeral keypairs
 - **Key derivation**: HKDF-SHA256 with channel ID as salt
 - **Encryption**: ChaCha20-Poly1305 AEAD with length-prefixed AAD
-- **Pairing code**: 4-digit code derived from the transcript-bound root key for visual MITM prevention
+- **Session fingerprint**: Derived from SHA256(prefix || channel_id || dapp_pubkey) for visual MITM prevention
 - **Replay protection**: Per-peer sequence counters with monotonic enforcement
 
 ### Message Types
@@ -178,7 +178,7 @@ cargo build --release
 |------|-----------|-------------|
 | `create` | dApp -> Relay | Create a new channel |
 | `join` | Wallet -> Relay | Join an existing channel |
-| `accept` | dApp -> Relay | Accept wallet after code confirmation |
+| `accept` | dApp -> Relay | Accept wallet (auto after sealed_join verification) |
 | `req` | dApp -> Wallet | Encrypted request (e.g. sign transaction) |
 | `res` | Wallet -> dApp | Encrypted response |
 | `evt` | Wallet -> dApp | Encrypted event push (accountsChanged, etc.) |

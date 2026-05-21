@@ -258,7 +258,7 @@ export default function WalletScreen() {
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
-        meta: { name: 'WalletPair Mobile Wallet', address: s.ethAddr },
+        meta: { name: 'WalletPair Mobile Wallet', description: 'WalletPair example mobile wallet', url: '', icon: '' },
       };
       if (useResume && s.resumeToken) msg.resume = s.resumeToken;
       sendRaw(msg);
@@ -369,7 +369,7 @@ export default function WalletScreen() {
     const remotePub = wp.b64urlDecode(parsed.pubkey);
     const shared = wp.computeSharedSecret(kp.privateKey, remotePub);
     const sessionKey = wp.deriveSessionKey(shared, parsed.ch);
-    setPairingCode(wp.computePairingCode(sessionKey, parsed.ch));
+    setPairingCode(wp.computeSessionFingerprint(sessionKey, parsed.ch));
 
     session.current = {
       channelId: parsed.ch,
@@ -421,7 +421,7 @@ export default function WalletScreen() {
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
-        meta: { name: 'WalletPair Mobile Wallet', address: s.ethAddr },
+        meta: { name: 'WalletPair Mobile Wallet', description: 'WalletPair example mobile wallet', url: '', icon: '' },
       };
       sendRaw(joinMsg);
     });
@@ -502,7 +502,7 @@ export default function WalletScreen() {
     const remotePub = wp.b64urlDecode(parsed.pubkey);
     const shared = wp.computeSharedSecret(kp.privateKey, remotePub);
     const sessionKey = wp.deriveSessionKey(shared, parsed.ch);
-    setPairingCode(wp.computePairingCode(sessionKey, parsed.ch));
+    setPairingCode(wp.computeSessionFingerprint(sessionKey, parsed.ch));
 
     session.current = {
       channelId: parsed.ch,
@@ -558,7 +558,7 @@ export default function WalletScreen() {
         recvSeq: -1,
       };
 
-      setPairingCode(wp.computePairingCode(sessionKey, saved.channelId));
+      setPairingCode(wp.computeSessionFingerprint(sessionKey, saved.channelId));
       addLog('in', 'restore', `ch=${saved.channelId.slice(0, 12)}...`);
       startReconnect();
     })();
@@ -698,7 +698,7 @@ export default function WalletScreen() {
             </View>
           ) : (
             <>
-              <Text style={s.codeLabel}>Pairing Code</Text>
+              <Text style={s.codeLabel}>Session Fingerprint</Text>
               <Text style={s.code}>{pairingCode}</Text>
               <TouchableOpacity style={[s.btn, s.btnDanger]} onPress={doReset}>
                 <Text style={s.btnTextWhite}>Reset</Text>

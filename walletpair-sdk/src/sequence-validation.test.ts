@@ -15,7 +15,6 @@ import {
   buildPairingUri,
   computeSharedSecret,
   deriveSessionKey,
-  computePairingCode,
   sealPayload,
   unsealPayload,
   b64urlEncode,
@@ -51,7 +50,7 @@ async function setupConnectedPair(): Promise<ConnectedPair> {
   const walletTransport = new MockTransport();
   const _relay = new MockRelay(dappTransport, walletTransport);
 
-  const dappSession = new DAppSession({ transport: dappTransport, name: 'Test dApp' });
+  const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
   const walletSession = new WalletSession({
     transport: walletTransport,
     capabilities: {
@@ -59,14 +58,12 @@ async function setupConnectedPair(): Promise<ConnectedPair> {
       events: ['accountsChanged'],
       chains: ['eip155:1'],
     },
-    meta: { name: 'Test Wallet' },
+    meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
   });
 
   const uri = await dappSession.createPairing();
   await walletSession.joinFromUri(uri);
   await wait();
-
-  dappSession.acceptWallet();
   await wait();
 
   // Derive session key from the dApp side perspective.
@@ -97,7 +94,7 @@ async function setupConnectedPair(): Promise<ConnectedPair> {
  */
 function setupDAppWithManualWallet() {
   const transport = new MockTransport();
-  const session = new DAppSession({ transport, name: 'Test dApp' });
+  const session = new DAppSession({ transport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
   const walletKp = generateX25519KeyPair();
 
   return { transport, session, walletKp };
@@ -121,8 +118,7 @@ async function connectDAppManually(ctx: ReturnType<typeof setupDAppWithManualWal
   const shared = computeSharedSecret(walletKp.privateKey, dappPub);
   deriveSessionKey(shared, session.channelId);
 
-  // Accept and connect
-  session.acceptWallet();
+  // Auto-accepted; simulate relay ready.connected
   transport.receive({
     v: 1, t: 'ready', ch: session.channelId,
     ts: Date.now(), from: '_adapter',
@@ -147,6 +143,7 @@ function setupWalletWithManualDApp() {
       events: [],
       chains: ['eip155:1'],
     },
+    meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
   });
 
   return { transport, session, dappKp, channelId };
@@ -159,6 +156,9 @@ async function connectWalletManually(ctx: ReturnType<typeof setupWalletWithManua
     channelId,
     pubkeyB64: dappKp.publicKeyB64,
     relayUrl: 'ws://localhost:8080/v1',
+    name: 'Test dApp',
+    url: 'https://test.com',
+    icon: 'https://test.com/icon.png',
   });
 
   await session.joinFromUri(uri);
@@ -496,6 +496,7 @@ describe('Sequence validation', () => {
       const restored = new WalletSession({
         transport: newTransport,
         capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+        meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
       });
       expect(restored.restore(json)).toBe(true);
 
@@ -605,62 +606,29 @@ describe('Sequence validation', () => {
       vi.useRealTimers();
     });
 
-    it('auto-rejects wallet after 60s without acceptWallet()', async () => {
+    it('first-time join is auto-accepted (no pending_accept phase)', async () => {
       const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
+      const session = new DAppSession({ transport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
       const walletKp = generateX25519KeyPair();
 
       await session.createPairing();
 
-      const errorHandler = vi.fn();
-      session.on('error', errorHandler);
-
-      // Simulate wallet join
+      // Simulate wallet join with valid sealed_join
       transport.receive({
         v: 1, t: 'join', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
         body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
       } as ProtocolMessage);
 
-      expect(session.phase).toBe('pending_accept');
+      // Auto-accept means no pending_accept phase
+      expect(session.phase).not.toBe('pending_accept');
 
-      // Advance time past 60s timeout
+      // Should have sent accept immediately
+      const acceptMsg = transport.sent.find(m => m.t === 'accept');
+      expect(acceptMsg).toBeTruthy();
+
+      // Advance time — should not timeout or close
       vi.advanceTimersByTime(61_000);
-
-      // Should have emitted error and closed
-      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
-        message: expect.stringContaining('timed out'),
-      }));
-      expect(session.phase).toBe('closed');
-
-      // Should have sent a close message with user_rejected
-      const closeMsg = transport.sent.find(m => m.t === 'close');
-      expect(closeMsg).toBeTruthy();
-      expect((closeMsg as any).body.reason).toBe('user_rejected');
-    });
-
-    it('does not timeout if acceptWallet() is called in time', async () => {
-      const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
-      const walletKp = generateX25519KeyPair();
-
-      await session.createPairing();
-
-      transport.receive({
-        v: 1, t: 'join', ch: session.channelId,
-        ts: Date.now(), from: walletKp.publicKeyB64,
-        body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
-      } as ProtocolMessage);
-
-      expect(session.phase).toBe('pending_accept');
-
-      // Accept within timeout
-      session.acceptWallet();
-
-      // Advance past the timeout
-      vi.advanceTimersByTime(61_000);
-
-      // Should NOT be closed — should still be waiting for ready.connected
       expect(session.phase).not.toBe('closed');
     });
   });
@@ -671,7 +639,7 @@ describe('Sequence validation', () => {
   describe('capabilities validation', () => {
     it('rejects initial join with no sealed_join', async () => {
       const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
+      const session = new DAppSession({ transport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
       const walletKp = generateX25519KeyPair();
 
       await session.createPairing();
@@ -693,7 +661,7 @@ describe('Sequence validation', () => {
 
     it('rejects join with invalid sealed_join (decryption failure)', async () => {
       const transport = new MockTransport();
-      const session = new DAppSession({ transport, name: 'Test dApp' });
+      const session = new DAppSession({ transport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
       const walletKp = generateX25519KeyPair();
 
       await session.createPairing();

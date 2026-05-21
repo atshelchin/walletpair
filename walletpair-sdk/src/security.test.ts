@@ -36,7 +36,7 @@ function wait(ms = 50): Promise<void> {
 
 function setupDAppManual() {
   const transport = new MockTransport();
-  const session = new DAppSession({ transport, name: 'Test dApp' });
+  const session = new DAppSession({ transport, meta: { name: 'Test', description: 'Test dApp', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
   const walletKp = generateX25519KeyPair();
   return { transport, session, walletKp };
 }
@@ -50,8 +50,6 @@ async function connectDAppManual(ctx: ReturnType<typeof setupDAppManual>) {
     ts: Date.now(), from: walletKp.publicKeyB64,
     body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
   } as ProtocolMessage);
-
-  session.acceptWallet();
 
   transport.receive({
     v: 1, t: 'ready', ch: session.channelId,
@@ -72,6 +70,7 @@ function setupWalletManual() {
   const channelId = generateChannelId();
   const session = new WalletSession({
     transport,
+    meta: { name: 'Test Wallet', description: 'Test wallet', url: 'https://wallet.test', icon: 'https://wallet.test/icon.png' },
     capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
   });
   return { transport, session, dappKp, channelId };

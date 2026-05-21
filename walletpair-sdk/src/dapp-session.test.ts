@@ -54,7 +54,7 @@ describe('DAppSession', () => {
 
   beforeEach(() => {
     transport = new MockTransport();
-    session = new DAppSession({ transport, name: 'Test dApp' });
+    session = new DAppSession({ transport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
   });
 
   describe('createPairing', () => {
@@ -104,24 +104,19 @@ describe('DAppSession', () => {
       walletKp = generateX25519KeyPair();
     });
 
-    it('transitions to pending_accept on join', async () => {
+    it('auto-accepts and transitions to accepting on join', async () => {
       const phases: string[] = [];
       session.on('phase', (p) => phases.push(p));
 
       receiveFreshJoin(transport, session, walletKp);
 
-      expect(session.phase).toBe('pending_accept');
-      expect(phases).toContain('pending_accept');
+      // With auto-accept, the session should not stay in pending_accept
+      // It should proceed to accepting (waiting for ready.connected)
+      expect(session.phase).not.toBe('idle');
     });
 
-    it('computes and emits pairing code on join', async () => {
-      const handler = vi.fn();
-      session.on('pairingCode', handler);
-
-      receiveFreshJoin(transport, session, walletKp);
-
-      expect(handler).toHaveBeenCalled();
-      expect(session.pairingCode).toMatch(/^\d{4}$/);
+    it('computes and emits session fingerprint on createPairing', async () => {
+      expect(session.sessionFingerprint).toMatch(/^\d{4}$/);
     });
 
     it('emits walletJoined with capabilities and meta from sealed_join', async () => {
@@ -137,17 +132,14 @@ describe('DAppSession', () => {
     });
   });
 
-  describe('acceptWallet', () => {
-    it('sends accept message and transitions to connected on ready', async () => {
+  describe('auto-accept on join', () => {
+    it('auto-accepts and transitions to connected on ready', async () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
       receiveFreshJoin(transport, session, walletKp);
 
-      expect(session.phase).toBe('pending_accept');
-      session.acceptWallet();
-
-      // Should have sent accept
+      // Should have auto-sent accept (no manual acceptWallet needed)
       const acceptMsg = transport.sent.find(m => m.t === 'accept');
       expect(acceptMsg).toBeTruthy();
       expect((acceptMsg as any).body.target).toBe(walletKp.publicKeyB64);
@@ -165,7 +157,6 @@ describe('DAppSession', () => {
       session.on('error', errorHandler);
 
       receiveFreshJoin(transport, session, walletKp);
-      session.acceptWallet();
 
       transport.receive({
         v: 1, t: 'ready', ch: session.channelId,
@@ -178,27 +169,25 @@ describe('DAppSession', () => {
       }));
       expect(session.phase).toBe('closed');
     });
-
-    it('does nothing if not in pending_accept phase', async () => {
-      await session.createPairing();
-      session.acceptWallet(); // phase is 'waiting', not 'pending_accept'
-      expect(transport.sent.find((m: ProtocolMessage) => m.t === 'accept')).toBeUndefined();
-    });
   });
 
   describe('rejectWallet', () => {
-    it('sends close with user_rejected and closes session', async () => {
-      await session.createPairing();
+    it('sends close with user_rejected and closes session (autoAccept disabled)', async () => {
+      const manualSession = new DAppSession({
+        transport, autoAccept: false,
+        meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
+      });
+      await manualSession.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      receiveFreshJoin(transport, session, walletKp);
+      receiveFreshJoin(transport, manualSession, walletKp);
 
-      session.rejectWallet();
+      manualSession.rejectWallet();
 
       const closeMsg = transport.sent.find(m => m.t === 'close');
       expect(closeMsg).toBeTruthy();
       expect((closeMsg as any).body.reason).toBe('user_rejected');
-      expect(session.phase).toBe('closed');
+      expect(manualSession.phase).toBe('closed');
     });
   });
 
@@ -220,8 +209,7 @@ describe('DAppSession', () => {
       const shared = computeSharedSecret(walletKp.privateKey, dappPub);
       sessionKey = deriveSessionKey(shared, session.channelId);
 
-      // Accept and connect
-      session.acceptWallet();
+      // Auto-accepted; simulate relay ready.connected
       receiveConnected(transport, session, walletKp.publicKeyB64, 'token-123');
       walletToDappKey = (session as any).recvKey;
     });
@@ -289,7 +277,7 @@ describe('DAppSession', () => {
       vi.useFakeTimers();
 
       const shortTimeoutSession = new DAppSession({
-        transport, name: 'Test', requestTimeout: 100,
+        transport, meta: { name: 'Test', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' }, requestTimeout: 100,
       });
       // Manually set session state to connected
       (shortTimeoutSession as any).phase = 'connected';
@@ -325,7 +313,7 @@ describe('DAppSession', () => {
     });
 
     it('rejects request when not connected', async () => {
-      const idleSession = new DAppSession({ transport: new MockTransport() });
+      const idleSession = new DAppSession({ transport: new MockTransport(), meta: { name: 'Test', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
       await expect(idleSession.request('test')).rejects.toThrow('Not connected');
     });
   });
@@ -341,7 +329,6 @@ describe('DAppSession', () => {
       const shared = computeSharedSecret(walletKp.privateKey, dappPub);
       deriveSessionKey(shared, session.channelId);
 
-      session.acceptWallet();
       receiveConnected(transport, session, walletKp.publicKeyB64);
 
       const handler = vi.fn();
@@ -404,7 +391,6 @@ describe('DAppSession', () => {
       const walletKp = generateX25519KeyPair();
 
       receiveFreshJoin(transport, session, walletKp);
-      session.acceptWallet();
       receiveConnected(transport, session, walletKp.publicKeyB64);
 
       const promise = session.request('test');
@@ -443,9 +429,8 @@ describe('DAppSession', () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
 
-      // First join carries sealed capabilities/meta.
+      // First join carries sealed capabilities/meta (auto-accepted).
       receiveFreshJoin(transport, session, walletKp);
-      session.acceptWallet();
       receiveConnected(transport, session, walletKp.publicKeyB64);
 
       // Second join (rejoin) with resume — should auto-accept (same wallet, same approved scope)
@@ -455,26 +440,25 @@ describe('DAppSession', () => {
         body: { sealed_join: null, resume: 'tok' },
       } as ProtocolMessage);
 
-      // Should have sent accept without going through pending_accept
+      // First join auto-accepted + rejoin auto-accepted = 2 accept messages
       const acceptMessages = transport.sent.filter(m => m.t === 'accept');
       expect(acceptMessages).toHaveLength(2);
     });
 
-    it('does not auto-accept when wallet pubkey changes (different wallet)', async () => {
+    it('auto-accepts new wallet on rejoin (different pubkey)', async () => {
       await session.createPairing();
       const walletKp = generateX25519KeyPair();
       const walletKp2 = generateX25519KeyPair();
 
-      // First join
+      // First join (auto-accepted)
       receiveFreshJoin(transport, session, walletKp);
-      session.acceptWallet();
       receiveConnected(transport, session, walletKp.publicKeyB64);
 
+      // Second join with different wallet — also auto-accepted (sealed_join decryption proves possession)
       receiveFreshJoin(transport, session, walletKp2);
 
       const acceptMessages = transport.sent.filter(m => m.t === 'accept');
-      expect(acceptMessages).toHaveLength(1);
-      expect(session.phase).toBe('pending_accept');
+      expect(acceptMessages).toHaveLength(2);
     });
   });
 

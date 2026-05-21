@@ -442,7 +442,7 @@ describe('ExtensionState Transitions', () => {
     updateState({
       phase: 'idle',
       pairingUri: undefined,
-      pairingCode: undefined,
+      sessionFingerprint: undefined,
       wallet: undefined,
       walletMeta: undefined,
     });
@@ -461,7 +461,7 @@ describe('ExtensionState Transitions', () => {
     updateState({
       phase: 'idle',
       pairingUri: undefined,
-      pairingCode: undefined,
+      sessionFingerprint: undefined,
       wallet: undefined,
       walletMeta: undefined,
     });
@@ -484,7 +484,7 @@ describe('ExtensionState Transitions', () => {
     updateState({
       phase: 'idle',
       pairingUri: undefined,
-      pairingCode: undefined,
+      sessionFingerprint: undefined,
       wallet: undefined,
       walletMeta: undefined,
     });
@@ -513,12 +513,12 @@ describe('ExtensionState Transitions', () => {
     expect(broadcasts[2].phase).toBe('idle');
   });
 
-  it('pairingCode is set during pairing phase', () => {
+  it('sessionFingerprint is set during pairing phase', () => {
     const { getState, updateState } = createStateMachine();
 
     updateState({ phase: 'pairing', pairingUri: 'wc:abc' });
-    updateState({ pairingCode: '123456' });
-    expect(getState().pairingCode).toBe('123456');
+    updateState({ sessionFingerprint: '123456' });
+    expect(getState().sessionFingerprint).toBe('123456');
     expect(getState().phase).toBe('pairing');
   });
 

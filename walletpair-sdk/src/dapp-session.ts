@@ -14,6 +14,7 @@ import type {
   PendingRequest,
   Capabilities,
   WalletMeta,
+  DAppMeta,
 } from './types.js';
 import {
   generateX25519KeyPair,
@@ -23,7 +24,7 @@ import {
   deriveSessionKey,
   deriveDirectionalSessionKeys,
   deriveJoinEncryptionKey,
-  computePairingCode,
+  computeSessionFingerprint,
   canonicalJson,
   sealPayload,
   unsealPayload,
@@ -55,8 +56,8 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   channelId = '';
   /** Pairing URI. Available after createPairing(). */
   pairingUri = '';
-  /** 4-digit pairing code. Available after wallet joins. */
-  pairingCode = '';
+  /** 4-digit session fingerprint. Available after createPairing(). */
+  sessionFingerprint = '';
   /** Remote wallet capabilities. Available after wallet joins. */
   walletCapabilities: Capabilities | undefined = undefined;
   /** Remote wallet metadata. Available after wallet joins. */
@@ -67,12 +68,11 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   private approvedScopeRecorded = false;
 
   private transport: Transport;
-  private name: string | undefined;
+  private meta: DAppMeta;
   private declaredMethods: string[] | undefined;
   private declaredChains: string[] | undefined;
   private requestTimeout: number;
   private autoAccept: boolean;
-  private autoAcceptNewWallet: boolean;
   /** Session lifetime in ms (§16 rule 17). */
   private sessionTtl: number;
   private sessionTtlTimer: ReturnType<typeof setTimeout> | null = null;
@@ -99,12 +99,11 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   constructor(options: DAppSessionOptions) {
     super();
     this.transport = options.transport;
-    this.name = options.name;
+    this.meta = options.meta;
     this.declaredMethods = options.methods;
     this.declaredChains = options.chains;
     this.requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
     this.autoAccept = options.autoAccept ?? true;
-    this.autoAcceptNewWallet = options.autoAcceptNewWallet ?? false;
     this.sessionTtl = options.sessionTtl ?? DEFAULT_SESSION_TTL;
 
     this.transport.onMessage((msg) => this.handleMessage(msg));
@@ -152,11 +151,15 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       channelId: this.channelId,
       pubkeyB64: this.pubKeyB64,
       relayUrl,
-      name: this.name,
+      name: this.meta.name,
+      url: this.meta.url,
+      icon: this.meta.icon,
       methods: this.declaredMethods,
       chains: this.declaredChains,
     });
+    this.sessionFingerprint = computeSessionFingerprint(this.channelId, this.pubKeyB64);
     this.emit('pairingUri', this.pairingUri);
+    this.emit('sessionFingerprint', this.sessionFingerprint);
 
     if (!options?.deferTransport) {
       await this.connectTransport();
@@ -178,11 +181,11 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     this.sendRaw({
       v: 1, t: 'create', ch: this.channelId,
       ts: Date.now(), from: this.pubKeyB64,
-      body: { meta: this.name ? { name: this.name } : {}, resume: null },
+      body: { meta: this.meta, resume: null },
     } as ProtocolMessage);
   }
 
-  /** Accept the wallet after pairing code verification. */
+  /** Accept the wallet after sealed_join verification. */
   acceptWallet(): void {
     if (this.phase !== 'pending_accept' || !this.remotePubKey) return;
     this.clearPendingAcceptTimer();
@@ -293,7 +296,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       resumeToken: this.resumeToken,
       reqCounter: this.reqCounter,
       paired: this.paired,
-      dappName: this.name ?? null,
+      dappMeta: this.meta,
       approvedScopeRecorded: this.approvedScopeRecorded,
       approvedCapabilities: this.approvedCapabilities ?? null,
       approvedWalletMeta: this.approvedWalletMeta ?? null,
@@ -325,7 +328,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       this.approvedWalletPubKeyB64 = d.approvedWalletPubKeyB64 ?? (d.remotePubKeyB64 ?? undefined);
       this.walletCapabilities = this.approvedCapabilities;
       this.walletMeta = this.approvedWalletMeta;
-      this.name = d.dappName ?? undefined;
+      this.meta = d.dappMeta ?? d.dappName ? { name: d.dappName, description: '', url: '', icon: '' } : this.meta;
       this.sessionStartTime = d.sessionStartTime ?? null;
       return true;
     } catch { return false; }
@@ -450,36 +453,19 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         this.sendKey = keys.dappToWalletKey;
         this.recvKey = keys.walletToDappKey;
 
-        this.pairingCode = computePairingCode(rootKey, this.channelId, context);
-
         // §20.7: erase root_key and transcript_hash after all derivations
         rootKey.fill(0);
         keys.rootKey.fill(0);
         keys.transcriptHash.fill(0);
 
-        if (knownWallet) {
-          this.doAccept();
-        } else {
-          this.emit('pairingCode', this.pairingCode);
-          this.emit('walletJoined', {
-            capabilities: joinCapabilities,
-            meta: joinMeta,
-          });
+        this.emit('walletJoined', {
+          capabilities: joinCapabilities,
+          meta: joinMeta,
+        });
 
-          if (this.autoAcceptNewWallet) {
-            this.emit('error', new Error('autoAcceptNewWallet is disabled for first-time wallets; call acceptWallet() after code comparison'));
-          }
-          this.setPhase('pending_accept');
-
-          // Start pending_accept timeout
-          this.clearPendingAcceptTimer();
-          this.pendingAcceptTimer = setTimeout(() => {
-            if (this.phase === 'pending_accept') {
-              this.emit('error', new Error('Pairing acceptance timed out'));
-              this.rejectWallet();
-            }
-          }, PENDING_ACCEPT_TIMEOUT);
-        }
+        // Auto-accept: sealed_join decryption success proves the wallet
+        // possesses the dApp's public key (obtained via QR code).
+        this.doAccept();
         break;
       }
 
@@ -607,7 +593,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       walletPubKeyB64,
       capabilities: capabilities ?? null,
       walletMeta: walletMeta ?? {},
-      dappName: this.name,
+      dappName: this.meta.name,
     };
   }
 
@@ -674,7 +660,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       this.sendRaw({
         v: 1, t: 'create', ch: this.channelId,
         ts: Date.now(), from: this.pubKeyB64,
-        body: { meta: this.name ? { name: this.name } : {}, resume: (useResume && this.resumeToken) ? this.resumeToken : null },
+        body: { meta: this.meta, resume: (useResume && this.resumeToken) ? this.resumeToken : null },
       } as ProtocolMessage);
     } catch {
       this.scheduleReconnect();

@@ -92,13 +92,9 @@ button.danger { background: var(--red); color: #fff; }
     </div>
     <div class="uri-box" id="pairingUri">--</div>
     <button id="btnCopy" disabled>Copy URI</button>
-    <div id="pairingCodeWrap" class="hidden">
-      <label class="mt">Pairing Code (verify with wallet)</label>
-      <div class="code" id="pairingCode">------</div>
-      <div class="row mt">
-        <button id="btnAccept" class="primary" disabled>Accept Wallet</button>
-        <button id="btnReject" class="danger" disabled>Reject</button>
-      </div>
+    <div id="sessionFingerprintWrap" class="hidden">
+      <label class="mt">Session Fingerprint (verify with wallet)</label>
+      <div class="code" id="sessionFingerprint">------</div>
     </div>
   </section>
 
@@ -171,7 +167,7 @@ function b64urlDecode(str) {
 function deriveSessionKey(sharedSecret, channelIdHex) {
   return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1', 32);
 }
-function computePairingCode(sessionKey, channelIdHex) {
+function computeSessionFingerprint(sessionKey, channelIdHex) {
   const codeBytes = hkdf(sha256, sessionKey, hexToBytes(channelIdHex), 'walletpair-pairing-code', 4);
   const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
   return (view.getUint32(0) % 1000000).toString().padStart(6, '0');
@@ -333,10 +329,8 @@ const statusText = $('statusText');
 const pairingUriEl = $('pairingUri');
 const qrCanvas = $('qrCanvas');
 const btnCopy = $('btnCopy');
-const pairingCodeEl = $('pairingCode');
-const pairingCodeWrap = $('pairingCodeWrap');
-const btnAccept = $('btnAccept');
-const btnReject = $('btnReject');
+const sessionFingerprintEl = $('sessionFingerprint');
+const sessionFingerprintWrap = $('sessionFingerprintWrap');
 const secRequest = $('secRequest');
 const methodSel = $('method');
 const paramsEl = $('params');
@@ -353,11 +347,8 @@ function setPhase(phase) {
   const dotClass = { connected: 'connected', closed: 'closed', idle: '', reconnecting: 'reconnecting' };
   dot.className = 'dot ' + (dotClass[phase] ?? 'waiting');
   statusText.textContent = phase.charAt(0).toUpperCase() + phase.slice(1).replace('_', ' ');
-  btnAccept.disabled = phase !== 'pending_accept';
-  btnReject.disabled = phase !== 'pending_accept';
   btnCopy.disabled = !S.channelId;
   secRequest.classList.toggle('hidden', phase !== 'connected');
-  pairingCodeWrap.classList.toggle('hidden', phase !== 'pending_accept');
   btnReset.classList.toggle('hidden', phase === 'idle');
   btnConnect.classList.toggle('hidden', phase !== 'idle');
 }
@@ -577,7 +568,7 @@ function freshConnectBle() {
   log('in', 'ready', 'state=waiting (BLE local adapter)');
 
   // Show QR without relay param (signals BLE mode to wallet)
-  const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}`;
+  const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
   pairingUriEl.textContent = uri;
   renderQR(uri);
   btnBleScan.disabled = false;
@@ -604,8 +595,8 @@ function freshConnect() {
 
   S.ws = openWs(() => {
     setPhase('waiting');
-    sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo' }, resume: null } });
-    const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+    sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: '' }, resume: null } });
+    const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
     pairingUriEl.textContent = uri;
     renderQR(uri);
     saveState();
@@ -635,10 +626,10 @@ function startReconnect() {
     S.ws = openWs(() => {
       if (useResume) {
         // Try resume
-        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo' }, resume: S.resumeToken } });
+        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: '' }, resume: S.resumeToken } });
       } else {
         // Fresh create with same channel & keys (relay forgot us)
-        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo' }, resume: null } });
+        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: '' }, resume: null } });
       }
     });
 
@@ -697,7 +688,7 @@ function handleMessage(msg, ws) {
         setPhase('waiting');
         log('in', 'ready', 'state=waiting');
         // Show pairing URI (in case of reconnect, re-display it)
-        const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+        const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
         pairingUriEl.textContent = uri;
         renderQR(uri);
       } else if (readyBody.state === 'connected') {
@@ -737,16 +728,12 @@ function handleMessage(msg, ws) {
           .catch(e => log('err', 'ble', `send ready.waiting failed: ${e.message}`));
       }
 
-      if (knownWallet) {
-        // Auto-accept: same wallet reconnected after relay restart
-        log('in', 'auto_accept', 'known wallet, skipping pairing code');
-        doAccept();
-      } else {
-        // First time: show pairing code for manual verification
-        const code = computePairingCode(S.sessionKey, S.channelId);
-        pairingCodeEl.textContent = code;
-        setPhase('pending_accept');
-      }
+      // Auto-accept wallet (no manual confirmation needed)
+      const fingerprint = computeSessionFingerprint(S.sessionKey, S.channelId);
+      sessionFingerprintEl.textContent = fingerprint;
+      sessionFingerprintWrap.classList.remove('hidden');
+      log('in', 'session_fingerprint', fingerprint);
+      doAccept();
       saveState();
       break;
     }
@@ -836,7 +823,7 @@ function handleMessage(msg, ws) {
 // Actions
 // ---------------------------------------------------------------------------
 function doAccept() {
-  if (S.phase !== 'pending_accept' || !S.remotePubKey) return;
+  if (!S.remotePubKey) return;
   S.paired = true;
   const walletPubB64 = b64urlEncode(S.remotePubKey);
 
@@ -930,8 +917,6 @@ btnBleCreate.onclick = freshConnectBle;
 btnBleScan.onclick = bleConnect;
 btnReset.onclick = doReset;
 btnCopy.onclick = () => { navigator.clipboard.writeText(pairingUriEl.textContent); btnCopy.textContent = 'Copied!'; setTimeout(() => btnCopy.textContent = 'Copy URI', 1500); };
-btnAccept.onclick = doAccept;
-btnReject.onclick = doReject;
 btnSend.onclick = doSendRequest;
 btnPing.onclick = doPing;
 btnClose.onclick = doFullClose;
@@ -1008,7 +993,7 @@ document.querySelectorAll('.bench').forEach(btn => {
 // ---------------------------------------------------------------------------
 if (loadState()) {
   log('in', 'restore', `restored session ch=${S.channelId.slice(0, 12)}... paired=${S.paired}`);
-  const restoredUri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}`;
+  const restoredUri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
   pairingUriEl.textContent = restoredUri;
   renderQR(restoredUri);
   setTransportMode('ws');

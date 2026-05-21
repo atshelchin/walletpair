@@ -12,7 +12,7 @@
 	let relayUrl = $state('ws://localhost:8080/v1');
 	let phase: DAppPhase = $state('idle');
 	let pairingUri = $state('');
-	let pairingCode = $state('------');
+	let sessionFingerprint = $state('------');
 	let session: DAppSession | null = $state(null);
 	let qrDataUrl = $state('');
 	let bleSupported = $state(false);
@@ -57,9 +57,9 @@
 			renderQR(uri);
 		});
 
-		s.on('pairingCode', (code) => {
-			pairingCode = code;
-			addLog('in', 'pairing_code', code);
+		(s as unknown as { on: (event: string, handler: (data: string) => void) => void }).on('sessionFingerprint', (fingerprint) => {
+			sessionFingerprint = fingerprint;
+			addLog('in', 'session_fingerprint', fingerprint);
 		});
 
 		s.on('walletJoined', ({ pubkey, capabilities }) => {
@@ -84,12 +84,13 @@
 	// ---------------------------------------------------------------------------
 	async function connectWs() {
 		const transport = new WebSocketTransport(relayUrl);
-		const s = new DAppSession({ transport, name: 'WalletPair dApp' });
+		const s = new DAppSession({ transport, meta: { name: 'WalletPair dApp', description: 'WalletPair example dApp', url: location.origin, icon: '' } } as ConstructorParameters<typeof DAppSession>[0]);
 		session = s;
 		setupSessionEvents(s);
 
 		try {
 			await s.createPairing();
+			sessionFingerprint = (s as unknown as { sessionFingerprint: string }).sessionFingerprint ?? '------';
 			addLog('out', 'create', `ch=${s.channelId.slice(0, 12)}...`);
 		} catch (e: any) {
 			addLog('err', 'connect', e.message);
@@ -101,13 +102,14 @@
 	// ---------------------------------------------------------------------------
 	async function connectBleCreate() {
 		const transport = new WebBleCentralTransport();
-		const s = new DAppSession({ transport, name: 'WalletPair dApp' });
+		const s = new DAppSession({ transport, meta: { name: 'WalletPair dApp', description: 'WalletPair example dApp', url: location.origin, icon: '' } } as ConstructorParameters<typeof DAppSession>[0]);
 		session = s;
 		setupSessionEvents(s);
 
 		try {
 			// Phase 1: create channel + keys, show QR, but DON'T connect BLE yet
 			await s.createPairing({ deferTransport: true });
+			sessionFingerprint = (s as unknown as { sessionFingerprint: string }).sessionFingerprint ?? '------';
 			addLog('out', 'create', `ch=${s.channelId.slice(0, 12)}... (BLE, deferred)`);
 			bleStatus = 'Channel created. Show QR to wallet, then click Scan.';
 		} catch (e: any) {
@@ -135,16 +137,6 @@
 	// ---------------------------------------------------------------------------
 	// Actions
 	// ---------------------------------------------------------------------------
-	function acceptWallet() {
-		session?.acceptWallet();
-		addLog('out', 'accept', '');
-	}
-
-	function rejectWallet() {
-		session?.rejectWallet();
-		addLog('out', 'reject', 'user_rejected');
-	}
-
 	async function sendRequest() {
 		if (!session) return;
 		const m = method === 'custom' ? prompt('Method name:') : method;
@@ -179,7 +171,7 @@
 		session = null;
 		phase = 'idle';
 		pairingUri = '';
-		pairingCode = '------';
+		sessionFingerprint = '------';
 		qrDataUrl = '';
 		bleStatus = '';
 	}
@@ -261,13 +253,9 @@
 		<div class="uri-box">{pairingUri || '--'}</div>
 		<button onclick={copyUri} disabled={!pairingUri}>Copy URI</button>
 
-		{#if phase === 'pending_accept'}
-			<span class="field-label mt">Pairing Code (verify with wallet)</span>
-			<div class="code">{pairingCode}</div>
-			<div class="row mt">
-				<button class="primary" onclick={acceptWallet}>Accept Wallet</button>
-				<button class="danger" onclick={rejectWallet}>Reject</button>
-			</div>
+		{#if sessionFingerprint !== '------'}
+			<span class="field-label mt">Session Fingerprint (verify with wallet)</span>
+			<div class="code">{sessionFingerprint}</div>
 		{/if}
 	</section>
 

@@ -48,7 +48,6 @@ export type BackgroundMessage =
   | { action: 'rpc-response'; id: string; result?: unknown; error?: { code: number; message: string } }
   | { action: 'get-state' }
   | { action: 'start-pairing' }
-  | { action: 'accept-wallet' }
   | { action: 'reject-wallet' }
   | { action: 'disconnect' }
   | { action: 'get-pairing-uri' }
@@ -62,7 +61,7 @@ export type BackgroundMessage =
 export interface ExtensionState {
   phase: 'idle' | 'pairing' | 'pending_accept' | 'connected' | 'disconnected' | 'error';
   pairingUri?: string;
-  pairingCode?: string;
+  sessionFingerprint?: string;
   wallet?: ConnectedWallet;
   walletMeta?: { name?: string; icon?: string };
   error?: string;

@@ -8,7 +8,7 @@ import {
   computeSharedSecret,
   deriveSessionKey,
   deriveDirectionalSessionKeys,
-  computePairingCode,
+  computeSessionFingerprint,
   sealPayload,
   unsealPayload,
   b64urlEncode,
@@ -39,7 +39,7 @@ describe('WalletSession', () => {
         events: ['accountsChanged', 'chainChanged'],
         chains: ['eip155:1'],
       },
-      meta: { name: 'Test Wallet', address: '0xtest' },
+      meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xtest' },
     });
     dappKp = generateX25519KeyPair();
     channelId = generateChannelId();
@@ -51,6 +51,9 @@ describe('WalletSession', () => {
       channelId,
       pubkeyB64: dappKp.publicKeyB64,
       relayUrl,
+      name: 'Test dApp',
+      url: 'https://test.com',
+      icon: 'https://test.com/icon.png',
     });
   }
 
@@ -81,40 +84,25 @@ describe('WalletSession', () => {
       expect((joinMsg as any).body.resume).toBeNull();
     });
 
-    it('computes and emits pairing code', async () => {
+    it('computes and emits session fingerprint', async () => {
       const handler = vi.fn();
-      session.on('pairingCode', handler);
+      session.on('sessionFingerprint', handler);
 
       const uri = makePairingUri();
       await session.joinFromUri(uri);
 
       expect(handler).toHaveBeenCalled();
-      expect(session.pairingCode).toMatch(/^\d{4}$/);
+      expect(session.sessionFingerprint).toMatch(/^\d{4}$/);
     });
 
-    it('pairing code matches dApp side derivation', async () => {
+    it('session fingerprint matches dApp side derivation', async () => {
       const uri = makePairingUri();
       await session.joinFromUri(uri);
 
-      // Derive same session key from dApp side
-      const walletPubB64 = transport.sent.find(m => m.t === 'join')!.from!;
-      const walletPub = b64urlDecode(walletPubB64);
-      const shared = computeSharedSecret(dappKp.privateKey, walletPub);
-      const rootKey = deriveSessionKey(shared, channelId);
-      const context: SessionCryptoContext = {
-        dappPubKeyB64: dappKp.publicKeyB64,
-        walletPubKeyB64: walletPubB64,
-        capabilities: {
-          methods: ['wallet_getAccounts', 'wallet_signMessage'],
-          events: ['accountsChanged', 'chainChanged'],
-          chains: ['eip155:1'],
-        },
-        walletMeta: { name: 'Test Wallet', address: '0xtest' },
-        dappName: undefined,
-      };
-      const dappCode = computePairingCode(rootKey, channelId, context);
+      // Both sides use computeSessionFingerprint(channelId, dappPubKeyB64)
+      const dappFingerprint = computeSessionFingerprint(channelId, dappKp.publicKeyB64);
 
-      expect(session.pairingCode).toBe(dappCode);
+      expect(session.sessionFingerprint).toBe(dappFingerprint);
     });
 
     it('transitions to connected on ready.connected', async () => {
@@ -168,8 +156,8 @@ describe('WalletSession', () => {
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
-        walletMeta: { name: 'Test Wallet', address: '0xtest' },
-        dappName: undefined,
+        walletMeta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xtest' },
+        dappName: 'Test dApp',
       };
       const keys = deriveDirectionalSessionKeys(rootKey, channelId, context);
       dappToWalletKey = keys.dappToWalletKey;
@@ -271,8 +259,8 @@ describe('WalletSession', () => {
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
-        walletMeta: { name: 'Test Wallet', address: '0xtest' },
-        dappName: undefined,
+        walletMeta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xtest' },
+        dappName: 'Test dApp',
       };
       const keys = deriveDirectionalSessionKeys(rootKey, channelId, context);
       dappToWalletKey = keys.dappToWalletKey;
@@ -406,8 +394,8 @@ describe('WalletSession', () => {
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
-        walletMeta: { name: 'Test Wallet', address: '0xtest' },
-        dappName: undefined,
+        walletMeta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xtest' },
+        dappName: 'Test dApp',
       };
       const keys = deriveDirectionalSessionKeys(rootKey, channelId, context);
       walletToDappKey = keys.walletToDappKey;
@@ -496,7 +484,7 @@ describe('WalletSession', () => {
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
-        meta: { name: 'Test Wallet', address: '0xtest' },
+        meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xtest' },
       });
       expect(newSession.restore(json)).toBe(true);
       expect(newSession.channelId).toBe(channelId);
@@ -509,7 +497,7 @@ describe('WalletSession', () => {
       const newSession = new WalletSession({
         transport: new MockTransport(),
         capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
-        meta: { name: 'Test Wallet', address: '0xtest' },
+        meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xtest' },
       });
 
       expect(newSession.restore(json)).toBe(false);

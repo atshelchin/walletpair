@@ -1,7 +1,7 @@
 /**
  * Wallet-side WalletPair session.
  *
- * Manages: parse URI → join → pairing code → connected → handle requests → push events.
+ * Manages: parse URI → join → connected → handle requests → push events.
  */
 
 import type {
@@ -20,7 +20,7 @@ import {
   deriveSessionKey,
   deriveDirectionalSessionKeys,
   deriveJoinEncryptionKey,
-  computePairingCode,
+  computeSessionFingerprint,
   canonicalJson,
   sealPayload,
   unsealPayload,
@@ -56,8 +56,8 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   /** Channel ID (hex). Available after join. */
   channelId = '';
-  /** 4-digit pairing code. Available after join. */
-  pairingCode = '';
+  /** 4-digit session fingerprint. Available after prepareJoin(). */
+  sessionFingerprint = '';
 
   private transport: Transport;
   private capabilities: Capabilities;
@@ -111,9 +111,8 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
   /**
    * Prepare to join a channel by parsing a pairing URI.
-   * Computes local keys and the pairing code without connecting.
-   * The dApp can only display the same code after it receives this wallet's
-   * join public key, so the user must compare both displays after join.
+   * Computes local keys and the session fingerprint without connecting.
+   * Returns the 4-digit session fingerprint for user verification.
    */
   prepareJoin(uri: string): string {
     const parsed = parsePairingUri(uri);
@@ -150,8 +149,8 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     this.sendKey = keys.walletToDappKey;
     this.recvKey = keys.dappToWalletKey;
 
-    this.pairingCode = computePairingCode(rootKey, this.channelId, context);
-    this.emit('pairingCode', this.pairingCode);
+    this.sessionFingerprint = computeSessionFingerprint(this.channelId, b64urlEncode(this.remotePubKey));
+    this.emit('sessionFingerprint', this.sessionFingerprint);
 
     // Always derive join encryption key for sealed_join before erasing rootKey
     this.sessionKey = deriveJoinEncryptionKey(rootKey, this.channelId);
@@ -161,12 +160,11 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     keys.rootKey.fill(0);
     keys.transcriptHash.fill(0);
 
-    return this.pairingCode;
+    return this.sessionFingerprint;
   }
 
   /**
-   * Send the join message. The pairing code comparison happens after the dApp
-   * receives this join and displays its locally computed code.
+   * Send the join message after the user has verified the session fingerprint.
    */
   async confirmJoin(): Promise<void> {
     if (!this.channelId || !this.sendKey || !this.recvKey) {

@@ -60,17 +60,20 @@ npm install walletpair-sdk
 import { DAppSession, WebSocketTransport } from 'walletpair-sdk'
 
 const transport = new WebSocketTransport('wss://relay.walletpair.org/v1')
-const session = new DAppSession({ transport, name: 'My dApp' })
+const session = new DAppSession({
+  transport,
+  meta: { name: 'My dApp', description: 'Example dApp', url: 'https://example.com', icon: 'https://example.com/icon.png' },
+})
 
 // 1. Create pairing -- display the URI as a QR code
 const uri = await session.createPairing()
 console.log('Scan this:', uri)
 
-// 2. When wallet joins, verify the pairing code with user
-session.on('pairingCode', (code) => {
-  console.log('Pairing code:', code) // e.g. "482901"
-  // Show code to user, user confirms it matches wallet display
-  session.acceptWallet()
+// 2. When wallet joins, show session fingerprint for visual verification
+//    (DApp auto-accepts after sealed_join verification)
+session.on('sessionFingerprint', (fingerprint) => {
+  console.log('Session fingerprint:', fingerprint)
+  // Display to user so they can verify it matches wallet display
 })
 
 // 3. Once connected, send requests
@@ -100,12 +103,12 @@ const session = new WalletSession({
     events: ['accountsChanged', 'chainChanged'],
     chains: ['eip155:1', 'eip155:137'],
   },
-  meta: { name: 'My Wallet' },
+  meta: { name: 'My Wallet', description: 'Example Wallet', url: 'https://mywallet.app', icon: 'https://mywallet.app/icon.png' },
 })
 
 // 1. Join from pairing URI (scanned from QR code)
-const pairingCode = await session.joinFromUri(uri)
-console.log('Pairing code:', pairingCode) // show to user for verification
+const fingerprint = await session.joinFromUri(uri)
+console.log('Session fingerprint:', fingerprint) // show to user for visual verification
 
 // 2. Handle incoming requests
 session.on('request', ({ id, method, params }) => {
@@ -162,13 +165,9 @@ const config = createConfig({
         // Display QR code with this URI
         showQrCode(uri)
       },
-      onPairingCode: (code) => {
-        // Display pairing code for user verification
-        showPairingCode(code)
-      },
-      onPairingConfirm: async (code) => {
-        // Ask user to confirm the code matches. Return true to accept.
-        return await askUserToConfirm(code)
+      onSessionFingerprint: (fingerprint) => {
+        // Display session fingerprint for user visual verification
+        showSessionFingerprint(fingerprint)
       },
     }),
   ],
@@ -219,13 +218,13 @@ if (saved && session.restore(saved)) {
 #### `DAppSession`
 
 ```ts
-new DAppSession({ transport, name?, requestTimeout?, autoAccept? })
+new DAppSession({ transport, meta: { name, description, url, icon }, requestTimeout?, autoAccept? })
 ```
 
 | Method | Description |
 |--------|-------------|
 | `createPairing(): Promise<string>` | Create channel, returns pairing URI for QR display |
-| `acceptWallet()` | Accept wallet after pairing code verification |
+| `acceptWallet()` | Accept wallet (called automatically after sealed_join verification) |
 | `rejectWallet()` | Reject wallet pairing |
 | `request<T>(method, params?): Promise<T>` | Send encrypted request, returns decrypted response |
 | `ping()` | Send heartbeat ping |
@@ -241,8 +240,8 @@ new DAppSession({ transport, name?, requestTimeout?, autoAccept? })
 |-------|---------|-------------|
 | `phase` | `DAppPhase` | State machine transition |
 | `pairingUri` | `string` | Pairing URI generated |
-| `pairingCode` | `string` | 4-digit code for verification |
-| `walletJoined` | `{ pubkey, capabilities?, meta? }` | Wallet joined the channel |
+| `sessionFingerprint` | `string` | Session fingerprint for visual verification |
+| `walletJoined` | `{ pubkey, capabilities?, meta }` | Wallet joined the channel |
 | `response` | `{ id, ok, data }` | Response received |
 | `event` | `{ event, data }` | Wallet pushed an event |
 | `error` | `Error` | Error occurred |
@@ -252,12 +251,12 @@ new DAppSession({ transport, name?, requestTimeout?, autoAccept? })
 #### `WalletSession`
 
 ```ts
-new WalletSession({ transport, capabilities, meta? })
+new WalletSession({ transport, capabilities, meta: { name, description, url, icon } })
 ```
 
 | Method | Description |
 |--------|-------------|
-| `joinFromUri(uri): Promise<string>` | Join channel, returns pairing code |
+| `joinFromUri(uri): Promise<string>` | Join channel, returns session fingerprint |
 | `approve(requestId, result)` | Approve request with encrypted result |
 | `reject(requestId, code?, message?)` | Reject request with error |
 | `pushEvent(event, data)` | Push event to dApp |
@@ -271,7 +270,7 @@ new WalletSession({ transport, capabilities, meta? })
 | Event | Payload | Description |
 |-------|---------|-------------|
 | `phase` | `WalletPhase` | State machine transition |
-| `pairingCode` | `string` | 4-digit code for verification |
+| `sessionFingerprint` | `string` | Session fingerprint for visual verification |
 | `request` | `{ id, method, params }` | Incoming request from dApp |
 | `error` | `Error` | Error occurred |
 
@@ -346,11 +345,10 @@ import { walletPair } from 'walletpair-sdk/evm/wagmi'
 
 walletPair({
   relayUrl: string,          // WebSocket relay URL
-  name?: string,             // DApp display name
+  meta?: { name, description, url, icon }, // DApp metadata (all required)
   requestTimeout?: number,   // Request timeout in ms
   onPairingUri?: (uri) => void,            // QR code display callback
-  onPairingCode?: (code) => void,          // Pairing code display callback
-  onPairingConfirm?: (code) => Promise<boolean>, // User confirmation callback
+  onSessionFingerprint?: (fingerprint) => void, // Session fingerprint display callback
 })
 ```
 
@@ -391,7 +389,7 @@ The core protocol is chain-agnostic -- `DAppSession.request()` and `WalletSessio
 ## Security
 
 - **E2E Encryption**: X25519 ECDH -> HKDF-SHA256 -> ChaCha20-Poly1305 AEAD
-- **MITM Protection**: 4-digit pairing code verified by user on both devices
+- **MITM Protection**: Session fingerprint derived from SHA256(prefix || channel_id || dapp_pubkey) for visual verification on both devices
 - **Replay Protection**: Sequence-number-based nonces, monotonically increasing
 - **Channel Isolation**: 256-bit random channel IDs
 - **Zero Trust Relay**: Relay sees routing metadata only, never plaintext payloads

@@ -9,8 +9,9 @@
  *     connectors: [
  *       walletPair({
  *         relayUrl: 'wss://relay.walletpair.org/v1',
+ *         meta: { name: 'MyDApp', description: 'A dApp', url: 'https://mydapp.com', icon: 'https://mydapp.com/icon.png' },
  *         onPairingUri: (uri) => { showQrCode(uri) },
- *         onPairingCode: (code) => { showPairingCode(code) },
+ *         onSessionFingerprint: (fp) => { showFingerprint(fp) },
  *       }),
  *     ],
  *   })
@@ -87,16 +88,14 @@ export interface WalletPairConnectorOptions {
   relayUrl?: string | undefined;
   /** Custom transport instance. Overrides relayUrl when provided. */
   transport?: Transport | undefined;
-  /** DApp display name. */
-  name?: string | undefined;
+  /** DApp metadata (name, description, url, icon). */
+  meta: { name: string; description: string; url: string; icon: string };
   /** Request timeout in ms. */
   requestTimeout?: number | undefined;
   /** Called when a pairing URI is generated (display QR code). */
   onPairingUri?: ((uri: string) => void) | undefined;
-  /** Called when the pairing code is ready (display to user). */
-  onPairingCode?: ((code: string) => void) | undefined;
-  /** Called to confirm pairing. Returns true to accept. Auto-accepts if not provided. */
-  onPairingConfirm?: ((code: string) => Promise<boolean>) | undefined;
+  /** Called when the session fingerprint is ready (display alongside QR). */
+  onSessionFingerprint?: ((fingerprint: string) => void) | undefined;
   /**
    * Called after QR is shown but before transport connects (BLE mode).
    * The returned Promise must resolve when the user is ready to scan.
@@ -119,7 +118,7 @@ export function walletPair(options: WalletPairConnectorOptions): CreateConnector
       const transport = options.transport ?? new WebSocketTransport(options.relayUrl!);
       session = new DAppSession({
         transport,
-        name: options.name,
+        meta: options.meta,
         requestTimeout: options.requestTimeout,
       });
     }
@@ -139,7 +138,7 @@ export function walletPair(options: WalletPairConnectorOptions): CreateConnector
   return (config: ConnectorConfig) => {
     return {
       id: 'walletPair',
-      name: options.name ?? 'WalletPair',
+      name: options.meta.name,
       type: 'walletPair',
 
       async connect(params) {
@@ -180,26 +179,12 @@ export function walletPair(options: WalletPairConnectorOptions): CreateConnector
           await s.connectTransport();
         }
 
-        // Wait for wallet to join and confirm pairing
+        // Emit session fingerprint for display alongside QR
+        options.onSessionFingerprint?.(s.sessionFingerprint);
+
+        // Wait for wallet to join (auto-accepted after sealed_join verification)
         const accounts = await new Promise<readonly string[]>((resolve, reject) => {
           const cleanup: (() => void)[] = [];
-
-          cleanup.push(s.on('pairingCode', async (code) => {
-            options.onPairingCode?.(code);
-
-            if (options.onPairingConfirm) {
-              const accepted = await options.onPairingConfirm(code);
-              if (accepted) {
-                s.acceptWallet();
-              } else {
-                s.rejectWallet();
-                for (const off of cleanup) off();
-                reject(new Error('User rejected pairing'));
-              }
-            } else {
-              s.acceptWallet();
-            }
-          }));
 
           cleanup.push(s.on('phase', async (phase) => {
             if (phase === 'connected') {

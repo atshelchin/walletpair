@@ -78,10 +78,10 @@ export function computeSharedSecret(
 }
 
 // ---------------------------------------------------------------------------
-// Pairing code (protocol Section 7.3)
+// Session fingerprint (protocol Section 7.3)
 // ---------------------------------------------------------------------------
 
-export function computePairingCode(
+export function computeSessionFingerprint(
   sessionKey: Uint8Array,
   channelIdHex: string,
 ): string {

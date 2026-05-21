@@ -65,7 +65,7 @@
 	let ethAddr = $state('--');
 	let pairingUriInput = $state('');
 	let phase: WalletPhase = $state('idle');
-	let pairingCode = $state('------');
+	let sessionFingerprint = $state('------');
 	let session: WalletSession | null = $state(null);
 	let pendingReqs = $state<{ id: string; method: string; params: unknown }[]>([]);
 	let eventName = $state('accountsChanged');
@@ -126,7 +126,7 @@
 				events: ['accountsChanged', 'chainChanged'],
 				chains: ['eip155:1']
 			},
-			meta: { name: 'WalletPair EOA Wallet', address: ethAddr }
+			meta: { name: 'WalletPair EOA Wallet', description: 'WalletPair example wallet', url: location.origin, icon: '' }
 		});
 		session = s;
 
@@ -135,8 +135,8 @@
 			addLog('in', 'phase', p);
 		});
 
-		s.on('pairingCode', (code) => {
-			pairingCode = code;
+		(s as unknown as { on: (event: string, handler: (data: string) => void) => void }).on('sessionFingerprint', (fingerprint) => {
+			sessionFingerprint = fingerprint;
 		});
 
 		s.on('request', ({ id, method, params }) => {
@@ -237,7 +237,7 @@
 		session?.destroy();
 		session = null;
 		phase = 'idle';
-		pairingCode = '------';
+		sessionFingerprint = '------';
 		pendingReqs = [];
 	}
 </script>
@@ -274,9 +274,9 @@
 				<button class="danger" onclick={reset}>Reset</button>
 			{/if}
 		</div>
-		{#if pairingCode !== '------'}
-			<span class="field-label mt">Pairing Code (verify with dApp)</span>
-			<div class="code">{pairingCode}</div>
+		{#if sessionFingerprint !== '------'}
+			<span class="field-label mt">Session Fingerprint (verify with dApp)</span>
+			<div class="code">{sessionFingerprint}</div>
 		{/if}
 	</section>
 

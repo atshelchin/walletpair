@@ -28,11 +28,11 @@
 
 	let config: Config | null = $state(null);
 	let eip1193Provider: WalletPairProvider | null = $state(null);
-	let status: 'idle' | 'pairing' | 'ble_scan' | 'pending_accept' | 'connected' | 'error' =
+	let status: 'idle' | 'pairing' | 'ble_scan' | 'connected' | 'error' =
 		$state('idle');
 
 	let pairingUri = $state('');
-	let pairingCode = $state('');
+	let sessionFingerprint = $state('');
 	let qrDataUrl = $state('');
 
 	let account = $state<{ address: string; chainId: number } | null>(null);
@@ -51,8 +51,7 @@
 
 	let log = $state<{ dir: 'out' | 'in' | 'err'; type: string; detail: string }[]>([]);
 
-	// Promise resolvers for bridging UI clicks → connector flow
-	let confirmResolve: ((accept: boolean) => void) | null = $state(null);
+	// Promise resolver for bridging BLE scan click → connector flow
 	let bleScanResolve: (() => void) | null = $state(null);
 
 	// ---------------------------------------------------------------------------
@@ -88,11 +87,10 @@
 	async function doConnect() {
 		status = 'pairing';
 		pairingUri = '';
-		pairingCode = '';
+		sessionFingerprint = '';
 		qrDataUrl = '';
 		signResult = '';
 		bleStatus = '';
-		confirmResolve = null;
 		bleScanResolve = null;
 
 		const isBle = transportMode === 'ble';
@@ -101,7 +99,7 @@
 		const wpConnector = walletPair({
 			relayUrl: !isBle ? relayUrl : undefined,
 			transport,
-			name: 'WalletPair wagmi dApp',
+			meta: { name: 'WalletPair wagmi dApp', description: 'WalletPair wagmi example', url: location.origin, icon: '' },
 
 			// 1) QR generated
 			onPairingUri: (uri) => {
@@ -115,28 +113,20 @@
 				}
 			},
 
-			// 2) Wallet joined → show pairing code
-			onPairingCode: (code) => {
-				pairingCode = code;
-				status = 'pending_accept';
-				addLog('in', 'pairing_code', code);
+			// 2) Session fingerprint available
+			onSessionFingerprint: (fingerprint: string) => {
+				sessionFingerprint = fingerprint;
+				addLog('in', 'session_fingerprint', fingerprint);
 			},
 
-			// 3) Wait for user Accept/Reject
-			onPairingConfirm: (_code) => {
-				return new Promise<boolean>((resolve) => {
-					confirmResolve = resolve;
-				});
-			},
-
-			// 4) BLE only: wait for user to click "Scan for Wallet"
+			// 3) BLE only: wait for user to click "Scan for Wallet"
 			onBeforeTransportConnect: isBle
 				? () =>
 						new Promise<void>((resolve) => {
 							bleScanResolve = resolve;
 						})
 				: undefined
-		});
+		} as Parameters<typeof walletPair>[0]);
 
 		const cfg = createConfig({
 			chains: [mainnet, sepolia, polygon],
@@ -204,22 +194,6 @@
 	// ---------------------------------------------------------------------------
 	// UI button handlers — bridge clicks into the connector's Promise flow
 	// ---------------------------------------------------------------------------
-	function acceptWallet() {
-		if (confirmResolve) {
-			addLog('out', 'accept', `code=${pairingCode}`);
-			confirmResolve(true);
-			confirmResolve = null;
-		}
-	}
-
-	function rejectWallet() {
-		if (confirmResolve) {
-			addLog('out', 'reject', 'user_rejected');
-			confirmResolve(false);
-			confirmResolve = null;
-		}
-	}
-
 	function triggerBleScan() {
 		if (bleScanResolve) {
 			addLog('out', 'ble_scan', 'Opening BLE device picker...');
@@ -310,13 +284,12 @@
 		status = 'idle';
 		account = null;
 		pairingUri = '';
-		pairingCode = '';
+		sessionFingerprint = '';
 		qrDataUrl = '';
 		signResult = '';
 		bleStatus = '';
 		config = null;
 		eip1193Provider = null;
-		confirmResolve = null;
 		bleScanResolve = null;
 	}
 
@@ -340,7 +313,7 @@
 			<span
 				class="dot"
 				class:connected={status === 'connected'}
-				class:waiting={status === 'pairing' || status === 'ble_scan' || status === 'pending_accept'}
+				class:waiting={status === 'pairing' || status === 'ble_scan'}
 				class:closed={status === 'error'}
 			></span>
 			<span>{status.charAt(0).toUpperCase() + status.slice(1).replace('_', ' ')}</span>
@@ -379,7 +352,7 @@
 	{/if}
 
 	<!-- Step 2: Pairing -->
-	{#if status === 'pairing' || status === 'ble_scan' || status === 'pending_accept'}
+	{#if status === 'pairing' || status === 'ble_scan'}
 		<section>
 			<h3>Pairing</h3>
 			{#if qrDataUrl}
@@ -399,20 +372,16 @@
 			{/if}
 
 			<!-- WS: waiting for wallet to join -->
-			{#if status === 'pairing' && !pairingCode}
+			{#if status === 'pairing' && !sessionFingerprint}
 				<div style="color:var(--muted);font-size:13px;padding:8px 0;text-align:center">
 					Waiting for wallet to scan QR and join...
 				</div>
 			{/if}
 
-			<!-- Pairing code → Accept / Reject -->
-			{#if status === 'pending_accept' && pairingCode}
-				<span class="field-label mt">Pairing Code (verify with wallet)</span>
-				<div class="code">{pairingCode}</div>
-				<div class="row mt">
-					<button class="primary" onclick={acceptWallet}>Accept Wallet</button>
-					<button class="danger" onclick={rejectWallet}>Reject</button>
-				</div>
+			<!-- Session Fingerprint (shown after wallet joins, auto-accepted) -->
+			{#if sessionFingerprint}
+				<span class="field-label mt">Session Fingerprint (verify with wallet)</span>
+				<div class="code">{sessionFingerprint}</div>
 			{/if}
 		</section>
 	{/if}

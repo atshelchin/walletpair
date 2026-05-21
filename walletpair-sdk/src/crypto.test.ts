@@ -7,7 +7,7 @@ import {
   computeSharedSecret,
   deriveSessionKey,
   deriveJoinEncryptionKey,
-  computePairingCode,
+  computeSessionFingerprint,
   sealPayload,
   unsealPayload,
   sealJoin,
@@ -130,50 +130,49 @@ describe('key exchange', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Pairing code
+// Session fingerprint
 // ---------------------------------------------------------------------------
 
-describe('computePairingCode', () => {
+describe('computeSessionFingerprint', () => {
   it('returns a 4-digit string', () => {
-    const kp = generateX25519KeyPair();
-    const shared = computeSharedSecret(kp.privateKey, kp.publicKey);
     const channelId = generateChannelId();
-    const sk = deriveSessionKey(shared, channelId);
+    const kp = generateX25519KeyPair();
 
-    const code = computePairingCode(sk, channelId);
+    const code = computeSessionFingerprint(channelId, kp.publicKeyB64);
     expect(code).toMatch(/^\d{4}$/);
   });
 
-  it('both peers compute the same code', () => {
-    const alice = generateX25519KeyPair();
-    const bob = generateX25519KeyPair();
-    const channelId = generateChannelId();
-
-    const shared = computeSharedSecret(alice.privateKey, bob.publicKey);
-    const sk = deriveSessionKey(shared, channelId);
-    const codeA = computePairingCode(sk, channelId);
-
-    const sharedB = computeSharedSecret(bob.privateKey, alice.publicKey);
-    const skB = deriveSessionKey(sharedB, channelId);
-    const codeB = computePairingCode(skB, channelId);
-
-    expect(codeA).toBe(codeB);
+  it('is deterministic for same inputs', () => {
+    const ch = '00'.repeat(32);
+    const pubB64 = b64urlEncode(new Uint8Array(32).fill(42));
+    expect(computeSessionFingerprint(ch, pubB64)).toBe(computeSessionFingerprint(ch, pubB64));
   });
 
-  it('is deterministic for same inputs', () => {
-    const sk = new Uint8Array(32).fill(42);
-    const ch = '00'.repeat(32);
-    expect(computePairingCode(sk, ch)).toBe(computePairingCode(sk, ch));
+  it('different channel IDs produce different fingerprints', () => {
+    const kp = generateX25519KeyPair();
+    const ch1 = generateChannelId();
+    const ch2 = generateChannelId();
+    expect(computeSessionFingerprint(ch1, kp.publicKeyB64)).not.toBe(
+      computeSessionFingerprint(ch2, kp.publicKeyB64),
+    );
+  });
+
+  it('different dApp pubkeys produce different fingerprints', () => {
+    const ch = generateChannelId();
+    const kp1 = generateX25519KeyPair();
+    const kp2 = generateX25519KeyPair();
+    expect(computeSessionFingerprint(ch, kp1.publicKeyB64)).not.toBe(
+      computeSessionFingerprint(ch, kp2.publicKeyB64),
+    );
   });
 
   it('pads with leading zeros when necessary', () => {
     // We can't force a specific output, but verify format consistency
     const results = new Set<string>();
     for (let i = 0; i < 20; i++) {
-      const sk = new Uint8Array(32);
-      crypto.getRandomValues(sk);
       const ch = generateChannelId();
-      const code = computePairingCode(sk, ch);
+      const kp = generateX25519KeyPair();
+      const code = computeSessionFingerprint(ch, kp.publicKeyB64);
       expect(code).toHaveLength(4);
       results.add(code);
     }
@@ -320,13 +319,8 @@ describe('buildPairingUri', () => {
   });
 
   it('omits relay when not provided', () => {
-    const uri = buildPairingUri({ channelId: 'abcd', pubkeyB64: 'XY' });
+    const uri = buildPairingUri({ channelId: 'abcd', pubkeyB64: 'XY', name: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' });
     expect(uri).not.toContain('relay');
-  });
-
-  it('omits name when not provided', () => {
-    const uri = buildPairingUri({ channelId: 'abcd', pubkeyB64: 'XY' });
-    expect(uri).not.toContain('name');
   });
 });
 

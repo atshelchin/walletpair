@@ -31,7 +31,7 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
     // Create sessions
     const dappSession = new DAppSession({
       transport: dappTransport,
-      name: 'Test dApp',
+      meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
     const walletSession = new WalletSession({
@@ -41,7 +41,7 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
         events: ['accountsChanged'],
         chains: ['eip155:1'],
       },
-      meta: { name: 'Test Wallet', address: '0xWalletAddr' },
+      meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xWalletAddr' },
     });
 
     // Track events
@@ -63,23 +63,19 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
       (walletTransport as any).setUrl = () => {}; // mock
     }
 
-    const pairingCode = await walletSession.joinFromUri(pairingUri);
+    const sessionFingerprint = await walletSession.joinFromUri(pairingUri);
     await wait();
 
-    expect(walletSession.phase).toBe('waiting');
-    expect(pairingCode).toMatch(/^\d{4}$/);
+    expect(sessionFingerprint).toMatch(/^\d{4}$/);
 
-    // Step 3: Pairing codes match
-    await wait();
-    expect(dappSession.pairingCode).toBe(walletSession.pairingCode);
-    expect(dappSession.phase).toBe('pending_accept');
+    // Step 3: Session fingerprints match
+    expect(dappSession.sessionFingerprint).toBe(walletSession.sessionFingerprint);
 
     // Verify wallet capabilities were received
     expect(dappSession.walletCapabilities?.methods).toContain('wallet_getAccounts');
     expect(dappSession.walletMeta?.name).toBe('Test Wallet');
 
-    // Step 4: DApp accepts
-    dappSession.acceptWallet();
+    // Step 4: DApp auto-accepts (no manual acceptWallet needed)
     await wait();
 
     expect(dappSession.phase).toBe('connected');
@@ -113,7 +109,6 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
 
     // Verify phase transitions
     expect(dappPhases).toContain('waiting');
-    expect(dappPhases).toContain('pending_accept');
     expect(dappPhases).toContain('connected');
     expect(dappPhases).toContain('closed');
 
@@ -126,18 +121,17 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
     const walletTransport = new MockTransport();
     const _relay = new MockRelay(dappTransport, walletTransport);
 
-    const dappSession = new DAppSession({ transport: dappTransport });
+    const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const walletSession = new WalletSession({
       transport: walletTransport,
       capabilities: { methods: ['wallet_signMessage'], events: [], chains: ['eip155:1'] },
+      meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
-    // Connect
+    // Connect (auto-accept)
     const uri = await dappSession.createPairing();
     await walletSession.joinFromUri(uri);
     await wait();
-
-    dappSession.acceptWallet();
     await wait();
 
     // Wallet rejects
@@ -154,16 +148,16 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
     const walletTransport = new MockTransport();
     const _relay = new MockRelay(dappTransport, walletTransport);
 
-    const dappSession = new DAppSession({ transport: dappTransport });
+    const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const walletSession = new WalletSession({
       transport: walletTransport,
       capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+      meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
     const uri = await dappSession.createPairing();
     await walletSession.joinFromUri(uri);
     await wait();
-    dappSession.acceptWallet();
     await wait();
 
     let callCount = 0;
@@ -193,21 +187,20 @@ describe('Integration: Bidirectional flow with directional keys', () => {
     const walletTransport = new MockTransport();
     const _relay = new MockRelay(dappTransport, walletTransport);
 
-    const dappSession = new DAppSession({ transport: dappTransport, name: 'BiDi dApp' });
+    const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'BiDi dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const walletSession = new WalletSession({
       transport: walletTransport,
       capabilities: { methods: ['wallet_getAccounts', 'wallet_signMessage'], events: ['accountsChanged'], chains: ['eip155:1'] },
-      meta: { name: 'BiDi Wallet', address: '0xBiDi' },
+      meta: { name: 'BiDi Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xBiDi' },
     });
 
     const uri = await dappSession.createPairing();
     await walletSession.joinFromUri(uri);
     await wait();
 
-    // Verify pairing codes match (both derived with directional transcript)
-    expect(dappSession.pairingCode).toBe(walletSession.pairingCode);
+    // Verify session fingerprints match
+    expect(dappSession.sessionFingerprint).toBe(walletSession.sessionFingerprint);
 
-    dappSession.acceptWallet();
     await wait();
 
     expect(dappSession.phase).toBe('connected');
@@ -236,16 +229,16 @@ describe('Integration: Bidirectional flow with directional keys', () => {
     const walletTransport = new MockTransport();
     const _relay = new MockRelay(dappTransport, walletTransport);
 
-    const dappSession = new DAppSession({ transport: dappTransport });
+    const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const walletSession = new WalletSession({
       transport: walletTransport,
       capabilities: { methods: ['wallet_getAccounts'], events: ['accountsChanged', 'chainChanged'], chains: ['eip155:1'] },
+      meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
     const uri = await dappSession.createPairing();
     await walletSession.joinFromUri(uri);
     await wait();
-    dappSession.acceptWallet();
     await wait();
 
     const events: Array<{ event: string; data: unknown }> = [];
@@ -266,16 +259,16 @@ describe('Integration: Bidirectional flow with directional keys', () => {
     const walletTransport = new MockTransport();
     const _relay = new MockRelay(dappTransport, walletTransport);
 
-    const dappSession = new DAppSession({ transport: dappTransport });
+    const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const walletSession = new WalletSession({
       transport: walletTransport,
       capabilities: { methods: ['wallet_getAccounts', 'wallet_signMessage'], events: [], chains: ['eip155:1'] },
+      meta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
     const uri = await dappSession.createPairing();
     await walletSession.joinFromUri(uri);
     await wait();
-    dappSession.acceptWallet();
     await wait();
 
     // Wallet responds to each request with method-specific data, but with a delay
@@ -304,17 +297,16 @@ describe('Integration: Bidirectional flow with directional keys', () => {
     const walletTransport = new MockTransport();
     const _relay = new MockRelay(dappTransport, walletTransport);
 
-    const dappSession = new DAppSession({ transport: dappTransport, name: 'Persist dApp' });
+    const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'Persist dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const walletSession = new WalletSession({
       transport: walletTransport,
       capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
-      meta: { name: 'Persist Wallet' },
+      meta: { name: 'Persist Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
     const uri = await dappSession.createPairing();
     await walletSession.joinFromUri(uri);
     await wait();
-    dappSession.acceptWallet();
     await wait();
 
     // Serialize both sessions
@@ -344,16 +336,16 @@ describe('Integration: Bidirectional flow with directional keys', () => {
     const walletTransport = new MockTransport();
     const _relay = new MockRelay(dappTransport, walletTransport);
 
-    const dappSession = new DAppSession({ transport: dappTransport, name: 'Restore dApp' });
+    const dappSession = new DAppSession({ transport: dappTransport, meta: { name: 'Restore dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     const walletSession = new WalletSession({
       transport: walletTransport,
       capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+      meta: { name: 'Restore Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
 
     const uri = await dappSession.createPairing();
     await walletSession.joinFromUri(uri);
     await wait();
-    dappSession.acceptWallet();
     await wait();
 
     // Exchange one message to advance sequence counters
@@ -371,13 +363,14 @@ describe('Integration: Bidirectional flow with directional keys', () => {
     newDappTransport.peer = newWalletTransport;
     newWalletTransport.peer = newDappTransport;
 
-    const restoredDapp = new DAppSession({ transport: newDappTransport });
+    const restoredDapp = new DAppSession({ transport: newDappTransport, meta: { name: 'Restore dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
     expect(restoredDapp.restore(dappJson)).toBe(true);
     (restoredDapp as any).phase = 'connected';
 
     const restoredWallet = new WalletSession({
       transport: newWalletTransport,
       capabilities: { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] },
+      meta: { name: 'Restore Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' },
     });
     expect(restoredWallet.restore(walletJson)).toBe(true);
     (restoredWallet as any).phase = 'connected';

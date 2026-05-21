@@ -35,7 +35,7 @@ export interface ProtocolMessageBase {
 
 export interface CreateMessage extends ProtocolMessageBase {
   t: 'create';
-  body: { meta: WalletMeta | Record<string, never>; resume: string | null };
+  body: { meta: DAppMeta; resume: string | null };
 }
 
 export interface JoinMessage extends ProtocolMessageBase {
@@ -134,10 +134,18 @@ export interface Capabilities {
   version?: Record<string, number> | undefined;
 }
 
+export interface DAppMeta {
+  name: string;
+  description: string;
+  url: string;
+  icon: string;
+}
+
 export interface WalletMeta {
-  name?: string;
-  address?: string;
-  icon?: string;
+  name: string;
+  description: string;
+  url: string;
+  icon: string;
   [key: string]: unknown;
 }
 
@@ -168,7 +176,7 @@ export interface DAppSessionEvents {
   [key: string]: unknown;
   phase: DAppPhase;
   pairingUri: string;
-  pairingCode: string;
+  sessionFingerprint: string;
   walletJoined: { capabilities?: Capabilities | undefined; meta?: WalletMeta | undefined };
   response: { id: string; ok: boolean; data: unknown };
   event: { event: string; data: unknown };
@@ -178,7 +186,7 @@ export interface DAppSessionEvents {
 export interface WalletSessionEvents {
   [key: string]: unknown;
   phase: WalletPhase;
-  pairingCode: string;
+  sessionFingerprint: string;
   request: { id: string; method: string; params: unknown };
   error: Error;
 }
@@ -193,9 +201,13 @@ export interface PairingParams {
   /** Empty string = BLE mode (no relay). */
   relay: string;
   name?: string | undefined;
-  /** Comma-separated methods the dApp intends to call (§9.1). */
+  /** DApp website URL. */
+  url?: string | undefined;
+  /** DApp icon URL. */
+  icon?: string | undefined;
+  /** Methods the dApp intends to call (§9.1). */
   methods?: string[] | undefined;
-  /** Comma-separated CAIP-2 chains the dApp intends to use (§9.1). */
+  /** CAIP-2 chains the dApp intends to use (§9.1). */
   chains?: string[] | undefined;
 }
 
@@ -217,8 +229,8 @@ export interface PendingRequest {
 
 export interface DAppSessionOptions {
   transport: Transport;
-  /** DApp display name (included in pairing URI). */
-  name?: string | undefined;
+  /** DApp metadata (name, description, url, icon). Included in pairing URI and create message. */
+  meta: DAppMeta;
   /** Methods the dApp intends to call (included in pairing URI §9.1). */
   methods?: string[] | undefined;
   /** CAIP-2 chains the dApp intends to use (included in pairing URI §9.1). */
@@ -229,20 +241,14 @@ export interface DAppSessionOptions {
   sessionTtl?: number | undefined;
   /** Auto-accept known wallets on rejoin (default true). */
   autoAccept?: boolean | undefined;
-  /**
-   * Deprecated compatibility flag. First-time wallets are no longer
-   * auto-accepted; callers must call acceptWallet() after pairing-code
-   * comparison and scope approval.
-   */
-  autoAcceptNewWallet?: boolean | undefined;
 }
 
 export interface WalletSessionOptions {
   transport: Transport;
   /** Wallet capabilities to advertise. */
   capabilities: Capabilities;
-  /** Wallet metadata. */
-  meta?: WalletMeta | undefined;
+  /** Wallet metadata (name, description, url, icon). */
+  meta: WalletMeta;
   /** Session lifetime in ms (default 86_400_000 = 24h). §16 rule 17. */
   sessionTtl?: number | undefined;
 }

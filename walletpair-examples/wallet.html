@@ -87,9 +87,9 @@ button.success { background: var(--green); color: #fff; }
       <button id="btnJoin" class="primary" disabled>Join</button>
       <button id="btnReset" class="danger hidden">Reset</button>
     </div>
-    <div id="pairingCodeWrap" class="hidden">
-      <label class="mt">Pairing Code (verify with dApp)</label>
-      <div class="code" id="pairingCode">------</div>
+    <div id="sessionFingerprintWrap" class="hidden">
+      <label class="mt">Session Fingerprint (verify with dApp)</label>
+      <div class="code" id="sessionFingerprint">------</div>
     </div>
   </section>
 
@@ -150,7 +150,7 @@ function b64urlDecode(str) {
 function deriveSessionKey(sharedSecret, channelIdHex) {
   return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1', 32);
 }
-function computePairingCode(sessionKey, channelIdHex) {
+function computeSessionFingerprint(sessionKey, channelIdHex) {
   const codeBytes = hkdf(sha256, sessionKey, hexToBytes(channelIdHex), 'walletpair-pairing-code', 4);
   const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
   return (view.getUint32(0) % 1000000).toString().padStart(6, '0');
@@ -271,8 +271,8 @@ const btnGenKey = $('btnGenKey');
 const pairingUriEl = $('pairingUri');
 const btnJoin = $('btnJoin');
 const btnReset = $('btnReset');
-const pairingCodeEl = $('pairingCode');
-const pairingCodeWrap = $('pairingCodeWrap');
+const sessionFingerprintEl = $('sessionFingerprint');
+const sessionFingerprintWrap = $('sessionFingerprintWrap');
 const dot = $('dot');
 const statusText = $('statusText');
 const secRequests = $('secRequests');
@@ -410,9 +410,9 @@ function freshJoin() {
   const shared = x25519.getSharedSecret(S.privKey, S.remotePubKey);
   S.sessionKey = deriveSessionKey(shared, S.channelId);
 
-  // Show pairing code
-  pairingCodeEl.textContent = computePairingCode(S.sessionKey, S.channelId);
-  pairingCodeWrap.classList.remove('hidden');
+  // Show session fingerprint
+  sessionFingerprintEl.textContent = computeSessionFingerprint(S.sessionKey, S.channelId);
+  sessionFingerprintWrap.classList.remove('hidden');
 
   connectAndJoin(false);
 }
@@ -425,7 +425,7 @@ function connectAndJoin(useResume) {
         events: ['accountsChanged', 'chainChanged'],
         chains: ['eip155:1'],
       },
-      meta: { name: 'WalletPair EOA Wallet', address: S.ethAddr },
+      meta: { name: 'WalletPair EOA Wallet', description: 'WalletPair example wallet', url: location.origin, icon: '' },
     };
     const sealedJoin = (useResume && S.resumeToken)
       ? null
@@ -472,7 +472,7 @@ function startReconnect() {
           events: ['accountsChanged', 'chainChanged'],
           chains: ['eip155:1'],
         },
-        meta: { name: 'WalletPair EOA Wallet', address: S.ethAddr },
+        meta: { name: 'WalletPair EOA Wallet', description: 'WalletPair example wallet', url: location.origin, icon: '' },
       };
       const sealedJoin = useResume
         ? null
@@ -650,7 +650,7 @@ function doFullClose() {
 function doReset() {
   doFullClose();
   S.channelId = null;
-  pairingCodeWrap.classList.add('hidden');
+  sessionFingerprintWrap.classList.add('hidden');
   setPhase('idle');
 }
 
@@ -670,8 +670,8 @@ btnClose.onclick = doFullClose;
 // ---------------------------------------------------------------------------
 if (loadState()) {
   log('in', 'restore', `restored session ch=${S.channelId.slice(0, 12)}... addr=${S.ethAddr}`);
-  pairingCodeEl.textContent = computePairingCode(S.sessionKey, S.channelId);
-  pairingCodeWrap.classList.remove('hidden');
+  sessionFingerprintEl.textContent = computeSessionFingerprint(S.sessionKey, S.channelId);
+  sessionFingerprintWrap.classList.remove('hidden');
   startReconnect();
 }
 </script>

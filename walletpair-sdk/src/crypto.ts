@@ -141,19 +141,19 @@ export function deriveDirectionalSessionKeys(
 }
 
 // ---------------------------------------------------------------------------
-// Pairing code (protocol Section 7.3)
+// Session fingerprint (protocol Section 7.3)
 // ---------------------------------------------------------------------------
 
-export function computePairingCode(
-  rootKey: Uint8Array,
+export function computeSessionFingerprint(
   channelIdHex: string,
-  context?: SessionCryptoContext,
+  dappPubKeyB64: string,
 ): string {
-  const salt = context
-    ? computeHandshakeTranscriptHash(channelIdHex, context)
-    : hexToBytes(channelIdHex);
-  const codeBytes = hkdf(sha256, rootKey, salt, 'walletpair-pairing-code', 4);
-  const view = new DataView(codeBytes.buffer, codeBytes.byteOffset, 4);
+  const hash = sha256(concatBytes(
+    utf8ToBytes('walletpair-v1-session-fingerprint'),
+    hexToBytes(channelIdHex),
+    b64urlDecode(dappPubKeyB64),
+  ));
+  const view = new DataView(hash.buffer, hash.byteOffset, 4);
   return (view.getUint32(0) % 10000).toString().padStart(4, '0');
 }
 
@@ -299,7 +299,9 @@ export function buildPairingUri(params: {
   channelId: string;
   pubkeyB64: string;
   relayUrl?: string | undefined;
-  name?: string | undefined;
+  name: string;
+  url: string;
+  icon: string;
   /** Methods the dApp intends to call (§9.1). */
   methods?: string[] | undefined;
   /** CAIP-2 chains the dApp intends to use (§9.1). */
@@ -307,7 +309,9 @@ export function buildPairingUri(params: {
 }): string {
   let uri = `walletpair:?ch=${params.channelId}&pubkey=${params.pubkeyB64}`;
   if (params.relayUrl) uri += `&relay=${encodeURIComponent(params.relayUrl)}`;
-  if (params.name) uri += `&name=${encodeURIComponent(params.name)}`;
+  uri += `&name=${encodeURIComponent(params.name)}`;
+  uri += `&url=${encodeURIComponent(params.url)}`;
+  uri += `&icon=${encodeURIComponent(params.icon)}`;
   if (params.methods?.length) uri += `&methods=${params.methods.join(',')}`;
   if (params.chains?.length) uri += `&chains=${params.chains.join(',')}`;
   return uri;
@@ -326,6 +330,8 @@ export function parsePairingUri(uri: string): PairingParams {
     pubkey,
     relay: params.get('relay') ?? '',
     name: params.get('name') ?? undefined,
+    url: params.get('url') ?? undefined,
+    icon: params.get('icon') ?? undefined,
     methods: methodsStr ? methodsStr.split(',').filter(Boolean) : undefined,
     chains: chainsStr ? chainsStr.split(',').filter(Boolean) : undefined,
   };

@@ -93,7 +93,7 @@
       <QrPairing uri={state.pairingUri ?? ''} />
     {:else if state.phase === 'pending_accept'}
       <PendingAccept
-        code={state.pairingCode ?? ''}
+        code={state.sessionFingerprint ?? ''}
         walletName={state.walletMeta?.name}
         onAccept={acceptWallet}
         onReject={rejectWallet}

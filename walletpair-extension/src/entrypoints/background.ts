@@ -139,8 +139,8 @@ function attachSessionListeners(autoAccepted: boolean) {
     }
   });
 
-  session.on('pairingCode', (code) => {
-    updateState({ pairingCode: code });
+  session.on('sessionFingerprint', (code) => {
+    updateState({ sessionFingerprint: code as string });
   });
 
   session.on('walletJoined', ({ meta }) => {
@@ -193,7 +193,7 @@ function handleSessionClosed() {
   updateState({
     phase: 'idle',
     pairingUri: undefined,
-    pairingCode: undefined,
+    sessionFingerprint: undefined,
     wallet: undefined,
     walletMeta: undefined,
   });
@@ -213,8 +213,7 @@ async function createSession(): Promise<void> {
   transport = new WebSocketTransport(relayUrl);
   session = new DAppSession({
     transport,
-    name: 'WalletPair Extension',
-    autoAccept: false,
+    meta: { name: 'WalletPair Extension', description: 'Browser extension for WalletPair', url: '', icon: '' },
     requestTimeout: 300_000,
   });
 
@@ -234,8 +233,7 @@ async function tryReconnect(): Promise<boolean> {
     transport = new WebSocketTransport(settings.relayUrl || DEFAULT_RELAY_URL);
     session = new DAppSession({
       transport,
-      name: 'WalletPair Extension',
-      autoAccept: true,
+      meta: { name: 'WalletPair Extension', description: 'Browser extension for WalletPair', url: '', icon: '' },
       requestTimeout: 300_000,
     });
 
@@ -493,11 +491,6 @@ export default defineBackground(() => {
         case 'start-pairing':
           await createSession();
           sendResponse(state);
-          break;
-
-        case 'accept-wallet':
-          session?.acceptWallet();
-          sendResponse({ ok: true });
           break;
 
         case 'reject-wallet':
