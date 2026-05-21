@@ -8,9 +8,11 @@ import {
   computeSharedSecret,
   deriveSessionKey,
   deriveDirectionalSessionKeys,
+  deriveJoinEncryptionKey,
   computeSessionFingerprint,
   sealPayload,
   unsealPayload,
+  unsealJoin,
   b64urlEncode,
   b64urlDecode,
   bytesToHex,
@@ -531,6 +533,72 @@ describe('WalletSession', () => {
       session.on('phase', handler);
       session.destroy();
       expect(session.phase).toBe('closed');
+    });
+  });
+
+  describe('session fingerprint after prepareJoin', () => {
+    it('sessionFingerprint is set and event was emitted after prepareJoin', () => {
+      const fpHandler = vi.fn();
+      session.on('sessionFingerprint', fpHandler);
+
+      const uri = makePairingUri();
+      const fingerprint = session.prepareJoin(uri);
+
+      expect(session.sessionFingerprint).toMatch(/^\d{4}$/);
+      expect(fingerprint).toBe(session.sessionFingerprint);
+      expect(fpHandler).toHaveBeenCalledTimes(1);
+      expect(fpHandler).toHaveBeenCalledWith(session.sessionFingerprint);
+    });
+  });
+
+  describe('scope intersection (computeScopeIntersection)', () => {
+    it('intersects wallet capabilities with dApp-declared scope from URI', async () => {
+      const wideWalletTransport = new MockTransport();
+      const wideWalletSession = new WalletSession({
+        transport: wideWalletTransport,
+        capabilities: {
+          methods: ['a', 'b', 'c'],
+          events: ['accountsChanged'],
+          chains: ['eip155:1', 'eip155:137'],
+        },
+        meta: { name: 'W', description: 'W', url: 'https://w.com', icon: 'https://w.com/i.png' },
+      });
+
+      // Build a URI that declares only methods=a,b and chains=eip155:1
+      const dappKpLocal = generateX25519KeyPair();
+      const chLocal = generateChannelId();
+      const uri = buildPairingUri({
+        channelId: chLocal,
+        pubkeyB64: dappKpLocal.publicKeyB64,
+        relayUrl: 'ws://localhost:8080/v1',
+        name: 'Test dApp',
+        url: 'https://test.com',
+        icon: 'https://test.com/icon.png',
+        methods: ['a', 'b'],
+        chains: ['eip155:1'],
+      });
+
+      await wideWalletSession.joinFromUri(uri);
+
+      // The join message should contain sealed_join with intersected capabilities
+      const joinMsg = wideWalletTransport.sent.find(m => m.t === 'join') as any;
+      expect(joinMsg).toBeTruthy();
+      expect(joinMsg.body.sealed_join).toBeTruthy();
+
+      // Unseal the join to verify effective capabilities
+      const walletPubB64 = joinMsg.from!;
+      const walletPub = b64urlDecode(walletPubB64);
+      const shared = computeSharedSecret(dappKpLocal.privateKey, walletPub);
+      const rootKey = deriveSessionKey(shared, chLocal);
+      const joinKey = deriveJoinEncryptionKey(rootKey, chLocal);
+      const unsealed = unsealJoin(joinKey, chLocal, joinMsg.body.sealed_join);
+
+      const caps = unsealed.capabilities as { methods: string[]; chains: string[]; events: string[] };
+      // Only the intersection should be present
+      expect(caps.methods).toEqual(['a', 'b']);
+      expect(caps.chains).toEqual(['eip155:1']);
+      // Events are not intersected, they pass through
+      expect(caps.events).toEqual(['accountsChanged']);
     });
   });
 });

@@ -7,6 +7,7 @@ import {
   computeSharedSecret,
   deriveSessionKey,
   deriveDirectionalSessionKeys,
+  computeSessionFingerprint,
   sealPayload,
   b64urlEncode,
   b64urlDecode,
@@ -485,6 +486,107 @@ describe('DAppSession', () => {
       expect(session.phase).toBe('closed');
       // After destroy, emitting should not call handler
       // (removeAll was called)
+    });
+  });
+
+  describe('auto-accept flow (first join)', () => {
+    it('auto-accepts first wallet join with valid sealed_join, skipping pending_accept', async () => {
+      const phases: string[] = [];
+      session.on('phase', (p) => phases.push(p));
+
+      await session.createPairing();
+      const walletKp = generateX25519KeyPair();
+
+      receiveFreshJoin(transport, session, walletKp);
+
+      // Auto-accept should have sent an accept message without manual acceptWallet()
+      const acceptMsg = transport.sent.find(m => m.t === 'accept');
+      expect(acceptMsg).toBeTruthy();
+
+      // Simulate relay responding with ready.connected
+      receiveConnected(transport, session, walletKp.publicKeyB64, 'tok-auto');
+
+      expect(session.phase).toBe('connected');
+      // Phase should go waiting → (accepting) → connected, never pending_accept
+      expect(phases).not.toContain('pending_accept');
+    });
+  });
+
+  describe('session fingerprint after createPairing', () => {
+    it('sessionFingerprint is a 4-digit string and event was emitted', async () => {
+      const fpHandler = vi.fn();
+      session.on('sessionFingerprint', fpHandler);
+
+      await session.createPairing();
+
+      expect(session.sessionFingerprint).toMatch(/^\d{4}$/);
+      expect(fpHandler).toHaveBeenCalledTimes(1);
+      expect(fpHandler).toHaveBeenCalledWith(session.sessionFingerprint);
+    });
+  });
+
+  describe('session fingerprint matches wallet side', () => {
+    it('dApp and wallet compute the same fingerprint', async () => {
+      await session.createPairing();
+      const dappFingerprint = session.sessionFingerprint;
+
+      // The dApp computes fingerprint from its own pubkey + channelId
+      // The wallet computes it from (channelId, dappPubKeyB64) — same inputs
+      const dappPubB64 = dappPubKeyFromCreate(transport);
+      const walletSideFingerprint = computeSessionFingerprint(session.channelId, dappPubB64);
+
+      expect(dappFingerprint).toBe(walletSideFingerprint);
+      expect(dappFingerprint).toMatch(/^\d{4}$/);
+    });
+  });
+
+  describe('session TTL enforcement', () => {
+    it('closes with reason timeout after TTL expires', async () => {
+      vi.useFakeTimers();
+
+      const shortTtlTransport = new MockTransport();
+      const shortTtlSession = new DAppSession({
+        transport: shortTtlTransport,
+        meta: { name: 'T', description: 'T', url: 'https://t.com', icon: 'https://t.com/i.png' },
+        sessionTtl: 100,
+      });
+
+      await shortTtlSession.createPairing();
+      const walletKp = generateX25519KeyPair();
+
+      // Simulate wallet join
+      shortTtlTransport.receive({
+        v: 1, t: 'join', ch: shortTtlSession.channelId,
+        ts: Date.now(), from: walletKp.publicKeyB64,
+        body: makeJoinBody(shortTtlSession.channelId, shortTtlTransport.sent.find(m => m.t === 'create')!.from!, walletKp),
+      } as ProtocolMessage);
+
+      // Simulate ready.connected (this starts the TTL timer)
+      shortTtlTransport.receive({
+        v: 1, t: 'ready', ch: shortTtlSession.channelId,
+        ts: Date.now(), from: '_adapter',
+        body: { state: 'connected', resume: 'tok', remote: walletKp.publicKeyB64 },
+      } as ProtocolMessage);
+
+      expect(shortTtlSession.phase).toBe('connected');
+
+      const errorHandler = vi.fn();
+      shortTtlSession.on('error', errorHandler);
+
+      // Advance time past the TTL
+      vi.advanceTimersByTime(150);
+
+      expect(shortTtlSession.phase).toBe('closed');
+      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('expired'),
+      }));
+
+      // Verify close message was sent with reason 'timeout'
+      const closeMsg = shortTtlTransport.sent.find(m => m.t === 'close');
+      expect(closeMsg).toBeTruthy();
+      expect((closeMsg as any).body.reason).toBe('timeout');
+
+      vi.useRealTimers();
     });
   });
 });

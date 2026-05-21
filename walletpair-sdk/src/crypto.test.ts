@@ -371,6 +371,108 @@ describe('parsePairingUri', () => {
 // hex helpers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Pairing URI — url & icon fields
+// ---------------------------------------------------------------------------
+
+describe('buildPairingUri / parsePairingUri with url and icon', () => {
+  it('round-trips url and icon through build→parse', () => {
+    const original = {
+      channelId: generateChannelId(),
+      pubkeyB64: b64urlEncode(generateX25519KeyPair().publicKey),
+      relayUrl: 'wss://relay.walletpair.org/v1',
+      name: 'My dApp',
+      url: 'https://mydapp.com',
+      icon: 'https://mydapp.com/logo.png',
+    };
+    const uri = buildPairingUri(original);
+    const parsed = parsePairingUri(uri);
+
+    expect(parsed.ch).toBe(original.channelId);
+    expect(parsed.pubkey).toBe(original.pubkeyB64);
+    expect(parsed.relay).toBe(original.relayUrl);
+    expect(parsed.name).toBe(original.name);
+    expect(parsed.url).toBe(original.url);
+    expect(parsed.icon).toBe(original.icon);
+  });
+
+  it('round-trips url and icon containing special characters', () => {
+    const original = {
+      channelId: generateChannelId(),
+      pubkeyB64: b64urlEncode(generateX25519KeyPair().publicKey),
+      name: 'Test',
+      url: 'https://example.com/path?q=1&b=2',
+      icon: 'https://cdn.example.com/icons/logo.png?size=64&format=webp',
+    };
+    const uri = buildPairingUri(original);
+    const parsed = parsePairingUri(uri);
+
+    expect(parsed.url).toBe(original.url);
+    expect(parsed.icon).toBe(original.icon);
+  });
+
+  it('parsePairingUri extracts url and icon from a raw URI string', () => {
+    const uri =
+      'walletpair:?ch=abc123&pubkey=AQID&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=Test&url=https%3A%2F%2Fexample.com&icon=https%3A%2F%2Fexample.com%2Ficon.png';
+    const parsed = parsePairingUri(uri);
+
+    expect(parsed.ch).toBe('abc123');
+    expect(parsed.pubkey).toBe('AQID');
+    expect(parsed.url).toBe('https://example.com');
+    expect(parsed.icon).toBe('https://example.com/icon.png');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeSessionFingerprint — additional edge cases
+// ---------------------------------------------------------------------------
+
+describe('computeSessionFingerprint edge cases', () => {
+  it('zero-padding: output is always exactly 4 characters regardless of numeric value', () => {
+    // Run many iterations; every result must be exactly 4 digits
+    for (let i = 0; i < 50; i++) {
+      const ch = generateChannelId();
+      const kp = generateX25519KeyPair();
+      const code = computeSessionFingerprint(ch, kp.publicKeyB64);
+      expect(code).toMatch(/^\d{4}$/);
+      expect(code).toHaveLength(4);
+    }
+  });
+
+  it('different channel IDs with same pubkey produce different fingerprints', () => {
+    const kp = generateX25519KeyPair();
+    const results = new Set<string>();
+    for (let i = 0; i < 15; i++) {
+      results.add(computeSessionFingerprint(generateChannelId(), kp.publicKeyB64));
+    }
+    // With 15 random channel IDs, collisions in a 10000-space are possible but very unlikely for all
+    expect(results.size).toBeGreaterThan(1);
+  });
+
+  it('different dApp pubkeys with same channel ID produce different fingerprints', () => {
+    const ch = generateChannelId();
+    const results = new Set<string>();
+    for (let i = 0; i < 15; i++) {
+      const kp = generateX25519KeyPair();
+      results.add(computeSessionFingerprint(ch, kp.publicKeyB64));
+    }
+    expect(results.size).toBeGreaterThan(1);
+  });
+
+  it('same inputs always produce the same output (deterministic)', () => {
+    const ch = generateChannelId();
+    const kp = generateX25519KeyPair();
+    const first = computeSessionFingerprint(ch, kp.publicKeyB64);
+    for (let i = 0; i < 10; i++) {
+      expect(computeSessionFingerprint(ch, kp.publicKeyB64)).toBe(first);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hex helpers
+// ---------------------------------------------------------------------------
+
 describe('hex helpers', () => {
   it('bytesToHex / hexToBytes round-trip', () => {
     const bytes = new Uint8Array([0, 1, 15, 16, 255]);
