@@ -734,12 +734,13 @@ declare, the dApp SHOULD `close` with `unsupported_capability`. If
 namespaces (backward compatible with implementations that predate this
 field).
 
-The `capabilities` in the `join` message represents the **approved session
-scope** — not the wallet's full capability set. When the pairing URI
-includes `methods` and `chains`, the wallet MUST compute the intersection
-(per §8.1) before populating `capabilities`. The dApp can inspect
-`capabilities` to know exactly what was authorized without an extra round
-trip.
+The `capabilities` in the `join` message represents the **granted session
+scope** — the full set of methods, events, and chains the wallet
+authorizes for this session. The wallet decides what to grant based on
+its own capabilities and user confirmation. The dApp can inspect the
+granted `capabilities` to know exactly what is available and adapt its
+behavior accordingly (e.g., use `wallet_signTransaction` + self-broadcast
+if `wallet_sendTransaction` is not granted).
 
 After `ready.connected`, the dApp calls `wallet_getAccounts` to discover
 the approved accounts. The combination of `capabilities` from the
@@ -752,10 +753,53 @@ message. Wallets that expose account-based methods MUST select or confirm the
 session's account set during pairing, then reveal it only through encrypted
 upper-layer methods such as `wallet_getAccounts`.
 
-### 8.1 Session Scope Enforcement
+### 8.1 Session Scope Negotiation
 
-The wallet's declared `capabilities` define the session scope. The wallet
-MUST enforce these as a ceiling:
+The pairing URI `methods` and `chains` fields declare the dApp's
+**minimum requirements** — the capabilities the dApp needs to function.
+The wallet's `capabilities` in `join` declares the **granted scope** —
+what the wallet actually authorizes for this session.
+
+#### Wallet side
+
+When the pairing URI includes `methods` and/or `chains`:
+
+1. The wallet MUST check that it can satisfy the dApp's requirements.
+   If the wallet cannot provide any of the required methods or chains,
+   it SHOULD warn the user before proceeding (e.g., "This dApp requires
+   wallet_sendTransaction, but this wallet can only sign transactions").
+2. The wallet MAY grant additional methods or chains beyond what the
+   dApp requested. For example, a wallet that supports both
+   `wallet_signTransaction` and `wallet_signMessage` may grant both
+   even if the dApp only requested `wallet_signTransaction`.
+3. The wallet MUST display the granted scope to the user for
+   confirmation before sending `join`.
+
+When the pairing URI omits `methods` and `chains`, the wallet MUST
+treat this as a broad scope request and MUST display a prominent
+warning to the user that the dApp did not declare its intent. The
+wallet MAY require explicit per-method user confirmation in this case.
+
+#### DApp side
+
+After receiving the wallet's granted `capabilities` in `join`:
+
+1. The dApp MUST check whether the granted capabilities satisfy its
+   requirements. If not, the dApp SHOULD `close` with
+   `unsupported_capability`.
+2. The dApp MUST adapt its behavior to the granted capabilities. For
+   example, if the dApp requested `wallet_sendTransaction` but the
+   wallet only granted `wallet_signTransaction`, the dApp SHOULD fall
+   back to sign-then-broadcast mode (see §8.2) rather than rejecting
+   the wallet.
+3. The dApp MUST NOT call methods that are not in the granted
+   `capabilities.methods` — the wallet will reject them with
+   `unsupported_method`.
+
+#### Scope enforcement
+
+The wallet's granted `capabilities` define the session ceiling. The
+wallet MUST enforce:
 
 1. The wallet MUST reject any `req` whose `method` is not in
    `capabilities.methods` with error `unsupported_method`.
@@ -765,23 +809,65 @@ MUST enforce these as a ceiling:
    session. Accounts authorized in one session MUST NOT leak into
    another.
 
-When the pairing URI includes `methods` and/or `chains` (Section 9.1),
-the wallet MUST restrict the session scope to the intersection of the
-dApp's declared intent and the wallet's capabilities. For example, if
-the dApp declares `methods=wallet_sendTransaction` but the wallet
-supports `[wallet_sendTransaction, wallet_signTypedData]`, the wallet
-MUST only authorize `wallet_sendTransaction` for this session and MUST
-reject `wallet_signTypedData` with `unsupported_method`.
-
-When the pairing URI omits `methods` and `chains`, the wallet MUST
-treat this as a broad scope request and MUST display a prominent
-warning to the user that the dApp did not declare its intent. The
-wallet MAY require explicit per-method user confirmation in this case.
-
 Session scope changes (account additions/removals, chain changes) are
 communicated via `accountsChanged` and `chainChanged` events. The wallet
 MUST NOT expand the session's method scope after pairing without the
 dApp initiating a new session.
+
+### 8.2 Sign-Only Wallets (Cold Wallets)
+
+A wallet that cannot broadcast transactions (e.g., hardware wallets,
+air-gapped wallets, offline signers) grants `wallet_signTransaction`
+but not `wallet_sendTransaction`. The dApp detects this from the
+granted capabilities and adapts accordingly.
+
+**Example negotiation:**
+
+```text
+dApp URI:    methods=wallet_sendTransaction   (dApp's minimum requirement)
+Cold wallet: grants wallet_signTransaction     (what the wallet can actually do)
+
+→ dApp receives capabilities, sees signTransaction but not sendTransaction
+→ dApp adapts: sign-then-broadcast mode (dApp broadcasts via its own RPC)
+```
+
+**Sign-only flow:**
+
+1. DApp sends `req` with `_method: "wallet_signTransaction"` and the
+   unsigned transaction.
+2. Wallet signs the transaction and returns the signed transaction bytes
+   (or signature) in `_result`.
+3. DApp broadcasts the signed transaction to the network via its own
+   RPC provider.
+
+**Capability declaration example** (sign-only wallet):
+
+```json
+{
+  "capabilities": {
+    "methods": [
+      "wallet_signTransaction",
+      "wallet_signMessage",
+      "wallet_getAccounts"
+    ],
+    "events": ["accountsChanged", "chainChanged"],
+    "chains": ["eip155:1"]
+  }
+}
+```
+
+The dApp MUST check `capabilities.methods` to determine whether to use
+`wallet_sendTransaction` (wallet signs and broadcasts) or fall back to
+`wallet_signTransaction` (sign-only, dApp broadcasts). The dApp
+MUST NOT send `wallet_sendTransaction` to a wallet that did not
+grant it — the wallet will reject it with `unsupported_method`.
+
+**Broadcast idempotency.** When the dApp broadcasts a signed transaction
+received from a sign-only wallet, the dApp is responsible for its own
+broadcast idempotency (e.g., deduplicating by tx hash). The wallet's
+idempotency cache (§10 rule 6) ensures that retried `wallet_signTransaction`
+requests with the same `req.id` return the same signature without
+re-prompting the user.
 
 ## 9. Pairing Flow
 
@@ -841,14 +927,14 @@ Parameters:
 | `name`         | yes                     | DApp display name.                                                                                                                                                                              |
 | `url`          | yes                     | DApp website URL (percent-encoded).                                                                                                                                                             |
 | `icon`         | yes                     | DApp icon URL (percent-encoded). MUST be `https:` scheme.                                                                                                                                       |
-| `methods`      | optional                | Comma-separated list of methods the dApp intends to call. When present, the wallet MUST restrict the session to these methods (see §8.1) and MUST display them to the user during pairing.     |
-| `chains`       | optional                | Comma-separated list of CAIP-2 chains the dApp intends to use. When present, the wallet MUST restrict the session to these chains (see §8.1) and MUST display them to the user during pairing. |
+| `methods`      | optional                | Comma-separated list of methods the dApp requires. The wallet MUST display these to the user during pairing and MUST check that it can satisfy them (see §8.1). The wallet MAY grant additional methods beyond this list. |
+| `chains`       | optional                | Comma-separated list of CAIP-2 chains the dApp requires. The wallet MUST display these to the user during pairing and MUST check that it can satisfy them (see §8.1). The wallet MAY grant additional chains beyond this list. |
 
 When `methods` or `chains` are present, the wallet MUST show the user
-what the dApp is requesting before the user confirms the connection, and
-MUST enforce the declared scope per §8.1. If `methods` or `chains` are
-absent, the wallet MUST warn the user that the dApp did not declare its
-intent (see §8.1).
+what the dApp is requesting and what the wallet will grant before the
+user confirms the connection. If `methods` or `chains` are absent, the
+wallet MUST warn the user that the dApp did not declare its intent
+(see §8.1).
 
 For Bluetooth pairing, the URI may omit `relay` and instead be transmitted
 through BLE advertisement, NFC tap, or local QR code. All of these are
@@ -1147,12 +1233,15 @@ Rules:
      `plaintext_json_utf8` bytes when retrying a request. The dApp
      MUST NOT re-serialize params from parsed objects, as this may
      produce different key ordering or whitespace.
-     For `wallet_sendTransaction` specifically: if the wallet has already
-     signed and broadcast a transaction for a given `req.id`, it MUST NOT
-     sign or broadcast again — it MUST return the original `txHash`. To
-     ensure this guarantee survives cache eviction, the wallet MUST
-     persist broadcast tx hashes separately (keyed by `req.id`) until
-     the channel is closed.
+     For `wallet_sendTransaction` specifically (wallets that both sign
+     and broadcast): if the wallet has already signed and broadcast a
+     transaction for a given `req.id`, it MUST NOT sign or broadcast
+     again — it MUST return the original `txHash`. To ensure this
+     guarantee survives cache eviction, the wallet MUST persist
+     broadcast tx hashes separately (keyed by `req.id`) until the
+     channel is closed. Sign-only wallets (§8.2) do not broadcast
+     and are not subject to this rule — standard cache idempotency
+     is sufficient.
 
    **Cache entry size limit.** Each cached entry MUST store at most the
    params hash (32 bytes), the response status (`_ok`), and the
@@ -1161,8 +1250,9 @@ Rules:
    wallet stores only the params hash and a flag indicating "response
    too large to cache"; on a cache hit with this flag, the wallet
    re-processes the request (safe for read-only methods). For
-   `wallet_sendTransaction`, the broadcast tx hash (32 bytes) is
-   always stored regardless of this limit.
+   `wallet_sendTransaction` (broadcast wallets only, see §8.2), the
+   broadcast tx hash (32 bytes) is always stored regardless of this
+   limit.
 
    **Worst-case memory.** With 1024 cache entries at 16 KB each, the
    maximum idempotency cache size is 16 MB. Combined with the 32
