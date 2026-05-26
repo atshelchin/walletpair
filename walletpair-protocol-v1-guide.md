@@ -109,10 +109,30 @@ Relay state (in-memory):
 A minimal relay is ~500-1000 lines of code. No database, no persistent
 storage.
 
+### Rate Limiting
+
+The protocol requires relays to enforce rate limits (spec §17.3) but
+leaves specific values to each deployment. Recommended defaults:
+
+| Limit | Recommended |
+|-------|-------------|
+| Channel creation per IP | 10/min |
+| Concurrent connections per IP | 50 |
+| Messages per channel per peer | 60/min |
+| Global concurrent channels | 10,000 |
+| Global bandwidth | 100 MB/min |
+
+When the global concurrent channels limit is exceeded, new `create`
+messages receive `terminate` with `rate_limited`. When the global
+bandwidth limit is exceeded, the relay SHOULD throttle new messages
+with backpressure rather than dropping existing channels.
+
+All limits should be configurable. Private relays serving a single dApp
+may use much higher values; public relays may need stricter limits.
+
 ### Anti-Abuse Mechanisms
 
-Beyond the required rate limits (spec Section 17.3), relay operators may
-consider:
+Beyond rate limits, relay operators may consider:
 
 - **Proof-of-work challenge on `create`:** Relay responds with a
   hashcash challenge before accepting channel creation. Raises the cost

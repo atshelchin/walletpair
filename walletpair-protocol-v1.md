@@ -981,21 +981,13 @@ The relay MUST NOT:
 
 ### 17.3 Rate Limiting
 
-The relay MUST enforce non-zero limits in all categories:
+The relay MUST enforce rate limits to prevent abuse. The specific limits
+are deployment-specific and not part of the protocol specification (see
+the implementation guide for recommended values).
 
-| Limit | Recommended |
-|-------|-------------|
-| Channel creation per IP | 10/min |
-| Concurrent connections per IP | 50 |
-| Messages per channel per peer | 60/min |
-| Global concurrent channels | 10,000 |
-| Global bandwidth | 100 MB/min |
-| Maximum message size | 64 KB (per Section 15 rule 10) |
-
-When the global concurrent channels limit is exceeded, new `create`
-messages receive `terminate` with `rate_limited`. When the global
-bandwidth limit is exceeded, the relay SHOULD throttle new messages
-with backpressure rather than dropping existing channels.
+When a rate limit is exceeded, the relay MUST respond with `terminate`
+using reason `rate_limited`. Peers that receive `rate_limited` SHOULD
+back off before retrying.
 
 ### 17.4 Multiple Relays
 
