@@ -3,6 +3,7 @@
 //! Each WebSocket connection is handled by a single task. The connection is
 //! bound to at most one channel (established by the first create/join message).
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -12,6 +13,7 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::metrics::Metrics;
 use crate::protocol::{self, ClientMessage};
+use crate::ratelimit::IpRateLimiter;
 use crate::relay::{self, ProcessResult};
 use crate::store::ShardedStore;
 
@@ -24,9 +26,11 @@ struct SessionBinding {
 pub async fn handle_ws(
     ws: WebSocket,
     conn_id: u64,
+    client_ip: IpAddr,
     store: Arc<ShardedStore>,
     config: Arc<Config>,
     metrics: Metrics,
+    rate_limiter: Arc<IpRateLimiter>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     let (mut ws_sink, mut ws_stream) = ws.split();
@@ -153,7 +157,25 @@ pub async fn handle_ws(
         // First message must be create or join
         if binding.is_none() {
             match &msg {
-                ClientMessage::Create { ch, .. } | ClientMessage::Join { ch, .. } => {
+                ClientMessage::Create { ch, .. } => {
+                    // Per-IP channel creation rate limit (§17.3)
+                    if config.max_creates_per_ip_per_min > 0
+                        && !rate_limiter.check_create(client_ip)
+                    {
+                        let close =
+                            protocol::build_terminate(ch, protocol::CloseReason::RateLimited);
+                        let _ = tx.try_send(close);
+                        metrics
+                            .messages_rejected_total
+                            .with_label_values(&["ip_create_rate"])
+                            .inc();
+                        break;
+                    }
+                    binding = Some(SessionBinding {
+                        channel_id: ch.clone(),
+                    });
+                }
+                ClientMessage::Join { ch, .. } => {
                     binding = Some(SessionBinding {
                         channel_id: ch.clone(),
                     });
@@ -200,6 +222,11 @@ pub async fn handle_ws(
     // Wait for write task to finish (with timeout)
     drop(tx);
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), write_handle).await;
+
+    // Release per-IP connection tracking
+    if config.max_connections_per_ip > 0 {
+        rate_limiter.release_connection(client_ip);
+    }
 
     metrics.active_connections.dec();
     tracing::debug!(conn_id = conn_id, "connection closed");

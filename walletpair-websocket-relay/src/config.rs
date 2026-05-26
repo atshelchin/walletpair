@@ -18,6 +18,10 @@ pub struct Config {
     pub graceful_shutdown_timeout_secs: u64,
     pub log_level: String,
     pub metrics_enabled: bool,
+    /// Max channel creations per IP per minute (§17.3). 0 = disabled.
+    pub max_creates_per_ip_per_min: u32,
+    /// Max concurrent connections per IP (§17.3). 0 = disabled.
+    pub max_connections_per_ip: usize,
     pub allowed_origins: Option<Vec<String>>,
     /// Path to persist channel state on shutdown. When set, the relay saves
     /// all channel metadata to this file during graceful shutdown, and restores
@@ -32,7 +36,9 @@ impl Default for Config {
             websocket_path: "/v1".to_string(),
             max_connections: 10_000,
             max_channels: 50_000,
-            max_message_bytes: 2_097_152, // 2 MB — supports contract call data up to ~500KB after encryption + base64
+            max_creates_per_ip_per_min: 10, // §17.3
+            max_connections_per_ip: 50,    // §17.3
+            max_message_bytes: 65_536,     // 64 KB — protocol §15 rule 10
             outbound_queue_size: 64,
             pending_request_limit: 32,
             unpaired_channel_ttl_secs: 300,
@@ -96,7 +102,7 @@ mod tests {
     #[test]
     fn default_max_message_bytes() {
         let c = Config::default();
-        assert_eq!(c.max_message_bytes, 2_097_152);
+        assert_eq!(c.max_message_bytes, 65_536);
     }
 
     #[test]

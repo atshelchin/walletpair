@@ -1,9 +1,11 @@
 //! HTTP routes and WebSocket upgrade handler.
 
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use axum::extract::ws::WebSocketUpgrade;
+use axum::extract::ConnectInfo;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -15,6 +17,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::Config;
 use crate::metrics::Metrics;
+use crate::ratelimit::IpRateLimiter;
 use crate::session;
 use crate::store::ShardedStore;
 
@@ -26,6 +29,7 @@ pub struct AppState {
     pub metrics: Metrics,
     pub shutdown_tx: broadcast::Sender<()>,
     pub conn_counter: Arc<AtomicU64>,
+    pub rate_limiter: Arc<IpRateLimiter>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -52,11 +56,23 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
-    // Connection limit
+async fn ws_upgrade(
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    State(state): State<AppState>,
+) -> Response {
+    // Connection limit (global)
     let current = state.metrics.active_connections.get();
     if current >= state.config.max_connections as i64 {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
+    let client_ip = addr.ip();
+
+    // Per-IP connection limit (§17.3)
+    if state.config.max_connections_per_ip > 0 && !state.rate_limiter.track_connection(client_ip) {
+        tracing::debug!(ip = %client_ip, "per-IP connection limit exceeded");
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
 
     // Negotiate subprotocol — require walletpair.v1
@@ -66,15 +82,17 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(state): State<AppState>) -> Resp
 
     ws.on_upgrade(move |socket| {
         state.metrics.active_connections.inc();
-        tracing::debug!(conn_id = conn_id, "new websocket connection");
+        tracing::debug!(conn_id = conn_id, ip = %client_ip, "new websocket connection");
 
         let shutdown_rx = state.shutdown_tx.subscribe();
         session::handle_ws(
             socket,
             conn_id,
+            client_ip,
             state.store.clone(),
             state.config.clone(),
             state.metrics.clone(),
+            state.rate_limiter.clone(),
             shutdown_rx,
         )
     })

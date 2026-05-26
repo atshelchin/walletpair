@@ -50,7 +50,7 @@ export interface AcceptMessage extends ProtocolMessageBase {
 
 export interface ReadyMessage extends ProtocolMessageBase {
   t: 'ready';
-  body: { state: 'waiting' | 'connected'; role?: string; self?: string; remote: string | null; reconnect: boolean };
+  body: { state: 'waiting' | 'connected'; role: 'dapp' | 'wallet'; self: string; remote: string | null; reconnect: boolean };
 }
 
 export interface RequestMessage extends ProtocolMessageBase {

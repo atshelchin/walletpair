@@ -41,6 +41,8 @@ const BACKOFF = [1000, 2000, 5000, 10000, 30000];
 const DEFAULT_REQUEST_TIMEOUT = 120_000;
 const PENDING_ACCEPT_TIMEOUT = 60_000;
 const MAX_SEND_SEQ = 2 ** 31;
+const MAX_PENDING_REQUESTS = 32; // §15 rule 11
+const MAX_MESSAGE_BYTES = 65536; // §15 rule 10: 64 KB
 const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours (§16 rule 16)
 
 function validateCapabilities(cap: unknown): cap is Capabilities {
@@ -204,6 +206,11 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   request<T = unknown>(method: string, params?: unknown): Promise<T> {
     if (this.phase !== 'connected' || !this.sendKey) {
       return Promise.reject(new Error('Not connected'));
+    }
+
+    // §15 rule 11: max 32 pending requests
+    if (this.pendingRequests.size >= MAX_PENDING_REQUESTS) {
+      return Promise.reject(new Error('Too many pending requests'));
     }
 
     const id = `req-${++this.reqCounter}`;
@@ -391,11 +398,11 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         // For reconnect (sealed_join is null), skip sealed_join decryption
         let joinCapabilities: Capabilities | undefined;
         let joinMeta: WalletMeta | undefined;
-        if (joinBody.sealed_join === null) {
+        if (joinBody.sealed_join === null && this.paired) {
           // Reconnect — capabilities/meta come from previously approved scope
           joinCapabilities = this.approvedCapabilities;
           joinMeta = this.approvedWalletMeta;
-        } else if (joinBody.sealed_join) {
+        } else if (joinBody.sealed_join && typeof joinBody.sealed_join === 'string') {
           // Decrypt sealed_join (private handshake §7.5)
           let joinKey: Uint8Array | null = null;
           try {
@@ -451,6 +458,34 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         rootKey.fill(0);
         keys.rootKey.fill(0);
         keys.transcriptHash.fill(0);
+
+        // §7.1 DApp-side scope enforcement: check granted capabilities
+        if (joinCapabilities && this.declaredMethods?.length) {
+          const granted = new Set(joinCapabilities.methods);
+          const missing = this.declaredMethods.filter(m => !granted.has(m));
+          if (missing.length > 0) {
+            this.sendRaw({
+              v: 1, t: 'close', ch: this.channelId,
+              ts: Date.now(), from: this.pubKeyB64,
+              body: { reason: 'unsupported_capability' },
+            } as ProtocolMessage);
+            this.emit('error', new Error(`Wallet missing required methods: ${missing.join(', ')}`));
+            break;
+          }
+        }
+        if (joinCapabilities && this.declaredChains?.length) {
+          const granted = new Set(joinCapabilities.chains);
+          const missing = this.declaredChains.filter(c => !granted.has(c));
+          if (missing.length > 0) {
+            this.sendRaw({
+              v: 1, t: 'close', ch: this.channelId,
+              ts: Date.now(), from: this.pubKeyB64,
+              body: { reason: 'unsupported_capability' },
+            } as ProtocolMessage);
+            this.emit('error', new Error(`Wallet missing required chains: ${missing.join(', ')}`));
+            break;
+          }
+        }
 
         this.emit('walletJoined', {
           capabilities: joinCapabilities,
@@ -621,6 +656,12 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   // -------------------------------------------------------------------------
 
   private sendRaw(msg: ProtocolMessage): void {
+    // §15 rule 10: max 64 KB on the wire
+    const json = JSON.stringify(msg);
+    if (new TextEncoder().encode(json).length > MAX_MESSAGE_BYTES) {
+      this.emit('error', new Error('Message exceeds 64 KB limit'));
+      return;
+    }
     this.transport.send(msg);
   }
 

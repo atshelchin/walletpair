@@ -256,7 +256,7 @@ export function sealPayload(
   const seqBytes = new Uint8Array(4);
   new DataView(seqBytes.buffer).setUint32(0, seq);
   const nonce = hmac(sha256, encryptionKey, seqBytes).slice(0, 12);
-  const plaintext = utf8ToBytes(JSON.stringify(data));
+  const plaintext = utf8ToBytes(canonicalJson(data));
   const aad = buildAad(channelIdHex, header);
   const ciphertext = chacha20poly1305(encryptionKey, nonce, aad).encrypt(plaintext);
   return b64urlEncode(concatBytes(seqBytes, ciphertext));
@@ -323,6 +323,11 @@ export function parsePairingUri(uri: string): PairingParams {
   const ch = params.get('ch');
   const pubkey = params.get('pubkey');
   if (!ch || !pubkey) throw new Error('Invalid pairing URI: missing ch or pubkey');
+  // §8.1: ch must be 64 hex characters (32 bytes)
+  if (!/^[0-9a-f]{64}$/.test(ch)) throw new Error('Invalid pairing URI: ch must be 64 lowercase hex chars');
+  // §8.1: pubkey must decode to 32 bytes
+  const pubkeyBytes = b64urlDecode(pubkey);
+  if (pubkeyBytes.length !== 32) throw new Error('Invalid pairing URI: pubkey must be 32 bytes');
   const methodsStr = params.get('methods');
   const chainsStr = params.get('chains');
   return {

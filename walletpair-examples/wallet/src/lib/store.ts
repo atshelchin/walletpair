@@ -32,10 +32,15 @@ export interface SessionData {
   privKeyHex: string; // X25519 private key
   pubKeyB64: string; // X25519 public key base64url
   remotePubKeyB64: string; // dApp's X25519 public key
-  sessionKeyHex: string;
+  /** wallet→dApp traffic key (hex). */
+  sendKeyHex: string;
+  /** dApp→wallet traffic key (hex). */
+  recvKeyHex: string;
   sendSeq: number;
+  recvSeq: number;
   relayUrl: string;
   ethKeyHex: string;
+  dappName: string;
 }
 
 export async function saveSession(data: SessionData): Promise<void> {
@@ -47,7 +52,7 @@ export async function loadSession(): Promise<SessionData | null> {
     const raw = await AsyncStorage.getItem(KEY);
     if (!raw) return null;
     const d = JSON.parse(raw);
-    if (!d.channelId || !d.privKeyHex || !d.sessionKeyHex) return null;
+    if (!d.channelId || !d.privKeyHex || !d.sendKeyHex || !d.recvKeyHex) return null;
     return d as SessionData;
   } catch {
     return null;
@@ -62,6 +67,7 @@ export async function clearSession(): Promise<void> {
 export function hydrateCrypto(d: SessionData) {
   return {
     privKey: hexToBytes(d.privKeyHex),
-    sessionKey: hexToBytes(d.sessionKeyHex),
+    sendKey: hexToBytes(d.sendKeyHex),
+    recvKey: hexToBytes(d.recvKeyHex),
   };
 }

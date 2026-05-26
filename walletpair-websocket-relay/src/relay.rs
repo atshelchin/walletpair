@@ -331,7 +331,7 @@ fn handle_data(
                     .messages_rejected_total
                     .with_label_values(&["pending_request_limit"])
                     .inc();
-                return ProcessResult::Reject(build_terminate(ch, CloseReason::InvalidState));
+                return ProcessResult::Reject(build_terminate(ch, CloseReason::RateLimited));
             }
             let channel = store.get_mut(ch).unwrap();
             channel.pending_requests.insert(id.to_string());

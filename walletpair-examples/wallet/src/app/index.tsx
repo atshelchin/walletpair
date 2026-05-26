@@ -32,18 +32,39 @@ type Phase = 'idle' | 'waiting' | 'connected' | 'reconnecting' | 'closed';
 interface PendingReq { id: string; method: string; params: Record<string, unknown> }
 interface LogEntry { dir: 'in' | 'out' | 'err'; type: string; detail: string }
 
+// Wallet capabilities (§7)
+const WALLET_CAPABILITIES = {
+  methods: ['wallet_getAccounts', 'wallet_signMessage'],
+  events: ['accountsChanged', 'chainChanged'],
+  chains: ['eip155:1'],
+};
+const WALLET_META = {
+  name: 'WalletPair Mobile Wallet',
+  description: 'WalletPair example mobile wallet',
+  url: 'https://walletpair.dev',
+  icon: 'https://walletpair.dev/icon.png',
+};
+
 // Mutable session state held in a ref (not React state — avoids stale closures in WS callbacks)
 interface Session {
   channelId: string;
   privKey: Uint8Array;
   pubKeyB64: string;
   remotePubKey: Uint8Array | null;
-  sessionKey: Uint8Array | null;
+  remotePubKeyB64: string;
+  /** wallet→dApp traffic key */
+  sendKey: Uint8Array | null;
+  /** dApp→wallet traffic key */
+  recvKey: Uint8Array | null;
+  /** join encryption key (erased after first use) */
+  joinEncKey: Uint8Array | null;
   sendSeq: number;
+  recvSeq: number;
   relayUrl: string;
   ethKeyHex: string;
   ethAddr: string;
-  recvSeq: number;
+  dappName: string;
+  evtCounter: number;
 }
 
 const BACKOFF = [1000, 2000, 5000, 10000, 30000];
@@ -121,16 +142,19 @@ export default function WalletScreen() {
 
   const saveSessionData = useCallback(async () => {
     const s = session.current;
-    if (!s || !s.sessionKey) return;
+    if (!s || !s.sendKey || !s.recvKey) return;
     await store.saveSession({
       channelId: s.channelId,
       privKeyHex: wp.bytesToHex(s.privKey),
       pubKeyB64: s.pubKeyB64,
-      remotePubKeyB64: s.remotePubKey ? wp.b64urlEncode(s.remotePubKey) : '',
-      sessionKeyHex: wp.bytesToHex(s.sessionKey),
+      remotePubKeyB64: s.remotePubKeyB64,
+      sendKeyHex: wp.bytesToHex(s.sendKey),
+      recvKeyHex: wp.bytesToHex(s.recvKey),
       sendSeq: s.sendSeq,
+      recvSeq: s.recvSeq,
       relayUrl: s.relayUrl,
       ethKeyHex: s.ethKeyHex,
+      dappName: s.dappName,
     });
   }, []);
 
@@ -147,9 +171,49 @@ export default function WalletScreen() {
       ws.send(JSON.stringify(msg));
     }
     const t = msg.t as string;
-    const detail = t === 'res' ? `id=${msg.id}` : t === 'evt' ? `event=${msg.event}` : '';
+    const detail = t === 'res' ? `id=${(msg.body as any)?.id}` : t === 'evt' ? `id=${(msg.body as any)?.id}` : '';
     addLog('out', t, detail);
   }, [addLog]);
+
+  // ---------------------------------------------------------------------------
+  // Build protocol-compliant join message (§8.2)
+  // ---------------------------------------------------------------------------
+
+  const buildJoinMessage = useCallback((s: Session, isReconnect: boolean): Record<string, unknown> => {
+    let sealedJoin: string | null = null;
+    if (!isReconnect && s.joinEncKey) {
+      sealedJoin = wp.sealJoin(s.joinEncKey, s.channelId, WALLET_CAPABILITIES, WALLET_META);
+      // §6.2: erase join_encryption_key after one-shot use
+      s.joinEncKey.fill(0);
+      s.joinEncKey = null;
+    }
+    return {
+      v: 1, t: 'join', ch: s.channelId,
+      ts: Date.now(), from: s.pubKeyB64,
+      body: { sealed_join: sealedJoin },
+    };
+  }, []);
+
+  // ---------------------------------------------------------------------------
+  // Send response (§4.3)
+  // ---------------------------------------------------------------------------
+
+  const sendResponse = useCallback((reqId: string, ok: boolean, data: unknown) => {
+    const s = session.current;
+    if (!s || !s.sendKey) return;
+    // Per §4.3: success = { _ok: true, _result: <value> }
+    //           error   = { _ok: false, code: "...", message: "..." }
+    const sealedData = ok
+      ? { _ok: true, _result: data }
+      : { _ok: false, ...(data as Record<string, unknown>) };
+    const sealed = wp.sealPayload(s.sendKey, s.channelId, s.sendSeq++, sealedData, 'res', s.pubKeyB64, reqId);
+    sendRaw({
+      v: 1, t: 'res', ch: s.channelId,
+      ts: Date.now(), from: s.pubKeyB64,
+      body: { id: reqId, sealed },
+    });
+    saveSessionData();
+  }, [sendRaw, saveSessionData]);
 
   // ---------------------------------------------------------------------------
   // Message handler
@@ -159,55 +223,76 @@ export default function WalletScreen() {
     const msg = JSON.parse(raw);
     const s = session.current!;
 
+    // All messages should have body wrapper per §4.1
+    const body = msg.body ?? {};
+
     switch (msg.t) {
       case 'ready':
         stopReconnect();
-        if (msg.state === 'waiting') {
+        if (body.state === 'waiting') {
           updatePhase('waiting');
           addLog('in', 'ready', 'state=waiting');
-        } else if (msg.state === 'connected') {
+        } else if (body.state === 'connected') {
+          // §15 rule 15: verify remote matches expected peer
+          if (s.remotePubKeyB64 && body.remote !== s.remotePubKeyB64) {
+            addLog('err', 'ready', 'remote mismatch — closing');
+            sendRaw({
+              v: 1, t: 'close', ch: s.channelId,
+              ts: Date.now(), from: s.pubKeyB64,
+              body: { reason: 'protocol_error' },
+            });
+            updatePhase('closed');
+            break;
+          }
           updatePhase('connected');
-          addLog('in', 'ready', `state=connected remote=${(msg.remote ?? '').slice(0, 12)}...`);
+          addLog('in', 'ready', `state=connected remote=${(body.remote ?? '').slice(0, 12)}...`);
         }
         saveSessionData();
         break;
 
       case 'req': {
-        let params: Record<string, unknown> = {};
-        if (msg.sealed && s.sessionKey) {
-          try {
-            const unsealed = wp.unsealPayload(s.sessionKey, s.channelId, msg.sealed);
-            if (unsealed.seq <= s.recvSeq) {
-              addLog('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${s.recvSeq}`);
-              break;
-            }
-            s.recvSeq = unsealed.seq;
-            params = unsealed.data as Record<string, unknown>;
-          }
-          catch { addLog('err', 'decrypt', `failed to decrypt req ${msg.id}`); }
-        }
-        addLog('in', 'req', `${msg.method} #${msg.id}`);
-
-        // Auto-echo for benchmark: respond immediately with same-size payload
-        if (msg.method === 'benchmark_echo' && s.sessionKey) {
-          // Respond with confirmation only (not the full payload) to measure BLE send throughput
-          const receivedSize = typeof params.data === 'string' ? params.data.length : 0;
-          const echo = { echo: true, receivedBytes: receivedSize, ts: Date.now() };
-          const res: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: msg.id, from: s.pubKeyB64 };
-          res.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, echo);
-          sendRaw(res);
-          addLog('out', 'res', `benchmark: received ${(receivedSize / 1024).toFixed(0)} KB, echoed confirmation`);
-          saveSessionData();
+        if (!body.sealed || !body.id || !s.recvKey) {
+          addLog('err', 'req', 'missing sealed or id');
           break;
         }
+        try {
+          // Unseal with AAD header (§6.4)
+          const unsealed = wp.unsealPayload(s.recvKey, s.channelId, body.sealed, 'req', msg.from, body.id);
+          if (unsealed.seq <= s.recvSeq) {
+            addLog('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${s.recvSeq}`);
+            break;
+          }
+          s.recvSeq = unsealed.seq;
+          const data = unsealed.data as Record<string, unknown>;
 
-        setRequests(prev => [...prev, { id: msg.id, method: msg.method, params }]);
+          // §4.3: _method is required in req
+          if (typeof data._method !== 'string' || data._method.length === 0) {
+            sendResponse(body.id, false, { code: 'invalid_params', message: 'Missing _method' });
+            break;
+          }
+          const method = data._method as string;
+          const { _method: _, ...params } = data;
+
+          addLog('in', 'req', `${method} #${body.id}`);
+
+          // Auto-echo for benchmark
+          if (method === 'benchmark_echo' && s.sendKey) {
+            const receivedSize = typeof params.data === 'string' ? (params.data as string).length : 0;
+            sendResponse(body.id, true, { echo: true, receivedBytes: receivedSize, ts: Date.now() });
+            addLog('out', 'res', `benchmark: received ${(receivedSize / 1024).toFixed(0)} KB`);
+            break;
+          }
+
+          setRequests(prev => [...prev, { id: body.id, method, params }]);
+        } catch {
+          addLog('err', 'decrypt', `failed to decrypt req ${body.id}`);
+        }
         break;
       }
 
       case 'ping':
         addLog('in', 'ping', '');
-        sendRaw({ v: 1, t: 'pong', ch: s.channelId, from: s.pubKeyB64, ts: Date.now() });
+        sendRaw({ v: 1, t: 'pong', ch: s.channelId, ts: Date.now(), from: s.pubKeyB64, body: {} });
         break;
 
       case 'pong':
@@ -215,8 +300,8 @@ export default function WalletScreen() {
         break;
 
       case 'close':
-        addLog('err', 'close', `reason=${msg.reason}`);
-        if (msg.reason === 'channel_not_found' && phaseRef.current !== 'closed') {
+        addLog('err', 'close', `reason=${body.reason ?? msg.reason}`);
+        if ((body.reason ?? msg.reason) === 'channel_not_found' && phaseRef.current !== 'closed') {
           addLog('in', 'reconnect', 'channel gone, waiting for dApp');
           wsRef.current?.close();
           startReconnect();
@@ -226,10 +311,54 @@ export default function WalletScreen() {
         }
         break;
 
+      case 'terminate':
+        addLog('err', 'terminate', `reason=${body.reason}`);
+        if (phaseRef.current !== 'reconnecting') {
+          updatePhase('closed');
+          intentionalClose.current = true;
+        }
+        break;
+
       default:
         addLog('in', msg.t ?? '?', '');
     }
-  }, [addLog, sendRaw, updatePhase, saveSessionData]);
+  }, [addLog, sendRaw, sendResponse, updatePhase, saveSessionData]);
+
+  // ---------------------------------------------------------------------------
+  // Derive keys for a fresh pairing
+  // ---------------------------------------------------------------------------
+
+  const deriveSessionKeys = useCallback((
+    kp: { privateKey: Uint8Array; publicKey: Uint8Array; publicKeyB64: string },
+    parsed: wp.PairingParams,
+  ) => {
+    const remotePub = wp.b64urlDecode(parsed.pubkey);
+    const shared = wp.computeSharedSecret(kp.privateKey, remotePub);
+    const rootKey = wp.deriveRootKey(shared, parsed.ch);
+    shared.fill(0); // erase shared_secret
+
+    const transcriptHash = wp.computeTranscriptHash(
+      parsed.ch,
+      parsed.pubkey,         // dApp pubkey
+      kp.publicKeyB64,       // wallet pubkey
+      WALLET_CAPABILITIES,
+      WALLET_META,
+      parsed.name ?? '',
+    );
+    const keys = wp.deriveDirectionalKeys(rootKey, transcriptHash);
+    const joinEncKey = wp.deriveJoinEncryptionKey(rootKey, parsed.ch);
+
+    // Erase intermediates
+    rootKey.fill(0);
+    transcriptHash.fill(0);
+
+    return {
+      remotePub,
+      sendKey: keys.walletToDappKey,
+      recvKey: keys.dappToWalletKey,
+      joinEncKey,
+    };
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Connect to relay and send join (used for fresh first-time connect)
@@ -242,17 +371,7 @@ export default function WalletScreen() {
 
     ws.onopen = () => {
       updatePhase('waiting');
-      const msg: Record<string, unknown> = {
-        v: 1, t: 'join', ch: s.channelId,
-        from: s.pubKeyB64, pubkey: s.pubKeyB64,
-        capabilities: {
-          methods: ['wallet_getAccounts', 'wallet_signMessage'],
-          events: ['accountsChanged', 'chainChanged'],
-          chains: ['eip155:1'],
-        },
-        meta: { name: 'WalletPair Mobile Wallet', description: 'WalletPair example mobile wallet', url: '', icon: '' },
-      };
-      sendRaw(msg);
+      sendRaw(buildJoinMessage(s, false));
     };
 
     ws.onmessage = (e) => handleMessage(typeof e.data === 'string' ? e.data : '');
@@ -264,14 +383,10 @@ export default function WalletScreen() {
     };
 
     ws.onerror = () => {};
-  }, [addLog, handleMessage, sendRaw, updatePhase]);
+  }, [addLog, buildJoinMessage, handleMessage, sendRaw, updatePhase]);
 
   // ---------------------------------------------------------------------------
   // Reconnect with backoff
-  //
-  // Self-contained loop: each attempt creates a new WebSocket. On failure
-  // (onclose fires before any message arrives), schedules the next attempt.
-  // Once a message arrives, switches to normal mode (connectAndJoin handlers).
   // ---------------------------------------------------------------------------
 
   const stopReconnect = useCallback(() => {
@@ -301,41 +416,30 @@ export default function WalletScreen() {
       const s = session.current;
       if (!s) return;
 
-      let settled = false; // true once we receive a message from the relay
+      let settled = false;
 
       const ws = new WebSocket(s.relayUrl, 'walletpair.v1');
       wsRef.current = ws;
 
       ws.onopen = () => {
-        const msg: Record<string, unknown> = {
-          v: 1, t: 'join', ch: s.channelId,
-          from: s.pubKeyB64, pubkey: s.pubKeyB64,
-          capabilities: {
-            methods: ['wallet_getAccounts', 'wallet_signMessage'],
-            events: ['accountsChanged', 'chainChanged'],
-            chains: ['eip155:1'],
-          },
-        };
-        sendRaw(msg);
+        // §13: reconnect sends sealed_join=null
+        sendRaw(buildJoinMessage(s, true));
       };
 
       ws.onmessage = (e) => {
         settled = true;
-        // Reconnect succeeded — switch to normal handlers
         ws.onmessage = (ev) => handleMessage(typeof ev.data === 'string' ? ev.data : '');
         ws.onclose = () => {
           if (intentionalClose.current || phaseRef.current === 'closed') return;
           addLog('err', 'ws_close', 'transport disconnected');
           startReconnect();
         };
-        // Process this first message through the normal handler
         handleMessage(typeof e.data === 'string' ? e.data : '');
       };
 
       ws.onclose = () => {
-        if (settled) return; // already handed off to normal handlers
+        if (settled) return;
         if (intentionalClose.current || phaseRef.current === 'closed') return;
-        // Connection failed before getting any response — retry
         schedule();
       };
 
@@ -343,11 +447,7 @@ export default function WalletScreen() {
     }
 
     schedule();
-  }, [addLog, handleMessage, sendRaw, stopReconnect, updatePhase]);
-
-  // ---------------------------------------------------------------------------
-  // Fresh join (from scanned URI)
-  // ---------------------------------------------------------------------------
+  }, [addLog, buildJoinMessage, handleMessage, sendRaw, stopReconnect, updatePhase]);
 
   // ---------------------------------------------------------------------------
   // BLE: start Peripheral and wait for dApp to connect
@@ -355,32 +455,33 @@ export default function WalletScreen() {
 
   const freshJoinBle = useCallback(async (parsed: wp.PairingParams) => {
     const kp = wp.generateX25519KeyPair();
-    const remotePub = wp.b64urlDecode(parsed.pubkey);
-    const shared = wp.computeSharedSecret(kp.privateKey, remotePub);
-    const sessionKey = wp.deriveSessionKey(shared, parsed.ch);
+    const derived = deriveSessionKeys(kp, parsed);
     setPairingCode(wp.computeSessionFingerprint(parsed.ch, parsed.pubkey));
 
     session.current = {
       channelId: parsed.ch,
       privKey: kp.privateKey,
       pubKeyB64: kp.publicKeyB64,
-      remotePubKey: remotePub,
-      sessionKey,
+      remotePubKey: derived.remotePub,
+      remotePubKeyB64: parsed.pubkey,
+      sendKey: derived.sendKey,
+      recvKey: derived.recvKey,
+      joinEncKey: derived.joinEncKey,
       sendSeq: 0,
+      recvSeq: -1,
       relayUrl: '',
       ethKeyHex: ethKeyInput,
       ethAddr,
-      recvSeq: -1,
+      dappName: parsed.name ?? '',
+      evtCounter: 0,
     };
     transportRef.current = 'ble';
     setRequests([]);
 
-    // Start BLE Peripheral
     const ble = await loadBlePeripheral();
     bleRef.current = ble;
 
     ble.onMessage((msg) => {
-      // Messages from dApp arrive here (ready.waiting, ready.connected, req, etc.)
       try {
         handleMessage(JSON.stringify(msg));
       } catch (e: any) {
@@ -388,49 +489,34 @@ export default function WalletScreen() {
       }
     });
 
-    let bleHasJoined = false; // true after first join sent; distinguishes first connect from reconnect
+    let bleHasJoined = false;
 
     ble.onConnected(() => {
       if (bleHasJoined) {
-        // BLE reconnect — already paired, skip join, go straight to connected
         addLog('in', 'ble', 'dApp reconnected');
         updatePhase('connected');
         return;
       }
       bleHasJoined = true;
       addLog('in', 'ble', 'dApp connected');
-      // First connection — send join to dApp
       const s = session.current!;
-      const joinMsg: Record<string, unknown> = {
-        v: 1, t: 'join', ch: s.channelId,
-        from: s.pubKeyB64, pubkey: s.pubKeyB64,
-        capabilities: {
-          methods: ['wallet_getAccounts', 'wallet_signMessage'],
-          events: ['accountsChanged', 'chainChanged'],
-          chains: ['eip155:1'],
-        },
-        meta: { name: 'WalletPair Mobile Wallet', description: 'WalletPair example mobile wallet', url: '', icon: '' },
-      };
-      sendRaw(joinMsg);
+      sendRaw(buildJoinMessage(s, false));
     });
 
     ble.onDisconnected(() => {
       if (intentionalClose.current || phaseRef.current === 'closed') return;
-      // Don't close — keep advertising. dApp will reconnect automatically.
       addLog('err', 'ble', 'dApp disconnected — still advertising, waiting for reconnect...');
       updatePhase('waiting');
     });
 
     try {
-      // Request runtime BLE permissions (Android 12+ requires this)
       if (Platform.OS === 'android') {
         const perms = [
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_ADVERTISE,
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-        ].filter(Boolean); // filter out undefined (older RN versions)
+        ].filter(Boolean);
 
-        // Log current state before requesting
         for (const p of perms) {
           const has = await PermissionsAndroid.check(p);
           addLog('in', 'ble', `${p.split('.').pop()}: ${has ? 'granted' : 'not granted'}`);
@@ -451,7 +537,6 @@ export default function WalletScreen() {
         addLog('in', 'ble', 'all permissions granted');
       }
 
-      // Device name visible in Chrome BLE scan dialog
       const Device = require('expo-device') as typeof import('expo-device');
       const phoneName = Device.deviceName || Device.modelName || 'Phone';
       await ble.start(`WalletPair ${phoneName}`);
@@ -463,7 +548,7 @@ export default function WalletScreen() {
       Alert.alert('BLE Error', msg);
       updatePhase('closed');
     }
-  }, [ethKeyInput, ethAddr, addLog, handleMessage, sendRaw, updatePhase]);
+  }, [ethKeyInput, ethAddr, addLog, buildJoinMessage, deriveSessionKeys, handleMessage, sendRaw, updatePhase]);
 
   // ---------------------------------------------------------------------------
   // Fresh join (from scanned URI — detects WS vs BLE)
@@ -487,27 +572,30 @@ export default function WalletScreen() {
     // WebSocket mode
     transportRef.current = 'ws';
     const kp = wp.generateX25519KeyPair();
-    const remotePub = wp.b64urlDecode(parsed.pubkey);
-    const shared = wp.computeSharedSecret(kp.privateKey, remotePub);
-    const sessionKey = wp.deriveSessionKey(shared, parsed.ch);
+    const derived = deriveSessionKeys(kp, parsed);
     setPairingCode(wp.computeSessionFingerprint(parsed.ch, parsed.pubkey));
 
     session.current = {
       channelId: parsed.ch,
       privKey: kp.privateKey,
       pubKeyB64: kp.publicKeyB64,
-      remotePubKey: remotePub,
-      sessionKey,
+      remotePubKey: derived.remotePub,
+      remotePubKeyB64: parsed.pubkey,
+      sendKey: derived.sendKey,
+      recvKey: derived.recvKey,
+      joinEncKey: derived.joinEncKey,
       sendSeq: 0,
+      recvSeq: -1,
       relayUrl: parsed.relay,
       ethKeyHex: ethKeyInput,
       ethAddr,
-      recvSeq: -1,
+      dappName: parsed.name ?? '',
+      evtCounter: 0,
     };
 
     setRequests([]);
     connectAndJoin();
-  }, [ethAddr, ethKeyInput, connectAndJoin, freshJoinBle]);
+  }, [ethAddr, ethKeyInput, connectAndJoin, deriveSessionKeys, freshJoinBle]);
 
   // ---------------------------------------------------------------------------
   // Handle scanned URI from scan screen
@@ -529,19 +617,24 @@ export default function WalletScreen() {
       if (!saved) return;
 
       updateEthKey(saved.ethKeyHex);
-      const { privKey, sessionKey } = store.hydrateCrypto(saved);
+      const { privKey, sendKey, recvKey } = store.hydrateCrypto(saved);
 
       session.current = {
         channelId: saved.channelId,
         privKey,
         pubKeyB64: saved.pubKeyB64,
         remotePubKey: saved.remotePubKeyB64 ? wp.b64urlDecode(saved.remotePubKeyB64) : null,
-        sessionKey,
+        remotePubKeyB64: saved.remotePubKeyB64,
+        sendKey,
+        recvKey,
+        joinEncKey: null, // not needed for reconnect
         sendSeq: saved.sendSeq,
+        recvSeq: saved.recvSeq, // §13: persist recvSeq across reconnects
         relayUrl: saved.relayUrl,
         ethKeyHex: saved.ethKeyHex,
         ethAddr: eth.privateKeyToAddress(saved.ethKeyHex),
-        recvSeq: -1,
+        dappName: saved.dappName ?? '',
+        evtCounter: 0,
       };
 
       setPairingCode(wp.computeSessionFingerprint(saved.channelId, saved.remotePubKeyB64 ?? ''));
@@ -556,7 +649,7 @@ export default function WalletScreen() {
 
   const handleRequest = useCallback((reqId: string, approve: boolean) => {
     const s = session.current;
-    if (!s || !s.sessionKey) return;
+    if (!s || !s.sendKey) return;
 
     const req = requests.find(r => r.id === reqId);
     if (!req) return;
@@ -573,31 +666,33 @@ export default function WalletScreen() {
         default:
           result = { status: 'approved' };
       }
-      const msg: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: reqId, from: s.pubKeyB64 };
-      msg.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, result);
-      sendRaw(msg);
+      sendResponse(reqId, true, result);
     } else {
-      const error = { code: 'user_rejected', message: 'User rejected the request' };
-      const msg: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: reqId, from: s.pubKeyB64 };
-      msg.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, error);
-      sendRaw(msg);
+      sendResponse(reqId, false, { code: 'user_rejected', message: 'User rejected the request' });
     }
 
     setRequests(prev => prev.filter(r => r.id !== reqId));
-    saveSessionData();
-  }, [requests, sendRaw, saveSessionData]);
+  }, [requests, sendResponse]);
 
   // ---------------------------------------------------------------------------
-  // Push event
+  // Push event (§10, §4.3)
   // ---------------------------------------------------------------------------
 
   const pushEvent = useCallback((eventName: string) => {
     const s = session.current;
-    if (!s || !s.sessionKey || phaseRef.current !== 'connected') return;
-    const data = eventName === 'accountsChanged' ? { accounts: [{ address: s.ethAddr, chains: ['eip155:1'] }] } : { chain: 'eip155:1' };
-    const msg: Record<string, unknown> = { v: 1, t: 'evt', ch: s.channelId, from: s.pubKeyB64, event: eventName };
-    msg.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, data);
-    sendRaw(msg);
+    if (!s || !s.sendKey || phaseRef.current !== 'connected') return;
+    const data = eventName === 'accountsChanged'
+      ? { accounts: [{ address: s.ethAddr, chains: ['eip155:1'] }] }
+      : { chain: 'eip155:1' };
+    // §4.3: evt sealed payload = { _event: "<name>", ...data }
+    const sealedData = { _event: eventName, ...data };
+    const evtId = `evt-${++s.evtCounter}`;
+    const sealed = wp.sealPayload(s.sendKey, s.channelId, s.sendSeq++, sealedData, 'evt', s.pubKeyB64, evtId);
+    sendRaw({
+      v: 1, t: 'evt', ch: s.channelId,
+      ts: Date.now(), from: s.pubKeyB64,
+      body: { id: evtId, sealed },
+    });
     saveSessionData();
   }, [sendRaw, saveSessionData]);
 
@@ -610,7 +705,11 @@ export default function WalletScreen() {
     stopReconnect();
     const s = session.current;
     if (s) {
-      sendRaw({ v: 1, t: 'close', ch: s.channelId, from: s.pubKeyB64, reason: 'normal' });
+      sendRaw({
+        v: 1, t: 'close', ch: s.channelId,
+        ts: Date.now(), from: s.pubKeyB64,
+        body: { reason: 'normal' },
+      });
     }
     wsRef.current?.close();
     bleRef.current?.stop();

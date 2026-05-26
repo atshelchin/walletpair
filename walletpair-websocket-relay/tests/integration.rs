@@ -38,6 +38,8 @@ async fn start_server() -> (String, tokio::sync::broadcast::Sender<()>) {
         listen_addr: addr,
         metrics_enabled: true,
         max_message_bytes: 65_536,
+        max_creates_per_ip_per_min: 0, // disable for tests
+        max_connections_per_ip: 0,     // disable for tests
         ..Default::default()
     };
     let config = Arc::new(config);
@@ -47,18 +49,25 @@ async fn start_server() -> (String, tokio::sync::broadcast::Sender<()>) {
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
+    let rate_limiter = Arc::new(walletpair_websocket_relay::ratelimit::IpRateLimiter::new(
+        config.max_creates_per_ip_per_min,
+        config.max_connections_per_ip,
+        60,
+    ));
+
     let app_state = walletpair_websocket_relay::http::AppState {
         store: Arc::new(store),
         config: config.clone(),
         metrics,
         shutdown_tx: shutdown_tx.clone(),
         conn_counter: Arc::new(AtomicU64::new(1)),
+        rate_limiter,
     };
 
     let router = walletpair_websocket_relay::http::router(app_state);
 
     tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
     });
 
     (addr.to_string(), shutdown_tx)
@@ -1035,8 +1044,12 @@ async fn close_with_user_rejected_reason() {
 /// Start a relay server with a custom config. Returns (addr, shutdown_tx).
 /// Also spawns the background TTL cleanup task (matching main.rs behaviour).
 async fn start_server_with_config(
-    config: walletpair_websocket_relay::config::Config,
+    mut config: walletpair_websocket_relay::config::Config,
 ) -> (String, tokio::sync::broadcast::Sender<()>) {
+    // Disable per-IP rate limits for tests (all connections come from localhost)
+    config.max_creates_per_ip_per_min = 0;
+    config.max_connections_per_ip = 0;
+
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -1048,12 +1061,19 @@ async fn start_server_with_config(
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
+    let rate_limiter = std::sync::Arc::new(walletpair_websocket_relay::ratelimit::IpRateLimiter::new(
+        config.max_creates_per_ip_per_min,
+        config.max_connections_per_ip,
+        60,
+    ));
+
     let app_state = walletpair_websocket_relay::http::AppState {
         store: store.clone(),
         config: config.clone(),
         metrics: metrics.clone(),
         shutdown_tx: shutdown_tx.clone(),
         conn_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        rate_limiter,
     };
 
     // Background cleanup task (mirrors main.rs)
@@ -1077,13 +1097,13 @@ async fn start_server_with_config(
     let router = walletpair_websocket_relay::http::router(app_state);
 
     tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
     });
 
     (addr.to_string(), shutdown_tx)
 }
 
-// 1. pending_request_limit — 33rd req is rejected with invalid_state
+// 1. pending_request_limit — 33rd req is rejected with rate_limited (§15 rule 11)
 #[tokio::test]
 async fn pending_request_limit_33rd_req_rejected() {
     let (addr, _shutdown) = start_server().await;
@@ -1108,7 +1128,7 @@ async fn pending_request_limit_33rd_req_rejected() {
 
     let close = recv_json(&mut dapp).await;
     assert_eq!(close["t"], "terminate");
-    assert_eq!(close["body"]["reason"], "invalid_state");
+    assert_eq!(close["body"]["reason"], "rate_limited");
 
     // wallet_peer is used in the setup; suppress unused-variable warning
     let _ = wallet_peer;

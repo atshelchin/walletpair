@@ -3,6 +3,7 @@ use walletpair_websocket_relay::http;
 use walletpair_websocket_relay::metrics;
 use walletpair_websocket_relay::persist;
 use walletpair_websocket_relay::protocol;
+use walletpair_websocket_relay::ratelimit;
 use walletpair_websocket_relay::shutdown;
 use walletpair_websocket_relay::store;
 
@@ -38,19 +39,27 @@ async fn main() {
 
     let (shutdown_tx, _) = shutdown::signal_channel();
 
+    let rate_limiter = Arc::new(ratelimit::IpRateLimiter::new(
+        config.max_creates_per_ip_per_min,
+        config.max_connections_per_ip,
+        60, // 1 minute window
+    ));
+
     let app_state = http::AppState {
         store: sharded_store.clone(),
         config: config.clone(),
         metrics: m.clone(),
         shutdown_tx: shutdown_tx.clone(),
         conn_counter: Arc::new(AtomicU64::new(1)),
+        rate_limiter: rate_limiter.clone(),
     };
 
-    // Background: TTL cleanup
+    // Background: TTL cleanup + rate limiter cleanup
     {
         let store = sharded_store.clone();
         let metrics = m.clone();
         let interval = config.cleanup_interval_secs;
+        let rl = rate_limiter.clone();
         let mut shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
@@ -61,6 +70,7 @@ async fn main() {
                         if removed > 0 {
                             tracing::info!(removed = removed, "expired channels cleaned up");
                         }
+                        rl.cleanup();
                     }
                     _ = shutdown_rx.recv() => break,
                 }
@@ -85,7 +95,7 @@ async fn main() {
     });
 
     let mut shutdown_rx = shutdown_tx.subscribe();
-    axum::serve(listener, router)
+    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async move {
             let _ = shutdown_rx.recv().await;
             tracing::info!("shutting down gracefully");

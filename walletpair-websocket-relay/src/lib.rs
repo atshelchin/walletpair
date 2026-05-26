@@ -3,6 +3,7 @@ pub mod http;
 pub mod metrics;
 pub mod persist;
 pub mod protocol;
+pub mod ratelimit;
 pub mod relay;
 pub mod session;
 pub mod shutdown;

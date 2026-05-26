@@ -38,12 +38,19 @@ async fn start_server_custom(
 
     let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
 
+    let rate_limiter = Arc::new(walletpair_websocket_relay::ratelimit::IpRateLimiter::new(
+        config.max_creates_per_ip_per_min,
+        config.max_connections_per_ip,
+        60,
+    ));
+
     let app_state = walletpair_websocket_relay::http::AppState {
         store: store.clone(),
         config: config.clone(),
         metrics: metrics.clone(),
         shutdown_tx: shutdown_tx.clone(),
         conn_counter: Arc::new(AtomicU64::new(1)),
+        rate_limiter,
     };
 
     // Background cleanup
@@ -66,7 +73,7 @@ async fn start_server_custom(
 
     let router = walletpair_websocket_relay::http::router(app_state);
     tokio::spawn(async move {
-        axum::serve(listener, router).await.unwrap();
+        axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap();
     });
 
     (addr.to_string(), shutdown_tx)
@@ -76,6 +83,8 @@ async fn start_default_server() -> (String, tokio::sync::broadcast::Sender<()>) 
     start_server_custom(walletpair_websocket_relay::config::Config {
         listen_addr: "127.0.0.1:0".parse().unwrap(),
         metrics_enabled: true,
+        max_creates_per_ip_per_min: 0, // disable for tests
+        max_connections_per_ip: 0,     // disable for tests
         ..Default::default()
     })
     .await
@@ -161,6 +170,8 @@ async fn ttl_cleanup_removes_expired_channels() {
         metrics_enabled: true,
         unpaired_channel_ttl_secs: 1,
         cleanup_interval_secs: 1,
+        max_creates_per_ip_per_min: 0,
+        max_connections_per_ip: 0,
         ..Default::default()
     };
     let (addr, _shutdown) = start_server_custom(config).await;

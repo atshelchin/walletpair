@@ -324,31 +324,43 @@ describe('buildPairingUri', () => {
   });
 });
 
+// Valid test fixtures for parsePairingUri
+const TEST_CH = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2';
+const TEST_PUBKEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; // 32 zero-bytes base64url (43 chars)
+
 describe('parsePairingUri', () => {
   it('parses a full URI', () => {
-    const uri = 'walletpair:?ch=abc123&pubkey=AQID&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=Test';
+    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=Test`;
     const params = parsePairingUri(uri);
-    expect(params.ch).toBe('abc123');
-    expect(params.pubkey).toBe('AQID');
+    expect(params.ch).toBe(TEST_CH);
+    expect(params.pubkey).toBe(TEST_PUBKEY);
     expect(params.relay).toBe('wss://relay.example.com/v1');
     expect(params.name).toBe('Test');
   });
 
   it('parses BLE URI (no relay)', () => {
-    const uri = 'walletpair:?ch=abc123&pubkey=AQID';
+    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}`;
     const params = parsePairingUri(uri);
-    expect(params.ch).toBe('abc123');
-    expect(params.pubkey).toBe('AQID');
+    expect(params.ch).toBe(TEST_CH);
+    expect(params.pubkey).toBe(TEST_PUBKEY);
     expect(params.relay).toBe('');
     expect(params.name).toBeUndefined();
   });
 
   it('throws on missing ch', () => {
-    expect(() => parsePairingUri('walletpair:?pubkey=AQID')).toThrow('missing ch or pubkey');
+    expect(() => parsePairingUri(`walletpair:?pubkey=${TEST_PUBKEY}`)).toThrow('missing ch or pubkey');
   });
 
   it('throws on missing pubkey', () => {
-    expect(() => parsePairingUri('walletpair:?ch=abc')).toThrow('missing ch or pubkey');
+    expect(() => parsePairingUri(`walletpair:?ch=${TEST_CH}`)).toThrow('missing ch or pubkey');
+  });
+
+  it('throws on invalid ch length', () => {
+    expect(() => parsePairingUri(`walletpair:?ch=abc123&pubkey=${TEST_PUBKEY}`)).toThrow('64 lowercase hex');
+  });
+
+  it('throws on invalid pubkey length', () => {
+    expect(() => parsePairingUri(`walletpair:?ch=${TEST_CH}&pubkey=AQID`)).toThrow('32 bytes');
   });
 
   it('round-trips with buildPairingUri', () => {
@@ -413,11 +425,11 @@ describe('buildPairingUri / parsePairingUri with url and icon', () => {
 
   it('parsePairingUri extracts url and icon from a raw URI string', () => {
     const uri =
-      'walletpair:?ch=abc123&pubkey=AQID&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=Test&url=https%3A%2F%2Fexample.com&icon=https%3A%2F%2Fexample.com%2Ficon.png';
+      `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=Test&url=https%3A%2F%2Fexample.com&icon=https%3A%2F%2Fexample.com%2Ficon.png`;
     const parsed = parsePairingUri(uri);
 
-    expect(parsed.ch).toBe('abc123');
-    expect(parsed.pubkey).toBe('AQID');
+    expect(parsed.ch).toBe(TEST_CH);
+    expect(parsed.pubkey).toBe(TEST_PUBKEY);
     expect(parsed.url).toBe('https://example.com');
     expect(parsed.icon).toBe('https://example.com/icon.png');
   });

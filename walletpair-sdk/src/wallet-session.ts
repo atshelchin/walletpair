@@ -36,6 +36,8 @@ import { Emitter } from './emitter.js';
 
 const BACKOFF = [1000, 2000, 5000, 10000, 30000];
 const MAX_SEND_SEQ = 2 ** 31;
+const MAX_PENDING_REQUESTS = 32; // §15 rule 11
+const MAX_MESSAGE_BYTES = 65536; // §15 rule 10: 64 KB
 const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours (§16 rule 16)
 const IDEMPOTENCY_CACHE_LIMIT = 1024;
 const IDEMPOTENCY_RESPONSE_LIMIT_BYTES = 16 * 1024;
@@ -396,6 +398,12 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
             break;
           }
 
+          // §15 rule 11: max 32 pending requests
+          if (this.pendingRequestRecords.size >= MAX_PENDING_REQUESTS) {
+            this.reject(reqBody.id, 'rate_limited', 'Too many pending requests');
+            break;
+          }
+
           this.pendingRequestRecords.set(reqBody.id, { paramsHash, method });
 
           this.emit('request', { id: reqBody.id, method, params });
@@ -509,6 +517,12 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
   // -------------------------------------------------------------------------
 
   private sendRaw(msg: ProtocolMessage): void {
+    // §15 rule 10: max 64 KB on the wire
+    const json = JSON.stringify(msg);
+    if (new TextEncoder().encode(json).length > MAX_MESSAGE_BYTES) {
+      this.emit('error', new Error('Message exceeds 64 KB limit'));
+      return;
+    }
     this.transport.send(msg);
   }
 
