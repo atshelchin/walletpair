@@ -56,7 +56,7 @@ walletpair/
 
 ```bash
 # Clone the repo and link locally
-git clone https://github.com/user/walletpair.git
+git clone https://github.com/atshelchin/walletpair.git
 cd walletpair/walletpair-sdk
 npm install && npm link
 ```
