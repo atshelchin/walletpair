@@ -1235,10 +1235,15 @@ Rules:
      transaction for a given `req.id`, it MUST NOT sign or broadcast
      again — it MUST return the original `txHash`. To ensure this
      guarantee survives cache eviction, the wallet MUST persist
-     broadcast tx hashes separately (keyed by `req.id`) until the
-     channel is closed. Sign-only wallets (§8.2) do not broadcast
-     and are not subject to this rule — standard cache idempotency
-     is sufficient.
+     broadcast tx hashes separately (keyed by `req.id`) with a
+     maximum of **256 entries**, evicted in LRU order. If a broadcast
+     tx hash entry has been evicted and the same `req.id` is retried,
+     the wallet MUST re-process the request as new (the nonce will
+     likely fail on-chain with `nonce_too_low`, which is safe). This
+     cap bounds worst-case persistent storage to 256 × (request ID +
+     32-byte tx hash) ≈ 20 KB. Sign-only wallets (§8.2) do not
+     broadcast and are not subject to this rule — standard cache
+     idempotency is sufficient.
 
    **Cache entry size limit.** Each cached entry MUST store at most the
    params hash (32 bytes), the response status (`_ok`), and the
@@ -1939,6 +1944,31 @@ limit). Subsequent fragments set total length to 0.
 
 The receiver assembles fragments until the last-fragment flag is set, then
 parses the complete JSON message.
+
+**Fragmentation security limits.** The receiver MUST enforce the following
+to prevent resource exhaustion from malicious or malfunctioning peers:
+
+- **Fragment timeout:** If the last-fragment flag is not received within
+  **5 seconds** of the first fragment, the receiver MUST discard all
+  buffered fragments for that message and MAY close the BLE connection.
+- **Maximum fragment count:** The receiver MUST accept at most **256
+  fragments** per message. If a 257th fragment arrives before the
+  last-fragment flag, the receiver MUST discard all buffered fragments.
+- **Total size validation:** On receiving the first fragment, the receiver
+  MUST verify that `total length` does not exceed 65535 bytes (the 64 KB
+  protocol limit). If it does, the receiver MUST discard the fragment
+  immediately.
+- **MTU negotiation:** Implementations SHOULD request ATT MTU exchange
+  after BLE connection establishment. The fragment payload size MUST NOT
+  exceed `(negotiated_MTU - 3)` bytes (3 bytes for the fragment header).
+  If MTU negotiation is not available, implementations MUST use a
+  conservative default payload size of 20 bytes (minimum ATT MTU of
+  23 minus 3 bytes header).
+- **Out-of-order delivery:** BLE GATT indications provide ordered
+  delivery. Implementations MUST use indications (not notifications) for
+  message fragments, or implement a sequence counter at the fragment
+  level if notifications are used. If a fragment arrives out of order,
+  the receiver MUST discard all buffered fragments for that message.
 
 ### 19.6 Bluetooth Security Considerations
 

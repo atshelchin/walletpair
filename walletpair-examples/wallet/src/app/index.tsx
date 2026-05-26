@@ -149,7 +149,7 @@ export default function WalletScreen() {
       ws.send(JSON.stringify(msg));
     }
     const t = msg.t as string;
-    const detail = t === 'res' ? `id=${msg.id} ok=${msg.ok}` : t === 'evt' ? `event=${msg.event}` : '';
+    const detail = t === 'res' ? `id=${msg.id}` : t === 'evt' ? `event=${msg.event}` : '';
     addLog('out', t, detail);
   }, [addLog]);
 
@@ -196,7 +196,7 @@ export default function WalletScreen() {
           // Respond with confirmation only (not the full payload) to measure BLE send throughput
           const receivedSize = typeof params.data === 'string' ? params.data.length : 0;
           const echo = { echo: true, receivedBytes: receivedSize, ts: Date.now() };
-          const res: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: msg.id, from: s.pubKeyB64, ok: true };
+          const res: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: msg.id, from: s.pubKeyB64 };
           res.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, echo);
           sendRaw(res);
           addLog('out', 'res', `benchmark: received ${(receivedSize / 1024).toFixed(0)} KB, echoed confirmation`);
@@ -587,12 +587,12 @@ export default function WalletScreen() {
         default:
           result = { status: 'approved' };
       }
-      const msg: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: reqId, from: s.pubKeyB64, ok: true };
+      const msg: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: reqId, from: s.pubKeyB64 };
       msg.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, result);
       sendRaw(msg);
     } else {
       const error = { code: 'user_rejected', message: 'User rejected the request' };
-      const msg: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: reqId, from: s.pubKeyB64, ok: false };
+      const msg: Record<string, unknown> = { v: 1, t: 'res', ch: s.channelId, id: reqId, from: s.pubKeyB64 };
       msg.sealed = wp.sealPayload(s.sessionKey, s.channelId, s.sendSeq++, error);
       sendRaw(msg);
     }

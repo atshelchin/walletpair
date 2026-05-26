@@ -326,9 +326,6 @@ pub fn parse_message(raw: &str) -> Result<ClientMessage, ParseError> {
         "res" => {
             validate_peer_id(&from)?;
             let id = get_str(body, "id")?.to_string();
-            if body.get("ok").is_none() {
-                return Err(ParseError::MissingField("ok"));
-            }
             Ok(ClientMessage::Res { ch, id, from })
         }
         "evt" => {
@@ -651,7 +648,7 @@ mod tests {
         let ch = make_channel_id();
         let json = serde_json::json!({
             "v": 1, "t": "res", "ch": ch, "ts": 1234, "from": pid,
-            "body": {"id": "r1", "ok": true, "sealed": "xyz"}
+            "body": {"id": "r1", "sealed": "xyz"}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Res { .. }));
@@ -659,12 +656,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_res_missing_ok() {
+    fn parse_res_missing_id() {
         let pid = make_peer_id();
         let ch = make_channel_id();
         let json = serde_json::json!({
             "v": 1, "t": "res", "ch": ch, "ts": 1234, "from": pid,
-            "body": {"id": "r1"}
+            "body": {"sealed": "xyz"}
         });
         assert!(parse_message(&json.to_string()).is_err());
     }

@@ -470,7 +470,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       }
 
       case 'res': {
-        const resBody = msg.body as { id?: string; ok?: boolean; sealed?: string };
+        const resBody = msg.body as { id?: string; sealed?: string };
         if (this.remotePubKey && msg.from !== b64urlEncode(this.remotePubKey)) break;
         if (!resBody.id) break;
         const pending = this.pendingRequests.get(resBody.id);
@@ -485,22 +485,28 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         }
 
         try {
-          const resHdr = { type: 'res' as const, from: msg.from, id: resBody.id, ok: !!resBody.ok };
+          const resHdr = { type: 'res' as const, from: msg.from, id: resBody.id };
           const { seq, data } = unsealPayload(this.recvKey, this.channelId, resBody.sealed, resHdr);
           if (seq <= this.recvSeq) {
             pending.reject(new Error('Replay detected'));
             break;
           }
           this.recvSeq = seq;
-          if (resBody.ok) {
-            pending.resolve(data);
-          } else {
-            const err = data as { code?: string; message?: string };
-            const error = new Error(err.message ?? 'Request rejected');
-            (error as any).code = err.code;
-            pending.reject(error);
+          // Per protocol §5.3: _ok is inside the decrypted sealed payload
+          const envelope = data as { _ok?: boolean; _result?: unknown; code?: string; message?: string };
+          if (typeof envelope._ok !== 'boolean') {
+            pending.reject(new Error('Response missing _ok field'));
+            break;
           }
-          this.emit('response', { id: resBody.id, ok: !!resBody.ok, data });
+          if (envelope._ok) {
+            pending.resolve(envelope._result);
+            this.emit('response', { id: resBody.id, ok: true, result: envelope._result });
+          } else {
+            const error = new Error(envelope.message ?? 'Request rejected');
+            (error as any).code = envelope.code;
+            pending.reject(error);
+            this.emit('response', { id: resBody.id, ok: false, result: { code: envelope.code, message: envelope.message } });
+          }
         } catch {
           pending.reject(new Error('Decryption failed'));
         }

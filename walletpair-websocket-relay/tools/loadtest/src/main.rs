@@ -193,7 +193,7 @@ async fn run_channel(
             &mut wallet,
             &json!({
                 "v":1,"t":"res","ch":ch,"from":wallet_peer,
-                "id":id,"ok":true,"sealed":"cmVz"
+                "id":id,"sealed":"cmVz"
             }),
         )
         .await?;

@@ -59,11 +59,12 @@ describe('WalletPairProvider', () => {
     const reqMsg = [...transport.sent].reverse().find(m => m.t === 'req') as any;
     if (!reqMsg) throw new Error('No req found');
     const reqId = reqMsg.body.id;
-    const hdr: AadHeader = { type: 'res', from: walletKp.publicKeyB64, id: reqId, ok };
+    const hdr: AadHeader = { type: 'res', from: walletKp.publicKeyB64, id: reqId };
+    const sealedData = ok ? { _ok: true, _result: result } : { _ok: false, ...result as object };
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: reqId, ok, sealed: sealPayload(sessionKey, session.channelId, walletSendSeq++, result, hdr) },
+      body: { id: reqId, sealed: sealPayload(sessionKey, session.channelId, walletSendSeq++, sealedData, hdr) },
     } as ProtocolMessage);
   }
 

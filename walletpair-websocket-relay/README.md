@@ -174,12 +174,12 @@ Relay forwards the raw JSON verbatim to the wallet. The `sealed` field is never 
   "ch": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
   "id": "req-001",
   "from": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
-  "ok": true,
   "sealed": "<base64url-encrypted-payload>"
 }
 ```
 
-Relay forwards the raw JSON verbatim to the dApp.
+Relay forwards the raw JSON verbatim to the dApp. Success/failure status is
+encrypted inside `sealed` (`_ok` field) and invisible to the relay.
 
 ## Endpoints
 

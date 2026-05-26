@@ -457,12 +457,17 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     if (!this.sendKey) return false;
     const seq = this.nextSendSeq();
     if (seq == null) return false;
-    const hdr = { type: 'res' as const, from: this.pubKeyB64, id: requestId, ok };
-    const sealed = sealPayload(this.sendKey, this.channelId, seq, data, hdr);
+    // Per protocol §5.3: success = { _ok: true, _result: <result> }
+    //                     error   = { _ok: false, code: "...", message: "..." }
+    const sealedPayload = ok
+      ? { _ok: true, _result: data }
+      : { _ok: false, ...(data as Record<string, unknown>) };
+    const hdr = { type: 'res' as const, from: this.pubKeyB64, id: requestId };
+    const sealed = sealPayload(this.sendKey, this.channelId, seq, sealedPayload, hdr);
     this.sendRaw({
       v: 1, t: 'res', ch: this.channelId,
       ts: Date.now(), from: this.pubKeyB64,
-      body: { id: requestId, ok, sealed },
+      body: { id: requestId, sealed },
     } as ProtocolMessage);
     return true;
   }

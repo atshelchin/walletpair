@@ -221,7 +221,7 @@ describe('WalletSession', () => {
       // Should send a rejection response
       const resMsg = transport.sent.find(m => m.t === 'res') as any;
       expect(resMsg).toBeTruthy();
-      expect(resMsg.body.ok).toBe(false);
+      // ok no longer exists on wire body
     });
 
     it('rejects sealed request missing _method with invalid_params', () => {
@@ -237,9 +237,8 @@ describe('WalletSession', () => {
       expect(handler).not.toHaveBeenCalled();
       const resMsg = transport.sent.find(m => m.t === 'res') as any;
       expect(resMsg).toBeTruthy();
-      expect(resMsg.body.ok).toBe(false);
-      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: transport.sent.find(m => m.t === 'join')!.from!, id: 'req-missing-method', ok: false });
-      expect(data).toMatchObject({ code: 'invalid_params' });
+      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: transport.sent.find(m => m.t === 'join')!.from!, id: 'req-missing-method' });
+      expect(data).toMatchObject({ _ok: false, code: 'invalid_params' });
     });
   });
 
@@ -283,12 +282,11 @@ describe('WalletSession', () => {
       const resMsg = transport.sent.find(m => m.t === 'res') as any;
       expect(resMsg).toBeTruthy();
       expect(resMsg.body.id).toBe('req-1');
-      expect(resMsg.body.ok).toBe(true);
       expect(resMsg.body.sealed).toBeTruthy();
 
       // Verify dApp can decrypt the response (wallet->dApp uses walletToDappKey)
-      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: walletPubB64, id: 'req-1', ok: true });
-      expect(data).toEqual(['0xabc123']);
+      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: walletPubB64, id: 'req-1' });
+      expect(data).toEqual({ _ok: true, _result: ['0xabc123'] });
     });
 
     it('reject sends encrypted error response', () => {
@@ -303,11 +301,10 @@ describe('WalletSession', () => {
       const resMsg = transport.sent.find(m => m.t === 'res') as any;
       expect(resMsg).toBeTruthy();
       expect(resMsg.body.id).toBe('req-2');
-      expect(resMsg.body.ok).toBe(false);
       expect(resMsg.body.sealed).toBeTruthy();
 
-      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: walletPubB64, id: 'req-2', ok: false });
-      expect(data).toEqual({ code: 'user_rejected', message: 'User said no' });
+      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: walletPubB64, id: 'req-2' });
+      expect(data).toEqual({ _ok: false, code: 'user_rejected', message: 'User said no' });
     });
 
     it('approve increments send sequence', () => {
@@ -349,8 +346,8 @@ describe('WalletSession', () => {
       const responses = transport.sent.filter(m => m.t === 'res') as any[];
       expect(responses).toHaveLength(2);
       expect(responses[0]!.body.sealed).not.toBe(responses[1]!.body.sealed);
-      const { data } = unsealPayload(walletToDappKey, channelId, responses[1]!.body.sealed, { type: 'res', from: walletPubB64, id: 'dup-1', ok: true });
-      expect(data).toEqual(['0xabc123']);
+      const { data } = unsealPayload(walletToDappKey, channelId, responses[1]!.body.sealed, { type: 'res', from: walletPubB64, id: 'dup-1' });
+      expect(data).toEqual({ _ok: true, _result: ['0xabc123'] });
     });
 
     it('rejects duplicate request id with different params', () => {
@@ -373,9 +370,8 @@ describe('WalletSession', () => {
       expect(handler).toHaveBeenCalledTimes(1);
       const responses = transport.sent.filter(m => m.t === 'res') as any[];
       const duplicateResponse = responses[1]!;
-      expect(duplicateResponse.body.ok).toBe(false);
-      const { data } = unsealPayload(walletToDappKey, channelId, duplicateResponse.body.sealed, { type: 'res', from: walletPubB64, id: 'dup-2', ok: false });
-      expect(data).toMatchObject({ code: 'invalid_params' });
+      const { data } = unsealPayload(walletToDappKey, channelId, duplicateResponse.body.sealed, { type: 'res', from: walletPubB64, id: 'dup-2' });
+      expect(data).toMatchObject({ _ok: false, code: 'invalid_params' });
     });
   });
 

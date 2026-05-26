@@ -1191,7 +1191,7 @@ mod tests {
         // Send a res clears it
         let res_raw = serde_json::json!({
             "v": 1, "t": "res", "ch": ch, "ts": 1234, "from": wallet,
-            "body": {"id": "r1", "ok": true, "sealed": "xyz"}
+            "body": {"id": "r1", "sealed": "xyz"}
         })
         .to_string();
         let res_msg = protocol::parse_message(&res_raw).unwrap();

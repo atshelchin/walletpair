@@ -251,7 +251,7 @@ describe('Cross-key decryption', () => {
 
   it('walletToDappKey sealed message cannot be opened with dappToWalletKey', () => {
     const data = { result: ['0xabc'] };
-    const hdr = { type: 'res' as const, from: 'wallet', id: 'req-1', ok: true };
+    const hdr = { type: 'res' as const, from: 'wallet', id: 'req-1' };
 
     const sealed = sealPayload(keys.walletToDappKey, channelId, 0, data, hdr);
 

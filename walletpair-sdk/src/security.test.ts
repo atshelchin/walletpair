@@ -113,8 +113,8 @@ describe('Security: Replay detection', () => {
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: req0Id, ok: true, sealed: sealPayload(recvKey, session.channelId, 0, ['0xa'],
-        { type: 'res', from: walletKp.publicKeyB64, id: req0Id, ok: true }) },
+      body: { id: req0Id, sealed: sealPayload(recvKey, session.channelId, 0, { _ok: true, _result: ['0xa'] },
+        { type: 'res', from: walletKp.publicKeyB64, id: req0Id }) },
     } as ProtocolMessage);
     expect(await p0).toEqual(['0xa']);
 
@@ -127,8 +127,8 @@ describe('Security: Replay detection', () => {
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: req1Id, ok: true, sealed: sealPayload(recvKey, session.channelId, 0, ['replay'],
-        { type: 'res', from: walletKp.publicKeyB64, id: req1Id, ok: true }) },
+      body: { id: req1Id, sealed: sealPayload(recvKey, session.channelId, 0, { _ok: true, _result: ['replay'] },
+        { type: 'res', from: walletKp.publicKeyB64, id: req1Id }) },
     } as ProtocolMessage);
     await expect(p1).rejects.toThrow('Replay detected');
   });
@@ -146,8 +146,8 @@ describe('Security: Replay detection', () => {
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: r0id, ok: true, sealed: sealPayload(recvKey, session.channelId, 5, 'ok',
-        { type: 'res', from: walletKp.publicKeyB64, id: r0id, ok: true }) },
+      body: { id: r0id, sealed: sealPayload(recvKey, session.channelId, 5, { _ok: true, _result: 'ok' },
+        { type: 'res', from: walletKp.publicKeyB64, id: r0id }) },
     } as ProtocolMessage);
     expect(await p0).toBe('ok');
 
@@ -159,8 +159,8 @@ describe('Security: Replay detection', () => {
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: r1id, ok: true, sealed: sealPayload(recvKey, session.channelId, 3, 'stale',
-        { type: 'res', from: walletKp.publicKeyB64, id: r1id, ok: true }) },
+      body: { id: r1id, sealed: sealPayload(recvKey, session.channelId, 3, { _ok: true, _result: 'stale' },
+        { type: 'res', from: walletKp.publicKeyB64, id: r1id }) },
     } as ProtocolMessage);
     await expect(p1).rejects.toThrow('Replay detected');
   });
@@ -178,8 +178,8 @@ describe('Security: Replay detection', () => {
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: r0id, ok: true, sealed: sealPayload(recvKey, session.channelId, 0, 'first',
-        { type: 'res', from: walletKp.publicKeyB64, id: r0id, ok: true }) },
+      body: { id: r0id, sealed: sealPayload(recvKey, session.channelId, 0, { _ok: true, _result: 'first' },
+        { type: 'res', from: walletKp.publicKeyB64, id: r0id }) },
     } as ProtocolMessage);
     expect(await p0).toBe('first');
 
@@ -191,8 +191,8 @@ describe('Security: Replay detection', () => {
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: r1id, ok: true, sealed: sealPayload(recvKey, session.channelId, 10, 'second',
-        { type: 'res', from: walletKp.publicKeyB64, id: r1id, ok: true }) },
+      body: { id: r1id, sealed: sealPayload(recvKey, session.channelId, 10, { _ok: true, _result: 'second' },
+        { type: 'res', from: walletKp.publicKeyB64, id: r1id }) },
     } as ProtocolMessage);
     expect(await p1).toBe('second');
   });
@@ -325,7 +325,7 @@ describe('Security: Mandatory encryption', () => {
     transport.receive({
       v: 1, t: 'res', ch: session.channelId,
       ts: Date.now(), from: walletKp.publicKeyB64,
-      body: { id: reqId, ok: true },
+      body: { id: reqId },
       // no sealed field in body
     } as ProtocolMessage);
 
@@ -354,7 +354,7 @@ describe('Security: Mandatory encryption', () => {
     // Wallet should have sent a rejection response
     const rejectionMsg = transport.sent.find(m => m.t === 'res' && (m as any).body?.id === 'req-unseal') as any;
     expect(rejectionMsg).toBeTruthy();
-    expect(rejectionMsg.body.ok).toBe(false);
+    // ok no longer exists on wire body
   });
 
   it('DAppSession drops unsealed events', async () => {

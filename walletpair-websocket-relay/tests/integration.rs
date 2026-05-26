@@ -146,7 +146,7 @@ fn res_msg(ch: &str, from: &str, id: &str) -> Value {
         "ch": ch,
         "ts": 1234,
         "from": from,
-        "body": {"id": id, "ok": true, "sealed": "encrypted_result"}
+        "body": {"id": id, "sealed": "encrypted_result"}
     })
 }
 
@@ -346,7 +346,7 @@ async fn connected_res_forwarded_to_dapp() {
     let received = recv_json(&mut dapp).await;
     assert_eq!(received["t"], "res");
     assert_eq!(received["body"]["id"], "r1");
-    assert_eq!(received["body"]["ok"], true);
+    assert_eq!(received["body"]["sealed"], "encrypted_result");
 }
 
 #[tokio::test]
@@ -854,7 +854,7 @@ async fn multiple_req_res_in_sequence() {
         send_json(&mut wallet, &res_msg(&ch, &wallet_peer, &id)).await;
         let received = recv_json(&mut dapp).await;
         assert_eq!(received["body"]["id"], id);
-        assert_eq!(received["body"]["ok"], true);
+        assert_eq!(received["body"]["sealed"], "encrypted_result");
     }
 }
 
@@ -1802,7 +1802,7 @@ async fn full_reconnect_cycle_data_flows() {
     let received = recv_json(&mut dapp2).await;
     assert_eq!(received["t"], "res");
     assert_eq!(received["body"]["id"], "post-reconnect");
-    assert_eq!(received["body"]["ok"], true);
+    assert_eq!(received["body"]["sealed"], "encrypted_result");
 }
 
 // ---------------------------------------------------------------------------
@@ -2011,7 +2011,7 @@ async fn relay_restart_with_persistence_allows_reconnect() {
     let received = recv_json(&mut dapp2).await;
     assert_eq!(received["t"], "res");
     assert_eq!(received["body"]["id"], "after-restart");
-    assert_eq!(received["body"]["ok"], true);
+    assert_eq!(received["body"]["sealed"], "encrypted_result");
 
     // Cleanup
     let _ = std::fs::remove_file(&state_path);

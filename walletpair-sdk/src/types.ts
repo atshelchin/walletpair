@@ -60,7 +60,7 @@ export interface RequestMessage extends ProtocolMessageBase {
 
 export interface ResponseMessage extends ProtocolMessageBase {
   t: 'res';
-  body: { id: string; ok: boolean; sealed: string };
+  body: { id: string; sealed: string };
 }
 
 export interface EventMessage extends ProtocolMessageBase {
@@ -178,7 +178,7 @@ export interface DAppSessionEvents {
   pairingUri: string;
   sessionFingerprint: string;
   walletJoined: { capabilities?: Capabilities | undefined; meta?: WalletMeta | undefined };
-  response: { id: string; ok: boolean; data: unknown };
+  response: { id: string; ok: boolean; result: unknown };
   event: { event: string; data: unknown };
   error: Error;
 }

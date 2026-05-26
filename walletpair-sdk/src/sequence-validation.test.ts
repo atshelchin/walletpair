@@ -204,7 +204,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: req0.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 0, ['0xabc'], { type: 'res', from: walletKp.publicKeyB64, id: req0.body.id, ok: true }) },
+        body: { id: req0.body.id, sealed: sealPayload(sessionKey, session.channelId, 0, { _ok: true, _result: ['0xabc'] }, { type: 'res', from: walletKp.publicKeyB64, id: req0.body.id }) },
       } as ProtocolMessage);
 
       const result0 = await p0;
@@ -219,7 +219,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: req1.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 0, ['0xreplay'], { type: 'res', from: walletKp.publicKeyB64, id: req1.body.id, ok: true }) },
+        body: { id: req1.body.id, sealed: sealPayload(sessionKey, session.channelId, 0, { _ok: true, _result: ['0xreplay'] }, { type: 'res', from: walletKp.publicKeyB64, id: req1.body.id }) },
       } as ProtocolMessage);
 
       await expect(p1).rejects.toThrow('Replay detected');
@@ -233,7 +233,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: req2.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 1, ['0xdef'], { type: 'res', from: walletKp.publicKeyB64, id: req2.body.id, ok: true }) },
+        body: { id: req2.body.id, sealed: sealPayload(sessionKey, session.channelId, 1, { _ok: true, _result: ['0xdef'] }, { type: 'res', from: walletKp.publicKeyB64, id: req2.body.id }) },
       } as ProtocolMessage);
 
       const result2 = await p2;
@@ -345,7 +345,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: req0.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 0, 'first', { type: 'res', from: walletKp.publicKeyB64, id: req0.body.id, ok: true }) },
+        body: { id: req0.body.id, sealed: sealPayload(sessionKey, session.channelId, 0, { _ok: true, _result: 'first' }, { type: 'res', from: walletKp.publicKeyB64, id: req0.body.id }) },
       } as ProtocolMessage);
 
       expect(await p0).toBe('first');
@@ -358,7 +358,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: req1.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 5, 'second', { type: 'res', from: walletKp.publicKeyB64, id: req1.body.id, ok: true }) },
+        body: { id: req1.body.id, sealed: sealPayload(sessionKey, session.channelId, 5, { _ok: true, _result: 'second' }, { type: 'res', from: walletKp.publicKeyB64, id: req1.body.id }) },
       } as ProtocolMessage);
 
       expect(await p1).toBe('second');
@@ -371,7 +371,7 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'res', ch: session.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: req2.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, 3, 'replay-attempt', { type: 'res', from: walletKp.publicKeyB64, id: req2.body.id, ok: true }) },
+        body: { id: req2.body.id, sealed: sealPayload(sessionKey, session.channelId, 3, { _ok: true, _result: 'replay-attempt' }, { type: 'res', from: walletKp.publicKeyB64, id: req2.body.id }) },
       } as ProtocolMessage);
 
       await expect(p2).rejects.toThrow('Replay detected');
@@ -430,7 +430,7 @@ describe('Sequence validation', () => {
         transport.receive({
           v: 1, t: 'res', ch: session.channelId,
           ts: Date.now(), from: walletKp.publicKeyB64,
-          body: { id: req.body.id, ok: true, sealed: sealPayload(sessionKey, session.channelId, seq, `result-${seq}`, { type: 'res', from: walletKp.publicKeyB64, id: req.body.id, ok: true }) },
+          body: { id: req.body.id, sealed: sealPayload(sessionKey, session.channelId, seq, { _ok: true, _result: `result-${seq}` }, { type: 'res', from: walletKp.publicKeyB64, id: req.body.id }) },
         } as ProtocolMessage);
 
         await p;
@@ -453,7 +453,7 @@ describe('Sequence validation', () => {
       newTransport.receive({
         v: 1, t: 'res', ch: restored.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: reqMsg.body.id, ok: true, sealed: sealPayload(sessionKey, restored.channelId, 1, 'stale', { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.body.id, ok: true }) },
+        body: { id: reqMsg.body.id, sealed: sealPayload(sessionKey, restored.channelId, 1, { _ok: true, _result: 'stale' }, { type: 'res', from: walletKp.publicKeyB64, id: reqMsg.body.id }) },
       } as ProtocolMessage);
 
       await expect(p).rejects.toThrow('Replay detected');
@@ -466,7 +466,7 @@ describe('Sequence validation', () => {
       newTransport.receive({
         v: 1, t: 'res', ch: restored.channelId,
         ts: Date.now(), from: walletKp.publicKeyB64,
-        body: { id: reqMsg2.body.id, ok: true, sealed: sealPayload(sessionKey, restored.channelId, 3, 'fresh', { type: 'res', from: walletKp.publicKeyB64, id: reqMsg2.body.id, ok: true }) },
+        body: { id: reqMsg2.body.id, sealed: sealPayload(sessionKey, restored.channelId, 3, { _ok: true, _result: 'fresh' }, { type: 'res', from: walletKp.publicKeyB64, id: reqMsg2.body.id }) },
       } as ProtocolMessage);
 
       expect(await p2).toBe('fresh');

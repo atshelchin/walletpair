@@ -70,8 +70,8 @@
 			);
 		});
 
-		s.on('response', ({ id, ok, data }) => {
-			addLog('in', 'res', `id=${id} ok=${ok} ${JSON.stringify(data)}`);
+		s.on('response', ({ id, ok, result }) => {
+			addLog('in', 'res', `id=${id} ok=${ok} ${JSON.stringify(result)}`);
 		});
 
 		s.on('event', ({ event, data }) => {

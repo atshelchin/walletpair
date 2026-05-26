@@ -225,8 +225,10 @@ relay cannot observe transaction type capabilities.
 All methods use the WalletPair `req` / `res` message flow. The method name is
 never a plaintext `req` field. For requests, the decrypted content of
 `body.sealed` MUST be `{ "_method": "<method_name>", ...params }`. For
-responses, the decrypted content of `body.sealed` is the `result` object or
-the error object.
+responses, the decrypted content of `body.sealed` follows the format defined
+in WalletPair Protocol v1 §5.3: `{ "_ok": true, "_result": <result> }` on
+success, or `{ "_ok": false, "code": "<error_code>", "message": "..." }` on
+failure. The **Result** sections below describe only the `_result` value.
 
 ### 5.1 wallet_getAccounts
 
@@ -329,7 +331,7 @@ network.
 | `tx.accessList` | array | no | EIP-2930 access list. Each entry: `{ address: string, storageKeys: string[] }`. |
 | `tx.maxFeePerBlobGas` | string | no | Max fee per blob gas for EIP-4844 (type 3) transactions, hex-encoded. |
 | `tx.blobVersionedHashes` | string[] | no | Versioned hashes for EIP-4844 (each 32-byte hex with `0x01` version prefix). The wallet cannot verify that actual blob data exists for these hashes — it trusts the dApp to provide correct hashes. See validation rule 5 for type 3 constraints. |
-| `tx.authorizationList` | array | no | EIP-7702 authorization tuples. Each entry: `{ chainId: string, address: string, nonce: string, yParity: string, r: string, s: string, authority: string (optional) }`. All hex-encoded. Maximum 16 entries. These are pre-signed authorizations attached to the transaction; this method does not define a generic dApp-driven flow for creating new authorizations. The optional `authority` field is the expected recovered authority address (see validation rule 5b). |
+| `tx.authorizationList` | array | no | EIP-7702 authorization tuples. Each entry: `{ chainId: string, address: string, nonce: string, yParity: string, r: string, s: string, authority: string (optional) }`. All hex-encoded. Maximum 16 entries (see rationale below). These are pre-signed authorizations attached to the transaction; this method does not define a generic dApp-driven flow for creating new authorizations. The optional `authority` field is the expected recovered authority address (see validation rule 5b). |
 
 **Validation rules:**
 
@@ -369,7 +371,18 @@ The wallet MUST enforce the following before signing:
      present. `maxFeePerGas` MUST be used. `to` MUST be present
      (EIP-7702 does not support contract creation). `authorizationList`
      MUST be a non-empty array with at most 16 entries. If more than
-     16 entries are provided, reject with `invalid_params`. For each
+     16 entries are provided, reject with `invalid_params`.
+     **Rationale for 16-entry limit:** Each authorization entry requires
+     an `ecrecover` operation (~4,000 gas equivalent CPU cost on mobile
+     devices, ~0.5 ms per recovery on modern ARM processors). 16 entries
+     cap the worst-case wallet-side validation to ~8 ms, which is
+     acceptable for interactive signing flows. Current EIP-7702 usage
+     patterns (smart account setup, batch delegation) typically require
+     1-3 entries. The limit of 16 provides ample headroom while
+     preventing a malicious dApp from forcing expensive validation.
+     Wallets that need to support specialized use cases requiring more
+     entries MAY declare a higher limit via a custom capability field
+     (e.g., `capabilities.txTypes.eip7702MaxAuth`). For each
      authorization entry, the wallet MUST:
      (a) Validate `yParity` is `"0x0"` or `"0x1"`. Validate `r` and
          `s` are 32-byte hex values within the secp256k1 curve order.
@@ -762,13 +775,37 @@ dApp has two options:
    define an in-session scope expansion mechanism. A future version may add
    a `wallet_updateScope` method that allows the wallet to expand
    `capabilities.chains` within an existing session, subject to user
-   approval and a new `chainChanged` event. Until such a method is
+   approval and a new `scopeChanged` event. Until such a method is
    standardized, dApps MUST NOT assume the added chain is usable in the
    current session.
 
 The wallet MUST reject requests targeting the newly added chain in the
 current session with `unsupported_chain` until a new session is established
 that includes it in `capabilities.chains`.
+
+**Design rationale for requiring re-pairing.** Allowing in-session scope
+expansion introduces significant complexity:
+
+- The transcript hash (WalletPair Protocol v1 §7.2) is computed at
+  pairing time over the granted capabilities. Expanding scope
+  post-pairing requires either re-deriving traffic keys (breaking
+  in-flight messages) or accepting that the transcript no longer reflects
+  the actual session scope (weakening the cryptographic binding).
+- In-session scope changes create a TOCTOU (time-of-check-time-of-use)
+  window where the dApp may send requests to a chain the wallet has not
+  yet fully validated.
+- Re-pairing is a one-time cost per scope change. In practice, most
+  multi-chain dApps know their required chains at connection time and
+  declare them in the pairing URI `chains` field. The re-pairing
+  scenario is limited to cases where a user explicitly requests a chain
+  not originally anticipated.
+- DApps that frequently need dynamic chain switching SHOULD declare a
+  broad `chains` set in the pairing URI to minimize re-pairing friction.
+
+A future `wallet_updateScope` extension, if standardized, MUST define:
+(1) how the transcript hash or traffic keys are updated to reflect the
+new scope, (2) a user-confirmation requirement on the wallet side, and
+(3) a `scopeChanged` event so the dApp can detect the expansion.
 
 **Method:** `wallet_addChain`
 
@@ -911,6 +948,17 @@ The wallet MUST reject if `chain` is not in `capabilities.chains`, if
 0-255 for ERC-20, or if `tokenId` is not a non-negative uint256 quantity for
 ERC-721/ERC-1155. The wallet SHOULD verify token metadata from the chain rather
 than trusting dApp-provided `symbol`, `decimals`, or `image`.
+
+**Rate and quantity limits.** The wallet MUST enforce the following limits
+to prevent abuse:
+
+- At most **10 `wallet_watchAsset` calls per session**. Subsequent calls
+  MUST be rejected with `rate_limited`.
+- The wallet MUST enforce a **global maximum of 200 dApp-added watched
+  assets** across all sessions. If the limit is reached, the wallet MUST
+  reject with `rate_limited`.
+- The wallet MUST NOT auto-display or auto-trust token metadata from
+  dApp-provided fields without on-chain verification.
 
 ### 5.9 wallet_signRawMessage
 
@@ -1067,8 +1115,8 @@ Emitted when the wallet loses connectivity to a chain's RPC endpoint.
 
 ## 7. Error Codes
 
-When a method fails, the wallet responds with `res.ok = false`. The
-decrypted `sealed` contains an error object:
+When a method fails, the decrypted `sealed` payload contains `_ok = false`
+and an error object (per WalletPair Protocol v1 §5.3):
 
 ```json
 {
@@ -1091,7 +1139,7 @@ Standard error codes:
 | `gas_estimation_failed` | -32000 | Wallet could not estimate gas for the transaction. | Reverted in estimation. |
 | `tx_rejected` | -32000 | Network rejected the transaction. | RPC returned error. |
 | `chain_not_added` | 4902 | Requested chain is not configured but could be added via `wallet_addChain`. | Chain unknown but addable. |
-| `rate_limited` | -32005 | Too many pending requests. | DApp exceeded 32 concurrent pending requests. |
+| `rate_limited` | -32005 | Too many pending requests or method call limit exceeded. | DApp exceeded 32 concurrent pending requests, or per-session/global limits for `wallet_addChain` or `wallet_watchAsset`. |
 | `internal_error` | -32603 | Unexpected wallet error. | Catch-all. |
 
 The `code` field is a string (not a number) to allow namespaced extensions.
@@ -1148,22 +1196,24 @@ WalletPair message (wire):
   "from": "base64url-wallet-pubkey",
   "body": {
     "id": "req-001",
-    "ok": true,
     "sealed": "<encrypted result>"
   }
 }
 ```
 
-Decrypted `sealed` (result):
+Decrypted `sealed` (result — `_ok` and `_result` per WalletPair Protocol v1 §5.3):
 
 ```json
 {
-  "accounts": [
-    {
-      "address": "0xab16a96D359eC26a11e2C2b3d8f8B8942d5Bfcdb",
-      "chains": ["eip155:1", "eip155:137"]
-    }
-  ]
+  "_ok": true,
+  "_result": {
+    "accounts": [
+      {
+        "address": "0xab16a96D359eC26a11e2C2b3d8f8B8942d5Bfcdb",
+        "chains": ["eip155:1", "eip155:137"]
+      }
+    ]
+  }
 }
 ```
 
@@ -1204,9 +1254,14 @@ Decrypted `sealed` (params):
 
 ### Wallet responds with tx hash
 
+Decrypted `sealed` (result — `_ok` and `_result` per WalletPair Protocol v1 §5.3):
+
 ```json
 {
-  "txHash": "0x6b17a7a5f05676c30edb0dbb66c1b3c86e2b0e6c20f39a53e021ec36bf3b9f7a"
+  "_ok": true,
+  "_result": {
+    "txHash": "0x6b17a7a5f05676c30edb0dbb66c1b3c86e2b0e6c20f39a53e021ec36bf3b9f7a"
+  }
 }
 ```
 
@@ -1223,16 +1278,16 @@ WalletPair message (wire):
   "from": "base64url-wallet-pubkey",
   "body": {
     "id": "req-003",
-    "ok": false,
     "sealed": "<encrypted error>"
   }
 }
 ```
 
-Decrypted `sealed` (error):
+Decrypted `sealed` (error — `_ok` per WalletPair Protocol v1 §5.3):
 
 ```json
 {
+  "_ok": false,
   "code": "user_rejected",
   "message": "User rejected the request"
 }
