@@ -886,8 +886,6 @@ malicious relay cannot substitute the content:
 | Delivery method         | Security                                                                                                                                                                                                                                        | Status                                                    |
 | ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
 | QR code (optical scan)  | Camera captures dApp screen directly. Relay not in path.                                                                                                                                                                                        | **REQUIRED** support.                               |
-| NFC tap                 | Physical proximity required.                                                                                                                                                                                                                    | Permitted.                                                |
-| BLE characteristic read | Physical proximity required.                                                                                                                                                                                                                    | Permitted.                                                |
 | Deep link / URL scheme  | **INSECURE.** URI passes through OS URL handler, clipboard, browser extensions, or intent system. A malicious intermediary can replace the entire URI including the dApp public key, enabling a full MITM that no protocol-level defense can detect. | **MUST NOT** be used as the sole pairing mechanism. |
 | Copy-paste              | URI may be intercepted by clipboard monitors.                                                                                                                                                                                                   | **MUST NOT** be used as the sole pairing mechanism. |
 
@@ -936,9 +934,8 @@ user confirms the connection. If `methods` or `chains` are absent, the
 wallet MUST warn the user that the dApp did not declare its intent
 (see §8.1).
 
-For Bluetooth pairing, the URI may omit `relay` and instead be transmitted
-through BLE advertisement, NFC tap, or local QR code. All of these are
-valid out-of-band channels.
+For Bluetooth pairing, the URI may omit `relay` and instead be
+transmitted through a local QR code displayed by the dApp.
 
 Multiple relay endpoints can be specified by repeating the `relay` parameter:
 
@@ -1881,16 +1878,11 @@ messages locally.
 
 ### 19.2 Discovery
 
-The dApp creates a channel and advertises it through one of:
+The dApp creates a channel and exposes the pairing URI via QR code.
+The wallet scans the QR code to obtain the pairing URI.
 
-| Method            | Use Case                               |
-| ----------------- | -------------------------------------- |
-| QR code           | DApp shows QR on screen, wallet scans. |
-| NFC tap           | Mobile-to-mobile or hardware wallet.   |
-| BLE advertisement | Wallet discovers nearby dApps.         |
-
-The QR code or NFC payload contains the pairing URI (Section 9.1) without the
-`relay` parameter.
+The QR code contains the pairing URI (Section 9.1) without the `relay`
+parameter.
 
 ### 19.3 BLE Service
 
@@ -1915,7 +1907,7 @@ register a 16-bit UUID with the Bluetooth SIG or use a fully random
 ### 19.4 Flow
 
 1. DApp creates `ch`. BLE adapter returns `ready.waiting` to the dApp.
-2. DApp exposes pairing URI via QR, NFC, or BLE advertisement.
+2. DApp exposes pairing URI via QR code.
 3. Wallet discovers the pairing URI and obtains the dApp's public key.
 4. Wallet computes its local root key and session fingerprint. User
    verifies the fingerprint matches the dApp's display and confirms.
@@ -1950,23 +1942,14 @@ parses the complete JSON message.
 
 ### 19.6 Bluetooth Security Considerations
 
-1. **BLE advertisement exposure.** When using BLE advertisement for
-   discovery, any nearby device (typically within 10–30 meters) can
-   discover the channel and read the pairing URI from the Channel
-   characteristic. The same MITM protections apply as with relay
-   transport: the attacker cannot complete a full MITM because the
-   wallet obtains the dApp's public key directly from the BLE
-   characteristic (out-of-band from any network attacker), and
-   `sealed_join` cryptographically binds the wallet to the QR-scanned
-   dApp public key.
-2. **Proximity assumption.** Unlike relay-based pairing, Bluetooth
+1. **Proximity assumption.** Unlike relay-based pairing, Bluetooth
    pairing implicitly assumes physical proximity. However, BLE range
    can extend beyond visual range (especially with directional
    antennas). Implementations MUST NOT rely on Bluetooth proximity as
-   a security property — the out-of-band public key delivery is the
-   trust anchor, not physical distance. The wallet SHOULD display the
+   a security property — the QR code is the trust anchor for public
+   key delivery, not physical distance. The wallet SHOULD display the
    dApp name prominently and require explicit user confirmation.
-3. **BLE connection hijacking.** A nearby attacker could attempt to
+2. **BLE connection hijacking.** A nearby attacker could attempt to
    connect to the dApp's BLE service before the legitimate wallet.
    The dApp MUST enforce the one-wallet-per-channel rule (§16 rule 4).
    If a second device attempts to `join`, the BLE adapter MUST reject
@@ -1974,11 +1957,9 @@ parses the complete JSON message.
    legitimate wallet's `join` will be rejected, resulting in a
    denial-of-service — but not a security compromise (the attacker
    cannot sign transactions without the user's blockchain private keys).
-4. **Denial of service.** A nearby attacker can jam BLE frequencies or
+3. **Denial of service.** A nearby attacker can jam BLE frequencies or
    flood the GATT service with connections. This is inherent to any
-   wireless protocol. For high-security scenarios, QR code scanning
-   (which does not require BLE advertisement) is recommended over BLE
-   discovery.
+   wireless protocol.
 
 ## 20. Security
 
