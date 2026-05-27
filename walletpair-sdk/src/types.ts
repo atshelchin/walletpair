@@ -148,9 +148,9 @@ export interface DAppMeta {
 
 export interface WalletMeta {
   name: string
-  description: string
-  url: string
-  icon: string
+  description?: string
+  url?: string
+  icon?: string
   [key: string]: unknown
 }
 
@@ -204,8 +204,8 @@ export interface WalletSessionEvents {
 export interface PairingParams {
   ch: string
   pubkey: string
-  /** Empty string = BLE mode (no relay). */
-  relay: string
+  /** Relay URL. Undefined when using direct transport (BLE). */
+  relay?: string | undefined
   name: string
   /** DApp website URL. */
   url: string

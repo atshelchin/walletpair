@@ -131,7 +131,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     this.intentionalClose = false
     this.channelId = parsed.ch
     this.remotePubKey = b64urlDecode(parsed.pubkey)
-    this.relayUrl = parsed.relay
+    this.relayUrl = parsed.relay ?? ''
     this.dappName = parsed.name
     this.dappDeclaredMethods = parsed.methods
     this.dappDeclaredChains = parsed.chains

@@ -366,7 +366,7 @@ describe('parsePairingUri', () => {
     const params = parsePairingUri(uri);
     expect(params.ch).toBe(TEST_CH);
     expect(params.pubkey).toBe(TEST_PUBKEY);
-    expect(params.relay).toBe('');
+    expect(params.relay).toBeUndefined();
     expect(params.name).toBe('BLE Wallet');
   });
 

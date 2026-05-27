@@ -395,12 +395,14 @@ export function parsePairingUri(uri: string): PairingParams {
   if (!name) throw new Error('Invalid pairing URI: missing required param "name"');
   if (!url) throw new Error('Invalid pairing URI: missing required param "url"');
   if (!icon) throw new Error('Invalid pairing URI: missing required param "icon"');
+  // §8.1: icon MUST be https:
+  if (!icon.startsWith('https:')) throw new Error('Invalid pairing URI: icon must use https:');
   const methodsStr = params.get('methods');
   const chainsStr = params.get('chains');
   return {
     ch,
     pubkey,
-    relay: params.get('relay') ?? '',
+    relay: params.get('relay') || undefined,
     name,
     url,
     icon,
