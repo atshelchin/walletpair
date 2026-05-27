@@ -116,10 +116,11 @@ export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
 
   const obj = value as Record<string, unknown>;
-  return `{${Object.keys(obj)
+  const entries = Object.keys(obj)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`)
-    .join(',')}}`;
+    .filter((key) => obj[key] !== undefined) // omit undefined values (match JSON.stringify)
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`);
+  return `{${entries.join(',')}}`;
 }
 
 export function computeHandshakeTranscriptHash(

@@ -282,36 +282,73 @@ join_encryption_key = HKDF-SHA256(
 
 #### Canonical JSON
 
-Deterministic JSON serialization, compatible with RFC 8785 (JCS) and
-conforming to I-JSON (RFC 7493):
+**Normative reference: RFC 8785 (JSON Canonicalization Scheme, JCS).**
 
-1. **Object keys** are sorted lexicographically by their UTF-8 byte
-   representation (not by Unicode code point — in practice these are
-   identical for ASCII keys used in this protocol).
-2. **No insignificant whitespace** — no spaces after `:` or `,`, no
-   newlines or indentation.
-3. **Duplicate object member names MUST be rejected.** Per RFC 7493
-   (I-JSON) and RFC 8259, duplicate names produce unpredictable parsing
-   behaviour. Implementations MUST NOT produce duplicate keys, and
-   MUST reject inputs that contain duplicate keys at any nesting level.
-4. **Numbers** use the shortest decimal representation with no trailing
-   zeroes (e.g., `1` not `1.0`, `0` not `0.0`). No leading zeroes. No
-   `+` prefix. Negative zero is serialized as `0`.
-5. **Strings** use `\uXXXX` escaping only for control characters
-   (U+0000–U+001F). Printable characters including non-ASCII Unicode
-   are serialized as literal UTF-8, not escaped. The mandatory JSON
-   escapes (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`) use the
-   short form. Forward slash `/` MUST NOT be escaped.
-6. **`null`**, **`true`**, **`false`** use their literal JSON forms.
-   Values that are absent or not applicable MUST be omitted from the
-   object entirely rather than included as `null`, unless the field
-   is explicitly defined as nullable in this specification.
-7. Sorting is recursive: nested objects also have their keys sorted.
+This protocol uses RFC 8785 as the sole canonical JSON standard.
+Implementations MUST comply with RFC 8785 in full. The rules below
+summarise the RFC for convenience; where this summary conflicts with
+RFC 8785, the RFC takes precedence. Inputs MUST also conform to
+I-JSON (RFC 7493).
 
-Implementations MUST verify their canonical JSON output matches these
-test vectors byte-for-byte before deployment:
+**1. Object key sorting.** Property name strings are compared as
+arrays of UTF-16 code units, treated as unsigned integers. Shorter
+strings that are otherwise identical precede longer strings (RFC 8785
+§3.2.3). Sorting is recursive: nested objects at any depth MUST also
+have their keys sorted.
+
+> **Note for non-JavaScript implementations:** For keys consisting
+> entirely of BMP characters (U+0000–U+FFFF) — which includes all
+> keys defined in this protocol — UTF-16 code unit order, Unicode
+> code point order, and UTF-8 byte order are identical. Supplementary
+> plane characters (U+10000+) MUST NOT appear in property names in
+> this protocol.
+
+**2. No insignificant whitespace.** No spaces after `:` or `,`, no
+newlines, no indentation (RFC 8785 §3.2.2).
+
+**3. Duplicate member names.** JSON objects MUST NOT contain duplicate
+property names (RFC 8785 §3, RFC 7493 §2.2, RFC 8259 §4).
+Implementations MUST NOT produce duplicate keys and MUST reject inputs
+containing duplicate keys at any nesting level.
+
+**4. Numbers.** MUST be serialized per the ECMAScript `Number.toString()`
+algorithm (ECMA-262 §7.1.12.1, including Note 2) as required by
+RFC 8785 §3.2.2.3. This implies:
+- No leading zeroes, no trailing fractional zeroes, no `+` prefix.
+- Negative zero serializes as `0`.
+- `NaN` and `Infinity` are not valid JSON; inputs containing them
+  MUST be rejected or converted to `null` before canonicalization.
+- Non-JavaScript implementations SHOULD use the Ryu algorithm or
+  equivalent to produce identical output. See RFC 8785 Appendix B
+  for IEEE 754 test vectors.
+
+**5. Strings.** ASCII control characters (U+0000–U+001F) MUST be
+escaped. The following use short-form escapes: `\b` (U+0008),
+`\t` (U+0009), `\n` (U+000A), `\f` (U+000C), `\r` (U+000D).
+All other control characters use `\uXXXX` with **lowercase** hex
+digits (RFC 8785 §3.2.2.2). Backslash and double quote use `\\`
+and `\"`. Forward slash `/` MUST NOT be escaped. All other
+characters — including non-ASCII Unicode — are output as literal
+UTF-8 bytes, not escaped.
+
+**6. Literals.** `null`, `true`, `false` use their literal forms.
+Values that are absent or not applicable MUST be omitted from the
+object rather than included as `null`, unless the field is explicitly
+defined as nullable in this specification.
+
+**7. Arrays.** Element order is preserved; arrays MUST NOT be sorted.
+
+**8. Output encoding.** The canonical form MUST be encoded as UTF-8
+without BOM when used as input to cryptographic operations (hashing,
+HKDF, AEAD plaintext).
+
+---
+
+Implementations MUST verify their canonical JSON output matches **all**
+of the following test vectors byte-for-byte before deployment:
 
 ```text
+Vector 1 — capabilities (key sorting, nested objects):
 Input:  {"methods":["wallet_signTransaction","wallet_signMessage"],
          "events":["accountsChanged","chainChanged"],
          "chains":["eip155:1","eip155:137"]}
@@ -320,8 +357,36 @@ SHA-256: 4da366e2aae26b47b3d90fff52410752348733350ce2525dce7d64510f571333
 ```
 
 ```text
-Input:  null        ->  Output: null
-Input:  {"name":"MyWallet"}  ->  Output: {"name":"MyWallet"}
+Vector 2 — join plaintext (nested objects + meta):
+Input:  {"capabilities":{"methods":["wallet_signTransaction","wallet_signMessage"],
+         "events":["accountsChanged","chainChanged"],
+         "chains":["eip155:1","eip155:137"]},"meta":{"name":"MyWallet"}}
+Output: {"capabilities":{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]},"meta":{"name":"MyWallet"}}
+SHA-256: 925d92d0966ff5e0def4f998a1612bb12a402f14a684173b133ad39fe1bccfe9
+```
+
+```text
+Vector 3 — primitives (SHA-256 is computed over the canonical OUTPUT bytes):
+Input:  null        ->  Output: null         SHA-256: 74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b
+Input:  true        ->  Output: true         SHA-256: b5bea41b6c623f7c09f1bf24dcae58ebab3c0cdd90ad966bc43a45b44867e12b
+Input:  42          ->  Output: 42           SHA-256: 73475cb40a568e8da8a045ced110137e159f890ac4da883b6b17dc651b3a8049
+Input:  "hello"     ->  Output: "hello"      SHA-256: 5aa762ae383fbb727af3c7a36d4940a5b8c40a989452d2304fc958ff3f354e7a
+```
+
+```text
+Vector 4 — empty containers:
+Input:  {}          ->  Output: {}           SHA-256: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+Input:  []          ->  Output: []           SHA-256: 4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+```
+
+```text
+Vector 5 — negative zero:
+Input:  -0          ->  Output: 0            SHA-256: 5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9
+```
+
+```text
+Vector 6 — escaped control character (lowercase hex digits):
+Input:  "\u0001"    ->  Output: "\u0001"     SHA-256: b81cfb0a6715e53b373345b49e8ad94eb55fd777519dc539373d0634973c186e
 ```
 
 #### Key Erasure
