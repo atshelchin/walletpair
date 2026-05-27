@@ -148,9 +148,9 @@ export interface DAppMeta {
 
 export interface WalletMeta {
   name: string
-  description?: string
-  url?: string
-  icon?: string
+  description: string
+  url: string
+  icon: string
   [key: string]: unknown
 }
 

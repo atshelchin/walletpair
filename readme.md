@@ -114,6 +114,9 @@ const session = new WalletSession({
   },
   meta: {
     name: 'My Wallet',
+    description: 'Example wallet',
+    url: 'https://wallet.example',
+    icon: 'https://wallet.example/icon.png',
   },
   persistence: {
     save: (snapshot) => secureStore.set('walletpair.session', snapshot),

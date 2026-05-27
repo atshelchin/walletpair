@@ -357,12 +357,14 @@ SHA-256: 4da366e2aae26b47b3d90fff52410752348733350ce2525dce7d64510f571333
 ```
 
 ```text
-Vector 2 — join plaintext (nested objects + meta):
+Vector 2 — join plaintext (nested objects + meta, all meta fields required):
 Input:  {"capabilities":{"methods":["wallet_signTransaction","wallet_signMessage"],
          "events":["accountsChanged","chainChanged"],
-         "chains":["eip155:1","eip155:137"]},"meta":{"name":"MyWallet"}}
-Output: {"capabilities":{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]},"meta":{"name":"MyWallet"}}
-SHA-256: 925d92d0966ff5e0def4f998a1612bb12a402f14a684173b133ad39fe1bccfe9
+         "chains":["eip155:1","eip155:137"]},
+         "meta":{"name":"MyWallet","description":"A multi-chain wallet",
+         "url":"https://mywallet.app","icon":"https://mywallet.app/icon.png"}}
+Output: {"capabilities":{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]},"meta":{"description":"A multi-chain wallet","icon":"https://mywallet.app/icon.png","name":"MyWallet","url":"https://mywallet.app"}}
+SHA-256: 9f4f3b71b0db39ba8b86173b8c78182799d0a745c68b6e89e5d8f0d3def52594
 ```
 
 ```text
@@ -567,18 +569,14 @@ The wallet declares its granted session scope inside `sealed_join`:
 Maps sub-protocol namespace to integer version. If absent, assume
 version 1 for all declared namespaces.
 
-**Wallet `meta` fields:**
+**Wallet `meta` fields** (all required):
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | yes | Wallet display name. |
-| `description` | no | Short description. |
-| `url` | no | Wallet website URL. |
-| `icon` | no | Wallet icon URL. If present, MUST be `https:`. |
-
-Only `name` is required. DApp implementations SHOULD display
-whichever fields are present and gracefully handle missing optional
-fields.
+| `description` | yes | Short description. |
+| `url` | yes | Wallet website URL. |
+| `icon` | yes | Wallet icon URL. MUST be `https:`. |
 
 ### 7.1 Scope Enforcement
 
@@ -1245,7 +1243,7 @@ join_encryption_key  = 981e75c4fad86e3db377517816a24b27564661ab89d327217684e0a56
 
 ```text
 join_plaintext canonical JSON:
-{"capabilities":{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]},"meta":{"name":"MyWallet"}}
+{"capabilities":{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]},"meta":{"description":"A multi-chain wallet","icon":"https://mywallet.app/icon.png","name":"MyWallet","url":"https://mywallet.app"}}
 
 join_nonce     = 09474eabe263432ebc7e4756
 join_aad       = a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b204
@@ -1256,23 +1254,27 @@ ciphertext+tag = 1f21896b618b3413d711bfb4bcad479530a642b67011da91
                  aa8f3bb27dfa2292e3848b6e523abf7a50d4affa823a9c21
                  a1522b142dbd6fb9fff6af1475b3007791f074a3622852eb
                  6fdd7fad68558f71ffcbbf1fc9fb7c2e21dbe76a74c85d91
-                 581e66d3ebd987403d464f4704bf5a9ac10f9ce428ce4869
-                 5abce7b95910d662d4e17004874fc8a457a3983a8a5e11f1
-                 e6d028de7389
+                 581e66d3ebd987403d464f4704bf5a9ac10f9ce422ca566f
+                 0aefb5804928d92c82a6450697479718e2eceafbe7482162
+                 663cbc1cb83de648d9a06681a8e350ac5f9d2a8a3ead3f61
+                 956f5f90c122eeba43473296b131c89187e7c9360d0e4e8c
+                 de8f6683fef3da4e851b026a0170f6a82aa30d7102560cad
+                 b2f97fcbaf2f490a8c2f61fbe2814afddc784b31eca1959e
+                 6eff5f06f7b89091c4e4d1330b1ddf
 
-sealed_join base64url = CUdOq-JjQy68fkdWHyGJa2GLNBPXEb-0vK1HlTCmQrZwEdqRRb0iyBX9ZHGkv74L6J24LMM2AVFsrXV9pjcCmtLx21fkj6ves8rd-RtjyW6WS44-qo87sn36IpLjhItuUjq_elDUr_qCOpwhoVIrFC29b7n_9q8UdbMAd5HwdKNiKFLrb91_rWhVj3H_y78fyft8LiHb52p0yF2RWB5m0-vZh0A9Rk9HBL9amsEPnOQozkhpWrznuVkQ1mLU4XAEh0_IpFejmDqKXhHx5tAo3nOJ
+sealed_join base64url = CUdOq-JjQy68fkdWHyGJa2GLNBPXEb-0vK1HlTCmQrZwEdqRRb0iyBX9ZHGkv74L6J24LMM2AVFsrXV9pjcCmtLx21fkj6ves8rd-RtjyW6WS44-qo87sn36IpLjhItuUjq_elDUr_qCOpwhoVIrFC29b7n_9q8UdbMAd5HwdKNiKFLrb91_rWhVj3H_y78fyft8LiHb52p0yF2RWB5m0-vZh0A9Rk9HBL9amsEPnOQiylZvCu-1gEko2SyCpkUGl0eXGOLs6vvnSCFiZjy8HLg95kjZoGaBqONQrF-dKoo-rT9hlW9fkMEi7rpDRzKWsTHIkYfnyTYNDk6M3o9mg_7z2k6FGwJqAXD2qCqjDXECVgytsvl_y68vSQqML2H74oFK_dx4SzHsoZWebv9fBve4kJHE5NEzCx3f
 ```
 
 ### A.4 Transcript and Traffic Keys
 
 ```text
 capabilities JSON = {"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]}
-meta JSON         = {"name":"MyWallet"}
+meta JSON         = {"description":"A multi-chain wallet","icon":"https://mywallet.app/icon.png","name":"MyWallet","url":"https://mywallet.app"}
 dapp_name         = MyDApp
 
-transcript_hash    = 51d1797d9ab563c1d26e033af2bf8fa17c741af5f6c0d4071e69dfd25ce8d39f
-dapp_to_wallet_key = 782ccebad576c74dede0ba376a324d06b6aa7008b90116bc57c693171c41c074
-wallet_to_dapp_key = 26bb36c7e36a29df7b92cee30a6b16a09964b3b74833d0b742a2c01b4ab8c925
+transcript_hash    = dd2cf890c3ac3855c1fb2479ada829d7dd3656001f80e316fa5e16fed5d6b535
+dapp_to_wallet_key = 1353e42d494f8618e6bfc04c0236cc6004994c52c95d371f113459ea153c7fdc
+wallet_to_dapp_key = fd0240cd5d4b00b3709549e102a918cf08d0d268fbdf468477cdc1ef663a55d6
 ```
 
 ### A.5 Session Fingerprint
@@ -1289,9 +1291,9 @@ fingerprint = 8902
 ### A.6 AEAD Encryption (dapp->wallet, seq=0)
 
 ```text
-traffic_key = 782ccebad576c74dede0ba376a324d06b6aa7008b90116bc57c693171c41c074
+traffic_key = 1353e42d494f8618e6bfc04c0236cc6004994c52c95d371f113459ea153c7fdc
 seq_bytes   = 00000000
-nonce       = 8e8a6459ee942cc99709de1e
+nonce       = b71ba8a87d41562e5af426d7
 
 from = "HJ_Yj0VgbZMqgMcYJK4VHRXXPnfeOOjgAIUuYU-ucBk"
 id   = "req-001"
@@ -1300,9 +1302,9 @@ aad_header = 01002b484a5f596a305667625a4d71674d63594a4b345648525858506e66654f4f6
 
 plaintext = {"_method":"wallet_getAccounts","chain":"eip155:1"}
 
-ciphertext+tag = ce3fe8bcf32e130e002ea8a9029d5457f4ee2978220af0b9
-                 eff01361f788df6f50e8b281378ed1bc48b13516844b787b
-                 784474b4bd8301b7ed97d52515d535ce223a79
+ciphertext+tag = 2aed1e76963c25234d9a2e023fdf40d35b9e1c7a9a3fd121
+                 c045c14df5e5627726213febe2459ff4c24d2c709d4c19d0
+                 0b6f43f8ea2418e68e8e0840bf7771ada851a5
 
-sealed = AAAAAM4_6LzzLhMOAC6oqQKdVFf07il4Igrwue_wE2H3iN9vUOiygTeO0bxIsTUWhEt4e3hEdLS9gwG37ZfVJRXVNc4iOnk
+sealed = AAAAACrtHnaWPCUjTZouAj_fQNNbnhx6mj_RIcBFwU315WJ3JiE_6-JFn_TCTSxwnUwZ0AtvQ_jqJBjmjo4IQL93ca2oUaU
 ```

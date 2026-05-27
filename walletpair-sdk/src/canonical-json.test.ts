@@ -397,18 +397,23 @@ describe('canonicalJson — protocol spec test vectors (all SHA-256 verified)', 
     expect(hash(output)).toBe('4da366e2aae26b47b3d90fff52410752348733350ce2525dce7d64510f571333');
   });
 
-  it('vector 2: join plaintext (nested objects + meta)', () => {
+  it('vector 2: join plaintext (nested objects + meta, all fields required)', () => {
     const output = canonicalJson({
       capabilities: {
         methods: ['wallet_signTransaction', 'wallet_signMessage'],
         events: ['accountsChanged', 'chainChanged'],
         chains: ['eip155:1', 'eip155:137'],
       },
-      meta: { name: 'MyWallet' },
+      meta: {
+        name: 'MyWallet',
+        description: 'A multi-chain wallet',
+        url: 'https://mywallet.app',
+        icon: 'https://mywallet.app/icon.png',
+      },
     });
-    const expected = '{"capabilities":{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]},"meta":{"name":"MyWallet"}}';
+    const expected = '{"capabilities":{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]},"meta":{"description":"A multi-chain wallet","icon":"https://mywallet.app/icon.png","name":"MyWallet","url":"https://mywallet.app"}}';
     expect(output).toBe(expected);
-    expect(hash(output)).toBe('925d92d0966ff5e0def4f998a1612bb12a402f14a684173b133ad39fe1bccfe9');
+    expect(hash(output)).toBe('9f4f3b71b0db39ba8b86173b8c78182799d0a745c68b6e89e5d8f0d3def52594');
   });
 
   it('vector 3a: null', () => {
