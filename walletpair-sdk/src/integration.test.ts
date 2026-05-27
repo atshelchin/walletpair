@@ -112,7 +112,7 @@ describe('Integration: DApp ↔ Wallet full flow', () => {
     expect(dappPhases).toContain('connected');
     expect(dappPhases).toContain('closed');
 
-    expect(walletPhases).toContain('waiting');
+    expect(walletPhases).toContain('waiting_accept');
     expect(walletPhases).toContain('connected');
   });
 

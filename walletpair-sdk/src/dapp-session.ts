@@ -347,6 +347,18 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   // -------------------------------------------------------------------------
 
   private handleMessage(msg: ProtocolMessage): void {
+    // §2: Peers MUST reject any peer-sent message where from equals "_adapter"
+    if (msg.t !== 'ready' && msg.t !== 'terminate' && msg.from === '_adapter') {
+      this.emit('error', new Error('Rejected message with spoofed _adapter from'));
+      return;
+    }
+
+    // §15 rule 12: reject unsupported protocol version
+    if (msg.v !== 1) {
+      this.close('unsupported_version');
+      return;
+    }
+
     switch (msg.t) {
       case 'ready': {
         const readyBody = msg.body as { state?: string; reconnect?: boolean; remote?: string | null };
@@ -492,9 +504,18 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
           meta: joinMeta,
         });
 
-        // Auto-accept: sealed_join decryption success proves the wallet
-        // possesses the dApp's public key (obtained via QR code).
-        this.doAccept();
+        this.setPhase('pending_accept');
+
+        // Auto-accept for known wallets on reconnect, or when autoAccept is enabled
+        if (this.autoAccept || knownWallet) {
+          this.doAccept();
+        } else {
+          // Application must call acceptWallet() or rejectWallet()
+          this.pendingAcceptTimer = setTimeout(() => {
+            this.emit('error', new Error('Pending accept timed out'));
+            this.close('timeout');
+          }, PENDING_ACCEPT_TIMEOUT);
+        }
         break;
       }
 
@@ -623,7 +644,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       dappPubKeyB64: this.pubKeyB64,
       walletPubKeyB64,
       capabilities: capabilities ?? null,
-      walletMeta: walletMeta ?? {},
+      walletMeta: walletMeta ?? null,
       dappName: this.meta.name,
     };
   }

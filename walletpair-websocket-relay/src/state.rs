@@ -46,6 +46,9 @@ impl ChannelState {
             // Ping/pong allowed in PendingAccept too
             (ChannelState::PendingAccept, "ping", _) => true,
             (ChannelState::PendingAccept, "pong", _) => true,
+            // Ping/pong allowed in WaitingForWallet too
+            (ChannelState::WaitingForWallet, "ping", _) => true,
+            (ChannelState::WaitingForWallet, "pong", _) => true,
             _ => false,
         }
     }
@@ -78,6 +81,9 @@ pub struct Channel {
     pub wallet_peer_id: Option<PeerId>,
     pub wallet_conn: Option<PeerConn>,
 
+    // Whether the wallet joined with sealed_join: null (reconnect)
+    pub is_reconnect: bool,
+
     // Pending request IDs (for limit enforcement)
     pub pending_requests: HashSet<String>,
 }
@@ -93,6 +99,7 @@ impl Channel {
             dapp_conn: Some(dapp_conn),
             wallet_peer_id: None,
             wallet_conn: None,
+            is_reconnect: false,
             pending_requests: HashSet::new(),
         }
     }
@@ -220,10 +227,12 @@ mod tests {
     }
 
     #[test]
-    fn waiting_rejects_everything_except_close() {
+    fn waiting_rejects_data_but_allows_close_and_ping() {
         assert!(!ChannelState::WaitingForWallet.allows_message("req", Role::DApp));
         assert!(!ChannelState::WaitingForWallet.allows_message("accept", Role::DApp));
         assert!(ChannelState::WaitingForWallet.allows_message("close", Role::DApp));
+        assert!(ChannelState::WaitingForWallet.allows_message("ping", Role::DApp));
+        assert!(ChannelState::WaitingForWallet.allows_message("pong", Role::DApp));
     }
 
     #[test]
@@ -269,8 +278,11 @@ mod tests {
     }
 
     #[test]
-    fn waiting_rejects_ping() {
-        assert!(!ChannelState::WaitingForWallet.allows_message("ping", Role::DApp));
+    fn waiting_allows_ping() {
+        assert!(ChannelState::WaitingForWallet.allows_message("ping", Role::DApp));
+        assert!(ChannelState::WaitingForWallet.allows_message("ping", Role::Wallet));
+        assert!(ChannelState::WaitingForWallet.allows_message("pong", Role::DApp));
+        assert!(ChannelState::WaitingForWallet.allows_message("pong", Role::Wallet));
     }
 
     #[test]

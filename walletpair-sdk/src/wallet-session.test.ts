@@ -77,7 +77,7 @@ describe('WalletSession', () => {
       await session.joinFromUri(uri);
 
       expect(session.channelId).toBe(channelId);
-      expect(session.phase).toBe('waiting');
+      expect(session.phase).toBe('waiting_accept');
 
       const joinMsg = transport.sent.find(m => m.t === 'join');
       expect(joinMsg).toBeTruthy();
@@ -115,7 +115,7 @@ describe('WalletSession', () => {
       receiveConnected();
 
       expect(session.phase).toBe('connected');
-      expect(phases).toContain('waiting');
+      expect(phases).toContain('waiting_accept');
       expect(phases).toContain('connected');
     });
 
@@ -441,7 +441,7 @@ describe('WalletSession', () => {
     it('responds to ping with pong', () => {
       transport.receive({
         v: 1, t: 'ping', ch: channelId,
-        ts: 12345, from: '_adapter', body: {},
+        ts: 12345, from: dappKp.publicKeyB64, body: {},
       } as ProtocolMessage);
 
       const pong = transport.sent.find(m => m.t === 'pong');
@@ -546,6 +546,89 @@ describe('WalletSession', () => {
     });
   });
 
+  describe('protocol compliance', () => {
+    it('rejects messages with from="_adapter" for peer types (§2)', async () => {
+      const errorHandler = vi.fn();
+      session.on('error', errorHandler);
+
+      await session.joinFromUri(makePairingUri());
+      receiveConnected();
+
+      // Send a req message with from: '_adapter' — should be rejected
+      transport.receive({
+        v: 1, t: 'req', ch: channelId,
+        ts: Date.now(), from: '_adapter',
+        body: { id: 'spoofed-1', sealed: 'fake' },
+      } as ProtocolMessage);
+
+      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('_adapter'),
+      }));
+    });
+
+    it('rejects messages with unsupported version (§15 rule 12)', async () => {
+      await session.joinFromUri(makePairingUri());
+      receiveConnected();
+
+      // Send a message with v: 2 — should close with unsupported_version
+      transport.receive({
+        v: 2, t: 'req', ch: channelId,
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'v2-req', sealed: 'fake' },
+      } as unknown as ProtocolMessage);
+
+      expect(session.phase).toBe('closed');
+      const closeMsg = transport.sent.find(m => m.t === 'close') as any;
+      expect(closeMsg).toBeTruthy();
+      expect(closeMsg.body.reason).toBe('unsupported_version');
+    });
+
+    it('rejects unsupported methods at runtime (§7.1)', async () => {
+      // Session has capabilities.methods = ['wallet_getAccounts', 'wallet_signMessage']
+      await session.joinFromUri(makePairingUri());
+
+      const walletPubB64 = transport.sent.find(m => m.t === 'join')!.from!;
+      const shared = computeSharedSecret(dappKp.privateKey, b64urlDecode(walletPubB64));
+      const rootKey = deriveSessionKey(shared, channelId);
+      const context: SessionCryptoContext = {
+        dappPubKeyB64: dappKp.publicKeyB64,
+        walletPubKeyB64: walletPubB64,
+        capabilities: {
+          methods: ['wallet_getAccounts', 'wallet_signMessage'],
+          events: ['accountsChanged', 'chainChanged'],
+          chains: ['eip155:1'],
+        },
+        walletMeta: { name: 'Test Wallet', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png', address: '0xtest' },
+        dappName: 'Test dApp',
+      };
+      const keys = deriveDirectionalSessionKeys(rootKey, channelId, context);
+      const dappToWalletKey = keys.dappToWalletKey;
+      const walletToDappKey = keys.walletToDappKey;
+
+      receiveConnected();
+
+      const handler = vi.fn();
+      session.on('request', handler);
+
+      // Send a request for a method NOT in capabilities
+      const sealedParams = { _method: 'wallet_signTransaction', data: '0x...' };
+      transport.receive({
+        v: 1, t: 'req', ch: channelId,
+        ts: Date.now(), from: dappKp.publicKeyB64,
+        body: { id: 'unsup-1', sealed: sealPayload(dappToWalletKey, channelId, 0, sealedParams, { type: 'req', from: dappKp.publicKeyB64, id: 'unsup-1' }) },
+      } as ProtocolMessage);
+
+      // Should NOT emit request
+      expect(handler).not.toHaveBeenCalled();
+
+      // Should send an error response with unsupported_method
+      const resMsg = transport.sent.find(m => m.t === 'res') as any;
+      expect(resMsg).toBeTruthy();
+      const { data } = unsealPayload(walletToDappKey, channelId, resMsg.body.sealed, { type: 'res', from: walletPubB64, id: 'unsup-1' });
+      expect(data).toMatchObject({ _ok: false, code: 'unsupported_method' });
+    });
+  });
+
   describe('scope intersection (computeScopeIntersection)', () => {
     it('intersects wallet capabilities with dApp-declared scope from URI', async () => {
       const wideWalletTransport = new MockTransport();
@@ -589,10 +672,10 @@ describe('WalletSession', () => {
       const unsealed = unsealJoin(joinKey, chLocal, joinMsg.body.sealed_join);
 
       const caps = unsealed.capabilities as { methods: string[]; chains: string[]; events: string[] };
-      // Only the intersection should be present
-      expect(caps.methods).toEqual(['a', 'b']);
-      expect(caps.chains).toEqual(['eip155:1']);
-      // Events are not intersected, they pass through
+      // Wallet grants ALL its capabilities (not just the intersection)
+      // per §7.1: wallet MAY grant additional methods/chains beyond requested
+      expect(caps.methods).toEqual(['a', 'b', 'c']);
+      expect(caps.chains).toEqual(['eip155:1', 'eip155:137']);
       expect(caps.events).toEqual(['accountsChanged']);
     });
   });

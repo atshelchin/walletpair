@@ -122,6 +122,7 @@ pub fn load_state(
             dapp_conn: None, // no live connection after restart
             wallet_peer_id: cs.wallet_peer_id,
             wallet_conn: None,
+            is_reconnect: false,
             pending_requests: cs.pending_requests.into_iter().collect(),
         };
 

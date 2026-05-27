@@ -351,12 +351,13 @@ describe('DAppSession', () => {
   describe('ping/pong', () => {
     it('responds to ping with pong', async () => {
       await session.createPairing();
-      (session as any).remotePubKey = b64urlDecode('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-      receiveConnected(transport, session, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      const walletPubB64 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+      (session as any).remotePubKey = b64urlDecode(walletPubB64);
+      receiveConnected(transport, session, walletPubB64);
 
       transport.receive({
         v: 1, t: 'ping', ch: session.channelId,
-        ts: 1000, from: '_adapter', body: {},
+        ts: 1000, from: walletPubB64, body: {},
       } as ProtocolMessage);
 
       const pong = transport.sent.find(m => m.t === 'pong');
@@ -365,9 +366,10 @@ describe('DAppSession', () => {
     });
 
     it('sends ping', async () => {
+      const walletPubB64 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
       await session.createPairing();
-      (session as any).remotePubKey = b64urlDecode('AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
-      receiveConnected(transport, session, 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+      (session as any).remotePubKey = b64urlDecode(walletPubB64);
+      receiveConnected(transport, session, walletPubB64);
 
       session.ping();
       const ping = transport.sent.find(m => m.t === 'ping');
@@ -465,9 +467,10 @@ describe('DAppSession', () => {
   describe('close message handling', () => {
     it('transitions to closed on receiving close', async () => {
       await session.createPairing();
+      const walletKp = generateX25519KeyPair();
       transport.receive({
         v: 1, t: 'close', ch: session.channelId,
-        ts: Date.now(), from: '_adapter',
+        ts: Date.now(), from: walletKp.publicKeyB64,
         body: { reason: 'timeout' },
       } as ProtocolMessage);
 
@@ -485,6 +488,58 @@ describe('DAppSession', () => {
       expect(session.phase).toBe('closed');
       // After destroy, emitting should not call handler
       // (removeAll was called)
+    });
+  });
+
+  describe('protocol compliance', () => {
+    it('rejects messages with from="_adapter" for peer types (§2)', async () => {
+      await session.createPairing();
+      const errorHandler = vi.fn();
+      session.on('error', errorHandler);
+
+      // Send a close message with from: '_adapter' — should be rejected
+      transport.receive({
+        v: 1, t: 'close', ch: session.channelId,
+        ts: Date.now(), from: '_adapter',
+        body: { reason: 'normal' },
+      } as ProtocolMessage);
+
+      expect(errorHandler).toHaveBeenCalledWith(expect.objectContaining({
+        message: expect.stringContaining('_adapter'),
+      }));
+      // Should NOT have processed it as a real close
+      expect(session.phase).not.toBe('closed');
+    });
+
+    it('rejects messages with unsupported version (§15 rule 12)', async () => {
+      await session.createPairing();
+
+      // Send message with v: 2 — should close with unsupported_version
+      transport.receive({
+        v: 2, t: 'close', ch: session.channelId,
+        ts: Date.now(), from: 'somepubkey',
+        body: { reason: 'normal' },
+      } as unknown as ProtocolMessage);
+
+      expect(session.phase).toBe('closed');
+      const closeMsg = transport.sent.find(m => m.t === 'close') as any;
+      expect(closeMsg).toBeTruthy();
+      expect(closeMsg.body.reason).toBe('unsupported_version');
+    });
+
+    it('uses null for missing walletMeta in session context', async () => {
+      await session.createPairing();
+
+      // Before any wallet joins, walletMeta should be undefined
+      expect(session.walletMeta).toBeUndefined();
+
+      // Access the private sessionContext to verify it uses null (not {})
+      const context = (session as any).sessionContext(
+        'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        undefined,
+        undefined,
+      );
+      expect(context.walletMeta).toBeNull();
     });
   });
 
@@ -506,8 +561,9 @@ describe('DAppSession', () => {
       receiveConnected(transport, session, walletKp.publicKeyB64);
 
       expect(session.phase).toBe('connected');
-      // Phase should go waiting → (accepting) → connected, never pending_accept
-      expect(phases).not.toContain('pending_accept');
+      // Phase goes waiting → pending_accept → (auto-accept) → accepting → connected
+      // pending_accept is emitted briefly before auto-accept kicks in
+      expect(phases).toContain('pending_accept');
     });
   });
 

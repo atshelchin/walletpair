@@ -13,7 +13,7 @@
 
   // Split code into pairs for display
   let codePairs = $derived(
-    code ? [code.slice(0, 2), code.slice(2, 4), code.slice(4, 6)] : [],
+    code ? [code.slice(0, 2), code.slice(2, 4)] : [],
   );
 </script>
 

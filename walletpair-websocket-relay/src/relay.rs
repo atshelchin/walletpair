@@ -60,8 +60,8 @@ pub fn process_message(
             handle_create(store, conn_id, sender, &ch, &from, metrics, at_capacity)
         }
 
-        ClientMessage::Join { ch, from, .. } => {
-            handle_join(store, conn_id, sender, raw_text, &ch, &from, metrics)
+        ClientMessage::Join { ch, from, sealed_join_null, .. } => {
+            handle_join(store, conn_id, sender, raw_text, &ch, &from, sealed_join_null, metrics)
         }
 
         ClientMessage::Accept {
@@ -76,8 +76,8 @@ pub fn process_message(
             handle_data(store, raw_text, &ch, &from, "res", Some(&id), metrics)
         }
 
-        ClientMessage::Evt { ch, from } => {
-            handle_data(store, raw_text, &ch, &from, "evt", None, metrics)
+        ClientMessage::Evt { ch, from, id } => {
+            handle_data(store, raw_text, &ch, &from, "evt", Some(&id), metrics)
         }
 
         ClientMessage::Ping { ch, from } => {
@@ -135,7 +135,7 @@ fn handle_create(
     metrics.channels_created_total.inc();
 
     // Send ready.waiting
-    let ready = build_ready_waiting(ch, Role::DApp, from);
+    let ready = build_ready_waiting(ch, Role::DApp, from, false);
     let _ = try_send(sender, ready, metrics);
 
     tracing::info!(ch = %ch, peer = %from, "channel created");
@@ -149,6 +149,7 @@ fn handle_join(
     raw_text: &str,
     ch: &str,
     from: &PeerId,
+    sealed_join_null: bool,
     metrics: &Metrics,
 ) -> ProcessResult {
     // Channel must exist
@@ -188,6 +189,7 @@ fn handle_join(
         conn_id,
     });
     channel.state = ChannelState::PendingAccept;
+    channel.is_reconnect = sealed_join_null;
     metrics.channels_joined_total.inc();
 
     // Forward join to dApp (raw message) — skip if dApp is disconnected
@@ -204,7 +206,7 @@ fn handle_join(
         .inc();
 
     // Send ready.waiting to wallet
-    let ready = build_ready_waiting(ch, Role::Wallet, from);
+    let ready = build_ready_waiting(ch, Role::Wallet, from, sealed_join_null);
     let _ = try_send(sender, ready, metrics);
 
     tracing::info!(ch = %ch, peer = %from, "wallet joined");
@@ -263,15 +265,16 @@ fn handle_accept(
     metrics.channels_connected_total.inc();
 
     let wallet_id = channel.wallet_peer_id.clone().unwrap();
+    let reconnect = channel.is_reconnect;
 
     // Send ready.connected to dApp
-    let dapp_ready = build_ready_connected(ch, Role::DApp, from, &wallet_id);
+    let dapp_ready = build_ready_connected(ch, Role::DApp, from, &wallet_id, reconnect);
     if let Some(ref conn) = channel.dapp_conn {
         let _ = try_send(&conn.sender, dapp_ready, metrics);
     }
 
     // Send ready.connected to wallet
-    let wallet_ready = build_ready_connected(ch, Role::Wallet, &wallet_id, from);
+    let wallet_ready = build_ready_connected(ch, Role::Wallet, &wallet_id, from, reconnect);
     if let Some(ref conn) = channel.wallet_conn {
         let _ = try_send(&conn.sender, wallet_ready, metrics);
     }
@@ -471,7 +474,7 @@ mod tests {
     fn make_create_msg(ch: &str, from: &str) -> (String, ClientMessage) {
         let raw = serde_json::json!({
             "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": from,
-            "body": {}
+            "body": {"meta": {}}
         })
         .to_string();
         let msg = protocol::parse_message(&raw).unwrap();

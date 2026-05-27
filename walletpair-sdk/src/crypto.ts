@@ -178,7 +178,7 @@ export function sealJoin(
   capabilities: unknown,
   meta?: unknown,
 ): string {
-  const plainObj: Record<string, unknown> = { capabilities, meta: meta ?? {} };
+  const plainObj: Record<string, unknown> = { capabilities, meta: meta ?? null };
   const plaintext = utf8ToBytes(canonicalJson(plainObj));
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const aad = concatBytes(hexToBytes(channelIdHex), new Uint8Array([0x04]));
@@ -283,6 +283,16 @@ export function sha256Hex(bytes: Uint8Array): string {
   return bytesToHex(sha256(bytes));
 }
 
+/** Constant-time string comparison to prevent timing side-channels (§9.1). */
+export function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let i = 0; i < a.length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+}
+
 // ---------------------------------------------------------------------------
 // Channel ID generation
 // ---------------------------------------------------------------------------
@@ -328,15 +338,22 @@ export function parsePairingUri(uri: string): PairingParams {
   // §8.1: pubkey must decode to 32 bytes
   const pubkeyBytes = b64urlDecode(pubkey);
   if (pubkeyBytes.length !== 32) throw new Error('Invalid pairing URI: pubkey must be 32 bytes');
+  // §8.1: name, url, icon are required
+  const name = params.get('name');
+  const url = params.get('url');
+  const icon = params.get('icon');
+  if (!name) throw new Error('Invalid pairing URI: missing required param "name"');
+  if (!url) throw new Error('Invalid pairing URI: missing required param "url"');
+  if (!icon) throw new Error('Invalid pairing URI: missing required param "icon"');
   const methodsStr = params.get('methods');
   const chainsStr = params.get('chains');
   return {
     ch,
     pubkey,
     relay: params.get('relay') ?? '',
-    name: params.get('name') ?? undefined,
-    url: params.get('url') ?? undefined,
-    icon: params.get('icon') ?? undefined,
+    name,
+    url,
+    icon,
     methods: methodsStr ? methodsStr.split(',').filter(Boolean) : undefined,
     chains: chainsStr ? chainsStr.split(',').filter(Boolean) : undefined,
   };

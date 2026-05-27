@@ -144,7 +144,7 @@ async fn main() {
                 let channel_ids: Vec<String> = shard.channels.keys().cloned().collect();
                 for ch_id in &channel_ids {
                     let close_msg =
-                        protocol::build_terminate(ch_id, protocol::CloseReason::ServerShutdown);
+                        protocol::build_terminate(ch_id, protocol::CloseReason::Timeout);
                     if let Some(ch) = shard.channels.get(ch_id) {
                         if let Some(ref conn) = ch.dapp_conn {
                             let _ = conn.sender.try_send(close_msg.clone());
@@ -155,7 +155,7 @@ async fn main() {
                     }
                 }
                 for ch_id in channel_ids {
-                    shard.remove_channel(&ch_id, &m, protocol::CloseReason::ServerShutdown);
+                    shard.remove_channel(&ch_id, &m, protocol::CloseReason::Timeout);
                 }
             });
         }

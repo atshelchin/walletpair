@@ -59,7 +59,7 @@ pub async fn handle_ws(
                 if let Some(ref b) = binding {
                     let close = protocol::build_terminate(
                         &b.channel_id,
-                        protocol::CloseReason::ServerShutdown,
+                        protocol::CloseReason::Timeout,
                     );
                     let _ = tx.try_send(close);
                 }

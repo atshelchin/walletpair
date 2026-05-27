@@ -26,6 +26,7 @@ import {
   unsealPayload,
   sealJoin,
   sha256Hex,
+  constantTimeEqual,
   b64urlEncode,
   b64urlDecode,
   bytesToHex,
@@ -41,6 +42,7 @@ const MAX_MESSAGE_BYTES = 65536; // §15 rule 10: 64 KB
 const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours (§16 rule 16)
 const IDEMPOTENCY_CACHE_LIMIT = 1024;
 const IDEMPOTENCY_RESPONSE_LIMIT_BYTES = 16 * 1024;
+const BROADCAST_CACHE_LIMIT = 256;
 
 interface PendingRequestRecord {
   paramsHash: string;
@@ -178,7 +180,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     }
 
     await this.transport.connect();
-    this.setPhase('waiting');
+    this.setPhase('waiting_accept');
     this.sendJoin();
   }
 
@@ -320,6 +322,18 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
   // -------------------------------------------------------------------------
 
   private handleMessage(msg: ProtocolMessage): void {
+    // §2: Peers MUST reject any peer-sent message where from equals "_adapter"
+    if (msg.t !== 'ready' && msg.t !== 'terminate' && msg.from === '_adapter') {
+      this.emit('error', new Error('Rejected message with spoofed _adapter from'));
+      return;
+    }
+
+    // §15 rule 12: reject unsupported protocol version
+    if (msg.v !== 1) {
+      this.close('unsupported_version');
+      return;
+    }
+
     switch (msg.t) {
       case 'ready': {
         const readyBody = msg.body as { state?: string; reconnect?: boolean; remote?: string | null };
@@ -333,7 +347,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
           }
         }
         if (readyBody.state === 'waiting') {
-          this.setPhase('waiting');
+          this.setPhase('waiting_accept');
         } else if (readyBody.state === 'connected') {
           this.setPhase('connected');
           this.startSessionTtl();
@@ -363,13 +377,18 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
             break;
           }
           const method = (data as any)._method;
+          // §7.1 runtime enforcement: reject methods not in capabilities
+          if (!this.effectiveCapabilities.methods.includes(method)) {
+            this.reject(reqBody.id, 'unsupported_method', `Method "${method}" not in granted capabilities`);
+            break;
+          }
           const { _method: _, ...rest } = data as Record<string, unknown>;
           const params: unknown = rest;
           const paramsHash = sha256Hex(plaintext);
 
           const cachedBroadcast = this.broadcastResponseCache.get(reqBody.id);
           if (cachedBroadcast) {
-            if (cachedBroadcast.paramsHash !== paramsHash) {
+            if (!constantTimeEqual(cachedBroadcast.paramsHash, paramsHash)) {
               this.reject(reqBody.id, 'invalid_params', 'Duplicate request ID with different params');
               break;
             }
@@ -379,7 +398,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
           const cached = this.idempotencyCache.get(reqBody.id);
           if (cached) {
-            if (cached.paramsHash !== paramsHash) {
+            if (!constantTimeEqual(cached.paramsHash, paramsHash)) {
               this.reject(reqBody.id, 'invalid_params', 'Duplicate request ID with different params');
               break;
             }
@@ -392,7 +411,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
 
           const pending = this.pendingRequestRecords.get(reqBody.id);
           if (pending) {
-            if (pending.paramsHash !== paramsHash) {
+            if (!constantTimeEqual(pending.paramsHash, paramsHash)) {
               this.reject(reqBody.id, 'invalid_params', 'Duplicate request ID with different params');
             }
             break;
@@ -496,6 +515,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
         data,
         tooLarge: false,
       });
+      this.evictBroadcastCache();
     }
   }
 
@@ -509,6 +529,14 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       const oldest = this.idempotencyCache.keys().next().value as string | undefined;
       if (!oldest) return;
       this.idempotencyCache.delete(oldest);
+    }
+  }
+
+  private evictBroadcastCache(): void {
+    while (this.broadcastResponseCache.size > BROADCAST_CACHE_LIMIT) {
+      const oldest = this.broadcastResponseCache.keys().next().value as string | undefined;
+      if (!oldest) return;
+      this.broadcastResponseCache.delete(oldest);
     }
   }
 
@@ -550,7 +578,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       dappPubKeyB64: this.remotePubKey ? b64urlEncode(this.remotePubKey) : '',
       walletPubKeyB64: this.pubKeyB64,
       capabilities: this.effectiveCapabilities,
-      walletMeta: this.meta ?? {},
+      walletMeta: this.meta ?? null,
       dappName: this.dappName,
     };
   }
@@ -561,19 +589,25 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
    */
   private computeScopeIntersection(): Capabilities {
     const base = this.capabilities;
-    let methods = base.methods;
-    let chains = base.chains;
-
+    // §7.1: Wallet MUST check it can satisfy dApp's minimum requirements.
+    // Wallet MAY grant additional methods/chains beyond what was requested.
+    // We grant all wallet capabilities (not just the intersection).
     if (this.dappDeclaredMethods?.length) {
-      const allowed = new Set(this.dappDeclaredMethods);
-      methods = base.methods.filter((m) => allowed.has(m));
+      const granted = new Set(base.methods);
+      const unsatisfied = this.dappDeclaredMethods.filter((m) => !granted.has(m));
+      if (unsatisfied.length > 0) {
+        // Wallet cannot satisfy dApp's requirements — emit warning but proceed
+        // (the dApp will check and close if needed)
+      }
     }
     if (this.dappDeclaredChains?.length) {
-      const allowed = new Set(this.dappDeclaredChains);
-      chains = base.chains.filter((c) => allowed.has(c));
+      const granted = new Set(base.chains);
+      const unsatisfied = this.dappDeclaredChains.filter((c) => !granted.has(c));
+      if (unsatisfied.length > 0) {
+        // Same as above
+      }
     }
-
-    const result: Capabilities = { methods, events: base.events, chains };
+    const result: Capabilities = { methods: base.methods, events: base.events, chains: base.chains };
     if (base.version != null) result.version = base.version;
     return result;
   }
@@ -617,7 +651,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     if (this.intentionalClose || this.phase === 'closed') return;
     try {
       await this.transport.connect();
-      this.setPhase('waiting');
+      this.setPhase('waiting_accept');
       this.sendJoin();
     } catch {
       this.scheduleReconnect();

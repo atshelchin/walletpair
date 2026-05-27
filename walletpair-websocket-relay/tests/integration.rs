@@ -111,7 +111,7 @@ fn create_msg(ch: &str, peer: &str) -> Value {
         "ch": ch,
         "ts": 1234,
         "from": peer,
-        "body": {}
+        "body": {"meta": {}}
     })
 }
 

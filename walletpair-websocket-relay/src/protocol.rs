@@ -76,8 +76,8 @@ impl CloseReason {
             Self::ProtocolError => "protocol_error",
             Self::UnsupportedVersion => "unsupported_version",
             Self::DecryptionFailed => "decryption_failed",
-            Self::SlowConsumer => "slow_consumer",
-            Self::ServerShutdown => "server_shutdown",
+            Self::SlowConsumer => "rate_limited",
+            Self::ServerShutdown => "timeout",
         }
     }
 }
@@ -101,6 +101,7 @@ pub enum ClientMessage {
     Join {
         ch: ChannelId,
         from: PeerId,
+        sealed_join_null: bool,
     },
     Accept {
         ch: ChannelId,
@@ -120,6 +121,7 @@ pub enum ClientMessage {
     Evt {
         ch: ChannelId,
         from: PeerId,
+        id: String,
     },
     Ping {
         ch: ChannelId,
@@ -274,7 +276,7 @@ pub fn parse_message(raw: &str) -> Result<ClientMessage, ParseError> {
     let ch = ch.to_string();
 
     // ts must be present and a number
-    if obj.get("ts").and_then(|v| v.as_u64()).is_none() {
+    if obj.get("ts").and_then(|v| v.as_f64()).is_none() {
         return Err(ParseError::MissingField("ts"));
     }
 
@@ -290,11 +292,20 @@ pub fn parse_message(raw: &str) -> Result<ClientMessage, ParseError> {
     match t {
         "create" => {
             validate_peer_id(&from)?;
+            // §4.2: create body must contain meta
+            if body.get("meta").and_then(|v| v.as_object()).is_none() {
+                return Err(ParseError::MissingField("body.meta"));
+            }
             Ok(ClientMessage::Create { ch, from })
         }
         "join" => {
             validate_peer_id(&from)?;
-            Ok(ClientMessage::Join { ch, from })
+            // §4.2: join body must contain sealed_join (string or null)
+            if !body.contains_key("sealed_join") {
+                return Err(ParseError::MissingField("body.sealed_join"));
+            }
+            let sealed_join_null = body.get("sealed_join").map_or(false, |v| v.is_null());
+            Ok(ClientMessage::Join { ch, from, sealed_join_null })
         }
         "accept" => {
             validate_peer_id(&from)?;
@@ -305,16 +316,27 @@ pub fn parse_message(raw: &str) -> Result<ClientMessage, ParseError> {
         "req" => {
             validate_peer_id(&from)?;
             let id = get_str(body, "id")?.to_string();
+            if !body.contains_key("sealed") {
+                return Err(ParseError::MissingField("body.sealed"));
+            }
             Ok(ClientMessage::Req { ch, id, from })
         }
         "res" => {
             validate_peer_id(&from)?;
             let id = get_str(body, "id")?.to_string();
+            if !body.contains_key("sealed") {
+                return Err(ParseError::MissingField("body.sealed"));
+            }
             Ok(ClientMessage::Res { ch, id, from })
         }
         "evt" => {
             validate_peer_id(&from)?;
-            Ok(ClientMessage::Evt { ch, from })
+            let id = get_str(body, "id")?.to_string();
+            // §4.2: evt body must contain sealed
+            if !body.contains_key("sealed") {
+                return Err(ParseError::MissingField("body.sealed"));
+            }
+            Ok(ClientMessage::Evt { ch, from, id })
         }
         "ping" => {
             validate_peer_id(&from)?;
@@ -350,7 +372,7 @@ fn now_ms() -> u64 {
         .as_millis() as u64
 }
 
-pub fn build_ready_waiting(ch: &str, role: Role, peer_id: &str) -> String {
+pub fn build_ready_waiting(ch: &str, role: Role, peer_id: &str, reconnect: bool) -> String {
     serde_json::json!({
         "v": 1,
         "t": "ready",
@@ -362,7 +384,7 @@ pub fn build_ready_waiting(ch: &str, role: Role, peer_id: &str) -> String {
             "role": role.as_str(),
             "self": peer_id,
             "remote": null,
-            "reconnect": false,
+            "reconnect": reconnect,
         }
     })
     .to_string()
@@ -373,6 +395,7 @@ pub fn build_ready_connected(
     role: Role,
     self_id: &str,
     remote_id: &str,
+    reconnect: bool,
 ) -> String {
     serde_json::json!({
         "v": 1,
@@ -385,7 +408,7 @@ pub fn build_ready_connected(
             "role": role.as_str(),
             "self": self_id,
             "remote": remote_id,
-            "reconnect": false,
+            "reconnect": reconnect,
         }
     })
     .to_string()
@@ -484,7 +507,7 @@ mod tests {
         let ch = make_channel_id();
         let json = serde_json::json!({
             "v": 1, "t": "create", "ch": ch, "ts": 1234, "from": pid,
-            "body": {}
+            "body": {"meta": {}}
         });
         let msg = parse_message(&json.to_string()).unwrap();
         assert!(matches!(msg, ClientMessage::Create { .. }));
@@ -567,7 +590,7 @@ mod tests {
 
     #[test]
     fn build_ready_waiting_valid_json() {
-        let json = build_ready_waiting("ab".repeat(32).as_str(), Role::DApp, "peer");
+        let json = build_ready_waiting("ab".repeat(32).as_str(), Role::DApp, "peer", false);
         let v: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["t"], "ready");
         assert_eq!(v["from"], "_adapter");
@@ -586,6 +609,7 @@ mod tests {
             Role::Wallet,
             "self",
             "remote",
+            false,
         );
         let v: Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["t"], "ready");
@@ -806,8 +830,8 @@ mod tests {
             (CloseReason::ProtocolError, "protocol_error"),
             (CloseReason::UnsupportedVersion, "unsupported_version"),
             (CloseReason::DecryptionFailed, "decryption_failed"),
-            (CloseReason::SlowConsumer, "slow_consumer"),
-            (CloseReason::ServerShutdown, "server_shutdown"),
+            (CloseReason::SlowConsumer, "rate_limited"),
+            (CloseReason::ServerShutdown, "timeout"),
         ];
         for (reason, expected) in reasons {
             assert_eq!(reason.as_str(), expected);

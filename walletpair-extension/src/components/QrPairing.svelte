@@ -1,7 +1,7 @@
 <script lang="ts">
   import QRCode from 'qrcode';
 
-  let { uri }: { uri: string } = $props();
+  let { uri, fingerprint }: { uri: string; fingerprint?: string } = $props();
 
   let qrDataUrl = $state('');
   let copied = $state(false);
@@ -42,9 +42,20 @@
     {/if}
   </div>
 
+  {#if fingerprint}
+    <div class="fingerprint">
+      <span class="fingerprint-label">Session Code</span>
+      <div class="fingerprint-code">
+        {#each [fingerprint.slice(0, 2), fingerprint.slice(2, 4)] as pair}
+          <span class="fp-pair">{pair}</span>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <p class="hint">Scan with a WalletPair-compatible wallet</p>
 
-  <button class="copy-btn" onclick={copyUri}>
+  <button class="copy-btn" onclick={copyUri} title="Less secure — same device only">
     {#if copied}
       Copied!
     {:else}
@@ -131,6 +142,35 @@
   .copy-btn:hover {
     background: var(--bg-hover);
     color: var(--text);
+  }
+
+  .fingerprint {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .fingerprint-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .fingerprint-code {
+    display: flex;
+    gap: 4px;
+  }
+
+  .fp-pair {
+    font-size: 20px;
+    font-weight: 700;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
   }
 
   .spinner {

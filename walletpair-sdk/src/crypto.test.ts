@@ -17,6 +17,8 @@ import {
   parsePairingUri,
   bytesToHex,
   hexToBytes,
+  constantTimeEqual,
+  canonicalJson,
 } from './crypto.js';
 
 // ---------------------------------------------------------------------------
@@ -330,21 +332,23 @@ const TEST_PUBKEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; // 32 zero-by
 
 describe('parsePairingUri', () => {
   it('parses a full URI', () => {
-    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=Test`;
+    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&relay=wss%3A%2F%2Frelay.example.com%2Fv1&name=Test&url=https%3A%2F%2Ftest.com&icon=https%3A%2F%2Ftest.com%2Ficon.png`;
     const params = parsePairingUri(uri);
     expect(params.ch).toBe(TEST_CH);
     expect(params.pubkey).toBe(TEST_PUBKEY);
     expect(params.relay).toBe('wss://relay.example.com/v1');
     expect(params.name).toBe('Test');
+    expect(params.url).toBe('https://test.com');
+    expect(params.icon).toBe('https://test.com/icon.png');
   });
 
   it('parses BLE URI (no relay)', () => {
-    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}`;
+    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&name=BLE%20Wallet&url=https%3A%2F%2Fble.example.com&icon=https%3A%2F%2Fble.example.com%2Ficon.png`;
     const params = parsePairingUri(uri);
     expect(params.ch).toBe(TEST_CH);
     expect(params.pubkey).toBe(TEST_PUBKEY);
     expect(params.relay).toBe('');
-    expect(params.name).toBeUndefined();
+    expect(params.name).toBe('BLE Wallet');
   });
 
   it('throws on missing ch', () => {
@@ -493,5 +497,60 @@ describe('hex helpers', () => {
 
   it('bytesToHex produces lowercase', () => {
     expect(bytesToHex(new Uint8Array([0xff, 0x0a]))).toBe('ff0a');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parsePairingUri — required param validation (protocol compliance)
+// ---------------------------------------------------------------------------
+
+describe('parsePairingUri required params', () => {
+  it('throws on missing required name param', () => {
+    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&url=https%3A%2F%2Fexample.com&icon=https%3A%2F%2Fexample.com%2Ficon.png`;
+    expect(() => parsePairingUri(uri)).toThrow('missing required param "name"');
+  });
+
+  it('throws on missing required url param', () => {
+    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&name=Test&icon=https%3A%2F%2Fexample.com%2Ficon.png`;
+    expect(() => parsePairingUri(uri)).toThrow('missing required param "url"');
+  });
+
+  it('throws on missing required icon param', () => {
+    const uri = `walletpair:?ch=${TEST_CH}&pubkey=${TEST_PUBKEY}&name=Test&url=https%3A%2F%2Fexample.com`;
+    expect(() => parsePairingUri(uri)).toThrow('missing required param "icon"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// constantTimeEqual
+// ---------------------------------------------------------------------------
+
+describe('constantTimeEqual', () => {
+  it('returns true for identical strings', () => {
+    expect(constantTimeEqual('abc', 'abc')).toBe(true);
+  });
+
+  it('returns false for different strings', () => {
+    expect(constantTimeEqual('abc', 'abd')).toBe(false);
+  });
+
+  it('returns false for different lengths', () => {
+    expect(constantTimeEqual('abc', 'abcd')).toBe(false);
+  });
+
+  it('returns true for empty strings', () => {
+    expect(constantTimeEqual('', '')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canonicalJson — spec test vector
+// ---------------------------------------------------------------------------
+
+describe('canonicalJson', () => {
+  it('matches spec test vector', () => {
+    const input = {"methods":["wallet_signTransaction","wallet_signMessage"],"events":["accountsChanged","chainChanged"],"chains":["eip155:1","eip155:137"]};
+    const expected = '{"chains":["eip155:1","eip155:137"],"events":["accountsChanged","chainChanged"],"methods":["wallet_signTransaction","wallet_signMessage"]}';
+    expect(canonicalJson(input)).toBe(expected);
   });
 });

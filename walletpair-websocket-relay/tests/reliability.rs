@@ -130,7 +130,7 @@ async fn rapid_create_close_no_channel_leak() {
         let mut ws = ws_connect(&addr).await;
         send_json(
             &mut ws,
-            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{}}),
+            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{"meta":{}}}),
         )
         .await;
         let r = recv_json(&mut ws).await;
@@ -183,7 +183,7 @@ async fn ttl_cleanup_removes_expired_channels() {
         let mut ws = ws_connect(&addr).await;
         send_json(
             &mut ws,
-            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{}}),
+            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{"meta":{}}}),
         )
         .await;
         let _ = recv_json(&mut ws).await;
@@ -220,7 +220,7 @@ async fn abrupt_disconnect_handled_gracefully() {
     let mut dapp_ws = ws_connect(&addr).await;
     send_json(
         &mut dapp_ws,
-        &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{}}),
+        &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{"meta":{}}}),
     )
     .await;
     let _ = recv_json(&mut dapp_ws).await;
@@ -309,7 +309,7 @@ async fn concurrent_channel_creation() {
             let mut dapp_ws = ws_connect(&addr).await;
             send_json(
                 &mut dapp_ws,
-                &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{}}),
+                &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{"meta":{}}}),
             )
             .await;
             let r = recv_json(&mut dapp_ws).await;
@@ -360,7 +360,7 @@ async fn graceful_shutdown_closes_all_channels() {
         let mut dapp_ws = ws_connect(&addr).await;
         send_json(
             &mut dapp_ws,
-            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{}}),
+            &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":dapp,"body":{"meta":{}}}),
         )
         .await;
         let _ = recv_json(&mut dapp_ws).await;
@@ -444,7 +444,7 @@ async fn metrics_accessible_during_activity() {
             let mut ws = ws_connect(&addr_clone).await;
             send_json(
                 &mut ws,
-                &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{}}),
+                &json!({"v":1,"t":"create","ch":ch,"ts":1234,"from":peer,"body":{"meta":{}}}),
             )
             .await;
             let _ = recv_json(&mut ws).await;

@@ -163,6 +163,7 @@ export type DAppPhase =
 export type WalletPhase =
   | 'idle'
   | 'waiting'
+  | 'waiting_accept'
   | 'connected'
   | 'disconnected'
   | 'closed';
@@ -199,11 +200,11 @@ export interface PairingParams {
   pubkey: string;
   /** Empty string = BLE mode (no relay). */
   relay: string;
-  name?: string | undefined;
+  name: string;
   /** DApp website URL. */
-  url?: string | undefined;
+  url: string;
   /** DApp icon URL. */
-  icon?: string | undefined;
+  icon: string;
   /** Methods the dApp intends to call (§9.1). */
   methods?: string[] | undefined;
   /** CAIP-2 chains the dApp intends to use (§9.1). */

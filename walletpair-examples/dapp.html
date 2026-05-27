@@ -162,30 +162,93 @@ function b64urlDecode(str) {
 }
 
 // ---------------------------------------------------------------------------
-// WalletPair crypto (implements protocol Section 7)
+// WalletPair crypto (implements protocol Section 6)
 // ---------------------------------------------------------------------------
-function deriveSessionKey(sharedSecret, channelIdHex) {
-  return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1', 32);
+
+// Length-prefixed encoding: uint16_be(len) || utf8(s)
+function lp(s) {
+  const bytes = new TextEncoder().encode(s);
+  const len = new Uint8Array(2);
+  new DataView(len.buffer).setUint16(0, bytes.length);
+  return concatBytes(len, bytes);
 }
+
+// Canonical JSON (RFC 8785 compatible)
+function canonicalJson(value) {
+  if (value === undefined) return 'null';
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
+  return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalJson(value[k])).join(',') + '}';
+}
+
+function deriveRootKey(sharedSecret, channelIdHex) {
+  return hkdf(sha256, sharedSecret, hexToBytes(channelIdHex), 'walletpair-v1 root', 32);
+}
+
+function deriveJoinEncryptionKey(rootKey, channelIdHex) {
+  return hkdf(sha256, rootKey, hexToBytes(channelIdHex), 'walletpair-v1 join-encryption', 32);
+}
+
+function deriveTranscriptHash(channelIdHex, dappPubKeyB64, walletPubKeyB64, capabilities, meta, dappName) {
+  return sha256(concatBytes(
+    utf8ToBytes('walletpair-v1-transcript'),
+    hexToBytes(channelIdHex),
+    lp(dappPubKeyB64),
+    lp(walletPubKeyB64),
+    lp(canonicalJson(capabilities)),
+    lp(canonicalJson(meta)),
+    lp(dappName || '')
+  ));
+}
+
+function deriveDirectionalKeys(rootKey, transcriptHash) {
+  const dappToWalletKey = hkdf(sha256, rootKey, transcriptHash, 'walletpair-v1 dapp-to-wallet', 32);
+  const walletToDappKey = hkdf(sha256, rootKey, transcriptHash, 'walletpair-v1 wallet-to-dapp', 32);
+  return { dappToWalletKey, walletToDappKey };
+}
+
 function computeSessionFingerprint(channelIdHex, dappPubKeyB64) {
   const hash = sha256(concatBytes(utf8ToBytes('walletpair-v1-session-fingerprint'), hexToBytes(channelIdHex), b64urlDecode(dappPubKeyB64)));
   const view = new DataView(hash.buffer, hash.byteOffset, 4);
   return (view.getUint32(0) % 10000).toString().padStart(4, '0');
 }
-function sealPayload(sessionKey, channelIdHex, seq, data) {
+
+// Build AAD per spec §6.4: channel_id_bytes || type_byte || lp(from) || lp(id)
+function buildAad(channelIdHex, typeByte, from, id) {
+  return concatBytes(hexToBytes(channelIdHex), new Uint8Array([typeByte]), lp(from), lp(id));
+}
+
+// sealed_join: random nonce, AAD = channel_id_bytes || 0x04
+function unsealJoin(joinEncKey, channelIdHex, sealedB64) {
+  const bytes = b64urlDecode(sealedB64);
+  const nonce = bytes.slice(0, 12);
+  const ciphertext = bytes.slice(12);
+  const aad = concatBytes(hexToBytes(channelIdHex), new Uint8Array([0x04]));
+  const plaintext = chacha20poly1305(joinEncKey, nonce, aad).decrypt(ciphertext);
+  return JSON.parse(new TextDecoder().decode(plaintext));
+}
+
+// Type bytes for AAD
+const TYPE_REQ = 0x01;
+const TYPE_RES = 0x02;
+const TYPE_EVT = 0x03;
+
+function sealPayload(trafficKey, channelIdHex, seq, data, typeByte, from, id) {
   const seqBytes = new Uint8Array(4);
   new DataView(seqBytes.buffer).setUint32(0, seq);
-  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
+  const nonce = hmac(sha256, trafficKey, seqBytes).slice(0, 12);
   const plaintext = utf8ToBytes(JSON.stringify(data));
-  const ciphertext = chacha20poly1305(sessionKey, nonce, hexToBytes(channelIdHex)).encrypt(plaintext);
+  const aad = buildAad(channelIdHex, typeByte, from, id);
+  const ciphertext = chacha20poly1305(trafficKey, nonce, aad).encrypt(plaintext);
   return b64urlEncode(concatBytes(seqBytes, ciphertext));
 }
-function unsealPayload(sessionKey, channelIdHex, sealed) {
+function unsealPayload(trafficKey, channelIdHex, sealed, typeByte, from, id) {
   const bytes = b64urlDecode(sealed);
   const seqBytes = bytes.slice(0, 4);
   const ciphertext = bytes.slice(4);
-  const nonce = hmac(sha256, sessionKey, seqBytes).slice(0, 12);
-  const plaintext = chacha20poly1305(sessionKey, nonce, hexToBytes(channelIdHex)).decrypt(ciphertext);
+  const nonce = hmac(sha256, trafficKey, seqBytes).slice(0, 12);
+  const aad = buildAad(channelIdHex, typeByte, from, id);
+  const plaintext = chacha20poly1305(trafficKey, nonce, aad).decrypt(ciphertext);
   const seq = new DataView(seqBytes.buffer, seqBytes.byteOffset, 4).getUint32(0);
   return { seq, data: JSON.parse(new TextDecoder().decode(plaintext)) };
 }
@@ -248,7 +311,9 @@ function saveState() {
     privKey:       S.privKey ? bytesToHex(S.privKey) : null,
     pubKeyB64:     S.pubKeyB64,
     remotePubKeyB64: S.remotePubKey ? b64urlEncode(S.remotePubKey) : null,
-    sessionKey:    S.sessionKey ? bytesToHex(S.sessionKey) : null,
+    rootKey:       S.rootKey ? bytesToHex(S.rootKey) : null,
+    sendKey:       S.sendKey ? bytesToHex(S.sendKey) : null,
+    recvKey:       S.recvKey ? bytesToHex(S.recvKey) : null,
     sendSeq:       S.sendSeq,
     resumeToken:   S.resumeToken,
     relayUrl:      relayUrlEl.value,
@@ -268,7 +333,9 @@ function loadState() {
     S.pubKey = x25519.getPublicKey(S.privKey);
     S.pubKeyB64 = d.pubKeyB64;
     S.remotePubKey = d.remotePubKeyB64 ? b64urlDecode(d.remotePubKeyB64) : null;
-    S.sessionKey = d.sessionKey ? hexToBytes(d.sessionKey) : null;
+    S.rootKey = d.rootKey ? hexToBytes(d.rootKey) : null;
+    S.sendKey = d.sendKey ? hexToBytes(d.sendKey) : null;
+    S.recvKey = d.recvKey ? hexToBytes(d.recvKey) : null;
     S.sendSeq = d.sendSeq || 0;
     S.resumeToken = d.resumeToken;
     S.reqCounter = d.reqCounter || 0;
@@ -291,7 +358,9 @@ const S = {
   pubKey: null,         // Uint8Array X25519 public key
   pubKeyB64: null,      // base64url
   remotePubKey: null,   // Uint8Array remote public key
-  sessionKey: null,     // Uint8Array 32-byte session key
+  rootKey: null,        // Uint8Array 32-byte root key
+  sendKey: null,        // dapp_to_wallet_key (for sending)
+  recvKey: null,        // wallet_to_dapp_key (for receiving)
   sendSeq: 0,
   resumeToken: null,
   phase: 'idle',
@@ -558,7 +627,9 @@ function freshConnectBle() {
   S.sendSeq = 0;
   S.recvSeq = -1;
   S.remotePubKey = null;
-  S.sessionKey = null;
+  S.rootKey = null;
+  S.sendKey = null;
+  S.recvKey = null;
   S.reqCounter = 0;
   S.paired = false;
   S.resumeToken = null;
@@ -568,7 +639,7 @@ function freshConnectBle() {
   log('in', 'ready', 'state=waiting (BLE local adapter)');
 
   // Show QR without relay param (signals BLE mode to wallet)
-  const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
+  const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=${encodeURIComponent('https://walletpair.org/icon.png')}`;
   pairingUriEl.textContent = uri;
   renderQR(uri);
   btnBleScan.disabled = false;
@@ -588,15 +659,17 @@ function freshConnect() {
   S.sendSeq = 0;
   S.recvSeq = -1;
   S.remotePubKey = null;
-  S.sessionKey = null;
+  S.rootKey = null;
+  S.sendKey = null;
+  S.recvKey = null;
   S.reqCounter = 0;
   S.paired = false;
   S.resumeToken = null;
 
   S.ws = openWs(() => {
     setPhase('waiting');
-    sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: '' }, resume: null } });
-    const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
+    sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: 'https://walletpair.org/icon.png' } } });
+    const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=${encodeURIComponent('https://walletpair.org/icon.png')}`;
     pairingUriEl.textContent = uri;
     renderQR(uri);
     // Show session fingerprint alongside QR code
@@ -629,13 +702,8 @@ function startReconnect() {
     const useResume = n === 0 && S.resumeToken; // first attempt: try resume
 
     S.ws = openWs(() => {
-      if (useResume) {
-        // Try resume
-        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: '' }, resume: S.resumeToken } });
-      } else {
-        // Fresh create with same channel & keys (relay forgot us)
-        sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: '' }, resume: null } });
-      }
+      // Re-create channel (same channel & keys)
+      sendRaw({ v: 1, t: 'create', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { meta: { name: 'WalletPair dApp Demo', description: 'WalletPair example dApp', url: location.origin, icon: 'https://walletpair.org/icon.png' } } });
     });
 
     // If WS fails to connect, the onclose handler will be called.
@@ -687,13 +755,12 @@ function handleMessage(msg, ws) {
   switch (msg.t) {
     case 'ready': {
       const readyBody = msg.body || {};
-      S.resumeToken = readyBody.resume;
       stopReconnect();
       if (readyBody.state === 'waiting') {
         setPhase('waiting');
         log('in', 'ready', 'state=waiting');
         // Show pairing URI (in case of reconnect, re-display it)
-        const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
+        const uri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=${encodeURIComponent('https://walletpair.org/icon.png')}`;
         pairingUriEl.textContent = uri;
         renderQR(uri);
       } else if (readyBody.state === 'connected') {
@@ -709,27 +776,38 @@ function handleMessage(msg, ws) {
       const joinPubKey = msg.from;
       log('in', 'join', `peer=${joinPubKey?.slice(0, 12)}... sealed_join=${joinBody.sealed_join ? 'present' : 'none'}`);
 
-      // Derive session key from the wallet's public key
+      // Derive root key from the wallet's public key
       const remoteBytes = b64urlDecode(joinPubKey);
-
-      // Check: is this the same wallet we already paired with?
-      const knownWallet = S.paired && S.remotePubKey && b64urlEncode(S.remotePubKey) === joinPubKey;
-
       S.remotePubKey = remoteBytes;
       const shared = x25519.getSharedSecret(S.privKey, S.remotePubKey);
-      S.sessionKey = deriveSessionKey(shared, S.channelId);
+      S.rootKey = deriveRootKey(shared, S.channelId);
 
-      // Decrypt sealed_join to get capabilities if present
-      if (joinBody.sealed_join && S.sessionKey) {
+      // Decrypt sealed_join using join_encryption_key per §6.5
+      let capabilities = null;
+      let meta = null;
+      if (joinBody.sealed_join) {
         try {
-          const unsealed = unsealPayload(S.sessionKey, S.channelId, joinBody.sealed_join);
-          log('in', 'join', `capabilities: ${JSON.stringify(unsealed.data)}`);
+          const joinEncKey = deriveJoinEncryptionKey(S.rootKey, S.channelId);
+          const unsealed = unsealJoin(joinEncKey, S.channelId, joinBody.sealed_join);
+          capabilities = unsealed.capabilities || null;
+          meta = unsealed.meta || null;
+          log('in', 'join', `capabilities: ${JSON.stringify(unsealed)}`);
         } catch { log('in', 'join', '(sealed_join decrypt failed)'); }
       }
 
+      // Derive directional traffic keys using transcript hash (§6.2)
+      const dappName = 'WalletPair dApp Demo';
+      const transcriptHash = deriveTranscriptHash(
+        S.channelId, S.pubKeyB64, joinPubKey,
+        capabilities, meta, dappName
+      );
+      const keys = deriveDirectionalKeys(S.rootKey, transcriptHash);
+      S.sendKey = keys.dappToWalletKey;  // dApp sends with dapp_to_wallet_key
+      S.recvKey = keys.walletToDappKey;  // dApp receives with wallet_to_dapp_key
+
       // BLE adapter duty: send ready.waiting to the wallet
       if (S.transport === 'ble') {
-        sendViaBle({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'waiting', role: 'wallet', self: joinPubKey, remote: null, resume: crypto.randomUUID() } })
+        sendViaBle({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'waiting', role: 'wallet', self: joinPubKey, remote: null, reconnect: false } })
           .catch(e => log('err', 'ble', `send ready.waiting failed: ${e.message}`));
       }
 
@@ -745,18 +823,18 @@ function handleMessage(msg, ws) {
 
     case 'res': {
       const resBody = msg.body || {};
-      let detail = `id=${resBody.id} ok=${resBody.ok}`;
+      let detail = `id=${resBody.id}`;
       let resDataStr = '';
-      if (resBody.sealed && S.sessionKey) {
+      if (resBody.sealed && S.recvKey) {
         try {
-          const unsealed = unsealPayload(S.sessionKey, S.channelId, resBody.sealed);
+          const unsealed = unsealPayload(S.recvKey, S.channelId, resBody.sealed, TYPE_RES, msg.from, resBody.id);
           if (unsealed.seq <= S.recvSeq) {
             log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
             break;
           }
           S.recvSeq = unsealed.seq;
           resDataStr = JSON.stringify(unsealed.data);
-          detail += ` ${resDataStr.length > 200 ? resDataStr.slice(0, 200) + '...' : resDataStr}`;
+          detail += ` ok=${unsealed.data._ok} ${resDataStr.length > 200 ? resDataStr.slice(0, 200) + '...' : resDataStr}`;
         } catch { detail += ' (decrypt failed)'; }
       }
       log('in', 'res', detail);
@@ -781,9 +859,9 @@ function handleMessage(msg, ws) {
     case 'evt': {
       const evtBody = msg.body || {};
       let detail = `id=${evtBody.id}`;
-      if (evtBody.sealed && S.sessionKey) {
+      if (evtBody.sealed && S.recvKey) {
         try {
-          const unsealed = unsealPayload(S.sessionKey, S.channelId, evtBody.sealed);
+          const unsealed = unsealPayload(S.recvKey, S.channelId, evtBody.sealed, TYPE_EVT, msg.from, evtBody.id);
           if (unsealed.seq <= S.recvSeq) {
             log('err', 'seq', `rejected: seq ${unsealed.seq} <= last ${S.recvSeq}`);
             break;
@@ -835,9 +913,9 @@ function doAccept() {
   if (S.transport === 'ble') {
     // BLE mode: dApp IS the adapter. Generate ready.connected for both sides.
     // Send ready.connected to wallet via BLE
-    sendViaBle({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'connected', role: 'wallet', self: walletPubB64, remote: S.pubKeyB64, resume: crypto.randomUUID() } });
+    sendViaBle({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'connected', role: 'wallet', self: walletPubB64, remote: S.pubKeyB64, reconnect: false } });
     // Self-process ready.connected (local adapter → dApp)
-    handleMessage({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'connected', role: 'dapp', self: S.pubKeyB64, remote: walletPubB64, resume: crypto.randomUUID() } }, null);
+    handleMessage({ v: 1, t: 'ready', ch: S.channelId, ts: Date.now(), from: '_adapter', body: { state: 'connected', role: 'dapp', self: S.pubKeyB64, remote: walletPubB64, reconnect: false } }, null);
   } else {
     // WS mode: relay handles ready generation, just send accept
     sendRaw({ v: 1, t: 'accept', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { target: walletPubB64 } });
@@ -860,7 +938,7 @@ function doSendRequest() {
   const id = `req-${++S.reqCounter}`;
   // method goes inside the sealed payload, not in the body
   const sealedData = { _method: method, ...params };
-  const sealed = sealPayload(S.sessionKey, S.channelId, S.sendSeq++, sealedData);
+  const sealed = sealPayload(S.sendKey, S.channelId, S.sendSeq++, sealedData, TYPE_REQ, S.pubKeyB64, id);
   const msg = { v: 1, t: 'req', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { id, sealed } };
   sendRaw(msg);
   saveState();
@@ -957,7 +1035,7 @@ document.querySelectorAll('.bench').forEach(btn => {
     await yieldUI();
     const id = `bench-${++S.reqCounter}`;
     const sealedData = { _method: 'benchmark_echo', ...params };
-    const sealed = S.sessionKey ? sealPayload(S.sessionKey, S.channelId, S.sendSeq++, sealedData) : '';
+    const sealed = S.sendKey ? sealPayload(S.sendKey, S.channelId, S.sendSeq++, sealedData, TYPE_REQ, S.pubKeyB64, id) : '';
     const msg = { v: 1, t: 'req', ch: S.channelId, ts: Date.now(), from: S.pubKeyB64, body: { id, sealed } };
     const tEnc = performance.now();
 
@@ -998,7 +1076,7 @@ document.querySelectorAll('.bench').forEach(btn => {
 // ---------------------------------------------------------------------------
 if (loadState()) {
   log('in', 'restore', `restored session ch=${S.channelId.slice(0, 12)}... paired=${S.paired}`);
-  const restoredUri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=`;
+  const restoredUri = `walletpair:?ch=${S.channelId}&pubkey=${S.pubKeyB64}&relay=${encodeURIComponent(relayUrlEl.value)}&name=${encodeURIComponent('WalletPair dApp Demo')}&url=${encodeURIComponent(location.origin)}&icon=${encodeURIComponent('https://walletpair.org/icon.png')}`;
   pairingUriEl.textContent = restoredUri;
   renderQR(restoredUri);
   setTransportMode('ws');

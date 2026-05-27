@@ -316,13 +316,13 @@ describe('Sequence validation', () => {
       transport.receive({
         v: 1, t: 'req', ch: channelId,
         ts: Date.now(), from: dappKp.publicKeyB64,
-        body: { id: 'req-2', sealed: sealPayload(sessionKey, channelId, 1, { _method: 'wallet_signMessage', message: 'hello' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2' }) },
+        body: { id: 'req-2', sealed: sealPayload(sessionKey, channelId, 1, { _method: 'wallet_getAccounts', message: 'hello' }, { type: 'req', from: dappKp.publicKeyB64, id: 'req-2' }) },
       } as ProtocolMessage);
 
       expect(requestHandler).toHaveBeenCalledTimes(2);
       expect(requestHandler).toHaveBeenLastCalledWith({
         id: 'req-2',
-        method: 'wallet_signMessage',
+        method: 'wallet_getAccounts',
         params: { message: 'hello' },
       });
     });
@@ -606,12 +606,15 @@ describe('Sequence validation', () => {
       vi.useRealTimers();
     });
 
-    it('first-time join is auto-accepted (no pending_accept phase)', async () => {
+    it('first-time join is auto-accepted (pending_accept phase is brief)', async () => {
       const transport = new MockTransport();
       const session = new DAppSession({ transport, meta: { name: 'Test dApp', description: 'Test', url: 'https://test.com', icon: 'https://test.com/icon.png' } });
       const walletKp = generateX25519KeyPair();
 
       await session.createPairing();
+
+      const phases: string[] = [];
+      session.on('phase', (p) => phases.push(p));
 
       // Simulate wallet join with valid sealed_join
       transport.receive({
@@ -620,8 +623,8 @@ describe('Sequence validation', () => {
         body: makeJoinBody(session.channelId, transport.sent[0]!.from!, walletKp),
       } as ProtocolMessage);
 
-      // Auto-accept means no pending_accept phase
-      expect(session.phase).not.toBe('pending_accept');
+      // Session enters pending_accept briefly, then auto-accept sends accept
+      expect(phases).toContain('pending_accept');
 
       // Should have sent accept immediately
       const acceptMsg = transport.sent.find(m => m.t === 'accept');

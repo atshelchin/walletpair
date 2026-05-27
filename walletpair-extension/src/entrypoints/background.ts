@@ -213,7 +213,7 @@ async function createSession(): Promise<void> {
   transport = new WebSocketTransport(relayUrl);
   session = new DAppSession({
     transport,
-    meta: { name: 'WalletPair Extension', description: 'Browser extension for WalletPair', url: '', icon: '' },
+    meta: { name: 'WalletPair Extension', description: 'Browser extension for WalletPair', url: 'https://walletpair.org', icon: 'https://walletpair.org/icon.png' },
     requestTimeout: 300_000,
   });
 
@@ -233,7 +233,7 @@ async function tryReconnect(): Promise<boolean> {
     transport = new WebSocketTransport(settings.relayUrl || DEFAULT_RELAY_URL);
     session = new DAppSession({
       transport,
-      meta: { name: 'WalletPair Extension', description: 'Browser extension for WalletPair', url: '', icon: '' },
+      meta: { name: 'WalletPair Extension', description: 'Browser extension for WalletPair', url: 'https://walletpair.org', icon: 'https://walletpair.org/icon.png' },
       requestTimeout: 300_000,
     });
 
@@ -496,6 +496,11 @@ export default defineBackground(() => {
         case 'reject-wallet':
           session?.rejectWallet();
           rejectAllDeferred(4001, 'User rejected wallet');
+          sendResponse({ ok: true });
+          break;
+
+        case 'accept-wallet':
+          session?.acceptWallet();
           sendResponse({ ok: true });
           break;
 

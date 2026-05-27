@@ -49,6 +49,7 @@ export type BackgroundMessage =
   | { action: 'get-state' }
   | { action: 'start-pairing' }
   | { action: 'reject-wallet' }
+  | { action: 'accept-wallet' }
   | { action: 'disconnect' }
   | { action: 'get-pairing-uri' }
   | { action: 'get-permissions' }
