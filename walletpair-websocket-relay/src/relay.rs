@@ -104,12 +104,50 @@ fn handle_create(
     at_capacity: bool,
 ) -> ProcessResult {
     // Channel already exists?
-    if store.contains(ch) {
-        metrics
-            .messages_rejected_total
-            .with_label_values(&["channel_exists"])
-            .inc();
-        return ProcessResult::Reject(build_terminate(ch, CloseReason::ChannelExists));
+    if let Some(existing) = store.get(ch) {
+        match existing.state {
+            // Waiting state: replace the old channel (spec §13)
+            ChannelState::WaitingForWallet => {
+                tracing::info!(ch = %ch, "replacing waiting channel on re-create");
+                store.remove_channel(ch, metrics, CloseReason::Normal);
+                // Fall through to create a new channel below.
+                // Note: we don't return OkRemoved+OkCreated — the net effect is
+                // a replacement, so we skip decrementing the global counter here
+                // and let the OkCreated at the bottom handle the count.
+                metrics.active_channels.inc(); // compensate for the dec in remove_channel
+            }
+            // Connected state: reject unless the dApp connection is dead
+            ChannelState::Connected => {
+                let dapp_dead = existing
+                    .dapp_conn
+                    .as_ref()
+                    .map_or(true, |c| c.sender.is_closed());
+                if dapp_dead {
+                    tracing::info!(ch = %ch, "cleaning up stale connected channel on re-create");
+                    store.remove_channel(ch, metrics, CloseReason::Normal);
+                    metrics.active_channels.inc(); // compensate for the dec in remove_channel
+                } else {
+                    metrics
+                        .messages_rejected_total
+                        .with_label_values(&["channel_exists"])
+                        .inc();
+                    return ProcessResult::Reject(build_terminate(ch, CloseReason::ChannelExists));
+                }
+            }
+            // PendingAccept: reject with channel_exists
+            ChannelState::PendingAccept => {
+                metrics
+                    .messages_rejected_total
+                    .with_label_values(&["channel_exists"])
+                    .inc();
+                return ProcessResult::Reject(build_terminate(ch, CloseReason::ChannelExists));
+            }
+            // Closed: shouldn't normally be in the store, but treat as gone
+            ChannelState::Closed => {
+                store.remove_channel(ch, metrics, CloseReason::Normal);
+                metrics.active_channels.inc(); // compensate for the dec in remove_channel
+            }
+        }
     }
 
     // Global channel limit (checked by caller across all shards)
@@ -118,7 +156,7 @@ fn handle_create(
             .messages_rejected_total
             .with_label_values(&["max_channels"])
             .inc();
-        return ProcessResult::Reject(build_terminate(ch, CloseReason::ProtocolError));
+        return ProcessResult::Reject(build_terminate(ch, CloseReason::RateLimited));
     }
 
     // Create channel
@@ -618,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn create_duplicate_channel_rejected() {
+    fn create_on_waiting_channel_replaces_it() {
         let config = test_config();
         let metrics = test_metrics();
         let mut store = ChannelStore::new(&config);
@@ -627,10 +665,37 @@ mod tests {
 
         let _rx = setup_channel(&mut store, &metrics, &ch, &dapp);
 
-        // Try to create again
-        let (tx2, _rx2) = mpsc::channel(64);
+        // Re-create same channel while in waiting state — should replace
+        let (tx2, mut rx2) = mpsc::channel(64);
         let (raw, msg) = make_create_msg(&ch, &dapp);
         let result = process_message(&mut store, 2, &tx2, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::OkCreated));
+        assert!(store.contains(&ch));
+        assert_eq!(store.channel_count(), 1);
+
+        // New creator should receive ready.waiting
+        let ready = rx2.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(v["t"], "ready");
+        assert_eq!(v["body"]["state"], "waiting");
+    }
+
+    #[test]
+    fn create_on_pending_accept_channel_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let _ = setup_joined_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+        // State is PendingAccept
+
+        let (tx2, _rx2) = mpsc::channel(64);
+        let (raw, msg) = make_create_msg(&ch, &dapp);
+        let result = process_message(&mut store, 3, &tx2, &raw, msg, &metrics, false);
 
         match result {
             ProcessResult::Reject(terminate_json) => {
@@ -639,6 +704,61 @@ mod tests {
             }
             _ => panic!("expected Reject"),
         }
+    }
+
+    #[test]
+    fn create_on_connected_channel_with_live_dapp_rejected() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (_dapp_rx, _wallet_rx) =
+            setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        // dApp connection is still alive, so re-create should be rejected
+        let (tx2, _rx2) = mpsc::channel(64);
+        let (raw, msg) = make_create_msg(&ch, &dapp);
+        let result = process_message(&mut store, 3, &tx2, &raw, msg, &metrics, false);
+
+        match result {
+            ProcessResult::Reject(terminate_json) => {
+                let v: serde_json::Value = serde_json::from_str(&terminate_json).unwrap();
+                assert_eq!(v["body"]["reason"], "channel_exists");
+            }
+            _ => panic!("expected Reject"),
+        }
+    }
+
+    #[test]
+    fn create_on_connected_channel_with_dead_dapp_replaces() {
+        let config = test_config();
+        let metrics = test_metrics();
+        let mut store = ChannelStore::new(&config);
+        let ch = make_channel_id();
+        let dapp = make_peer_id(1);
+        let wallet = make_peer_id(2);
+
+        let (dapp_rx, _wallet_rx) =
+            setup_connected_channel(&mut store, &metrics, &ch, &dapp, &wallet);
+
+        // Drop the dApp receiver to simulate a dead connection
+        drop(dapp_rx);
+
+        let (tx2, mut rx2) = mpsc::channel(64);
+        let (raw, msg) = make_create_msg(&ch, &dapp);
+        let result = process_message(&mut store, 3, &tx2, &raw, msg, &metrics, false);
+
+        assert!(matches!(result, ProcessResult::OkCreated));
+        assert!(store.contains(&ch));
+
+        // Should receive ready.waiting for the new channel
+        let ready = rx2.try_recv().unwrap();
+        let v: serde_json::Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(v["t"], "ready");
+        assert_eq!(v["body"]["state"], "waiting");
     }
 
     #[test]
@@ -656,7 +776,7 @@ mod tests {
         match result {
             ProcessResult::Reject(terminate_json) => {
                 let v: serde_json::Value = serde_json::from_str(&terminate_json).unwrap();
-                assert_eq!(v["body"]["reason"], "protocol_error");
+                assert_eq!(v["body"]["reason"], "rate_limited");
             }
             _ => panic!("expected Reject"),
         }

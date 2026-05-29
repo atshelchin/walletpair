@@ -61,12 +61,22 @@ const defaultMapper: MethodMapper = {
         // personal_sign params: [message, address] where message is hex-encoded bytes
         const p = params as [string, string] | undefined;
         const msg = p?.[0];
-        // EIP-1193 personal_sign convention: message is hex-encoded bytes.
-        // Route to wallet_signRawMessage for hex data, wallet_signMessage for plain text.
+        // EIP-1193 personal_sign: message is always hex-encoded bytes.
+        // Decode hex to UTF-8 text and route to wallet_signMessage.
+        let text = msg ?? '';
         if (msg && msg.startsWith('0x')) {
-          return { method: 'wallet_signRawMessage', params: { data: msg, address: p?.[1] } };
+          try {
+            const hex = msg.slice(2);
+            const bytes = new Uint8Array(hex.length / 2);
+            for (let i = 0; i < bytes.length; i++) {
+              bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+            }
+            text = new TextDecoder().decode(bytes);
+          } catch {
+            text = msg;
+          }
         }
-        return { method: 'wallet_signMessage', params: { message: msg, address: p?.[1] } };
+        return { method: 'wallet_signMessage', params: { message: text, address: p?.[1] } };
       }
       case 'eth_signTypedData_v4': {
         // params: [address, typedDataJSON]
@@ -94,21 +104,8 @@ const defaultMapper: MethodMapper = {
         const hexId = p?.[0]?.chainId;
         return { method: 'wallet_switchChain', params: { chain: hexId ? hexChainToCaip2(hexId) : undefined } };
       }
-      case 'wallet_addEthereumChain': {
-        const p = params as [Record<string, unknown>] | undefined;
-        const raw = p?.[0];
-        return {
-          method: 'wallet_addChain',
-          params: raw ? {
-            chain: raw.chainId ? hexChainToCaip2(raw.chainId as string) : undefined,
-            chainName: raw.chainName,
-            nativeCurrency: raw.nativeCurrency,
-            rpcUrls: raw.rpcUrls,
-            blockExplorerUrls: raw.blockExplorerUrls,
-            iconUrls: raw.iconUrls,
-          } : undefined,
-        };
-      }
+      case 'wallet_addEthereumChain':
+        return null; // unsupported — mapRequest returning null triggers unsupported_method error
       default:
         return { method, params };
     }
@@ -128,11 +125,6 @@ const defaultMapper: MethodMapper = {
     if (method === 'eth_signTransaction') {
       const r = result as { signedTx?: string } | undefined;
       if (r?.signedTx) return r.signedTx;
-    }
-    // Unwrap wallet_signRawMessage result
-    if (method === 'wallet_signRawMessage') {
-      const r = result as { signature?: string } | undefined;
-      if (r?.signature) return r.signature;
     }
     // Unwrap signature results
     if (method === 'personal_sign' || method === 'eth_signTypedData_v4') {
@@ -162,6 +154,7 @@ export class WalletPairProvider implements EIP1193Provider {
   private chainId: number;
   private accounts: string[] = [];
   private connected = false;
+  private disconnected = false;
 
   constructor(options: WalletPairProviderOptions) {
     this.session = options.session;
@@ -179,6 +172,13 @@ export class WalletPairProvider implements EIP1193Provider {
     });
 
     this.session.on('event', ({ event, data }) => {
+      if (event === 'disconnect') {
+        this.connected = false;
+        this.disconnected = true;
+        this.emitter.emit('disconnect', { code: 4900, message: 'Disconnected by wallet' });
+        this.session.close('normal');
+        return;
+      }
       if (event === 'accountsChanged') {
         // Handle both formats:
         // - Simple: { accounts: ['0x...'] } or just ['0x...']
@@ -220,6 +220,10 @@ export class WalletPairProvider implements EIP1193Provider {
   }
 
   async request(args: EIP1193RequestArgs): Promise<unknown> {
+    if (this.disconnected) {
+      throw Object.assign(new Error('Provider is disconnected'), { code: 4900 });
+    }
+
     const { method, params } = args;
 
     if (method === 'eth_chainId') {
@@ -236,9 +240,9 @@ export class WalletPairProvider implements EIP1193Provider {
 
     // Inject chain for methods that require it per EVM sub-protocol
     const chainRequiredMethods = [
-      'wallet_signMessage', 'wallet_signRawMessage', 'wallet_signTypedData',
+      'wallet_signMessage', 'wallet_signTypedData',
       'wallet_signTransaction', 'wallet_sendTransaction',
-      'wallet_getAccounts', 'wallet_watchAsset',
+      'wallet_getAccounts',
     ];
     if (mapped.params && typeof mapped.params === 'object' && chainRequiredMethods.includes(mapped.method)) {
       const p = mapped.params as Record<string, unknown>;

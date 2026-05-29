@@ -444,7 +444,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
         if (!reqBody.sealed || !reqBody.id || !this.recvKey) {
           if (reqBody.id) {
             this.observeSend(
-              this.reject(reqBody.id, 'decryption_failed', 'Request must be encrypted'),
+              this.reject(reqBody.id, 'protocol_error', 'Request must be encrypted'),
             )
           }
           break
@@ -495,11 +495,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
         break
 
       case 'close': {
-        const closeBody = msg.body as { reason?: string }
-        if (closeBody.reason === 'channel_not_found') {
-          this.transport.disconnect()
-          this.startReconnect()
-        } else if (this.phase !== 'disconnected') {
+        if (this.phase !== 'disconnected') {
           this.pendingRequestRecords.clear()
           this.idempotencyCache.clear()
           this.broadcastResponseCache.clear()
@@ -511,6 +507,16 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       }
 
       case 'terminate': {
+        const termBody = msg.body as { reason?: string }
+        // Race condition: relay sends channel_not_found when we join during reconnect
+        if (
+          termBody.reason === 'channel_not_found' &&
+          (this.phase === 'disconnected' || this.phase === 'waiting_accept')
+        ) {
+          this.transport.disconnect()
+          this.startReconnect()
+          break
+        }
         // Adapter-sent termination — treat like close
         if (this.phase !== 'disconnected') {
           this.pendingRequestRecords.clear()

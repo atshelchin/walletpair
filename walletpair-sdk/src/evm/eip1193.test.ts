@@ -147,9 +147,10 @@ describe('WalletPairProvider', () => {
   // -----------------------------------------------------------------------
 
   describe('personal_sign', () => {
-    it('maps hex data to wallet_signRawMessage', async () => {
+    it('maps hex data to wallet_signMessage with decoded text', async () => {
       await setupConnectedSession();
 
+      // 0x48656c6c6f is "Hello" in hex
       const promise = provider.request({
         method: 'personal_sign',
         params: ['0x48656c6c6f', '0xabc'],

@@ -740,10 +740,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         break
 
       case 'close': {
-        const closeBody = msg.body as { reason?: string }
-        if (closeBody.reason === 'channel_exists') {
-          this.startReconnect()
-        } else if (this.phase !== 'disconnected') {
+        if (this.phase !== 'disconnected') {
           this.clearPersistence()
           this.setPhase('closed')
           this.intentionalClose = true
@@ -752,6 +749,12 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       }
 
       case 'terminate': {
+        const termBody = msg.body as { reason?: string }
+        // Race condition: relay sends channel_exists when we re-create during reconnect
+        if (termBody.reason === 'channel_exists' && this.phase === 'disconnected') {
+          this.startReconnect()
+          break
+        }
         // Adapter-sent termination — treat like close
         if (this.phase !== 'disconnected') {
           this.clearPersistence()

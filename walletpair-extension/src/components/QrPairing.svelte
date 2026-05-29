@@ -67,6 +67,7 @@
       Copy Link
     {/if}
   </button>
+  <p class="copy-warning">&#x26A0; Less secure — same device only. For high-value transactions, scan QR from a separate device.</p>
 </div>
 
 <style>
@@ -142,6 +143,15 @@
   .copy-btn:hover {
     background: var(--bg-hover);
     color: var(--text);
+  }
+
+  .copy-warning {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-align: center;
+    max-width: 260px;
+    line-height: 1.4;
+    margin: 0;
   }
 
   .fingerprint {

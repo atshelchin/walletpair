@@ -262,16 +262,11 @@ describe('EVM Sub-Protocol Section 6: Events', () => {
     expect(data.chain).toMatch(/^eip155:\d+$/);
   });
 
-  it('connect event format', () => {
-    const data = { chain: 'eip155:1' };
-    expect(data).toHaveProperty('chain');
-  });
-
   it('disconnect event format', () => {
-    const data = { chain: 'eip155:1', code: 4900, message: 'Disconnected' };
-    expect(data).toHaveProperty('chain');
-    expect(data).toHaveProperty('code');
-    expect(data.code).toBe(4900);
+    const data = { reason: 'user_closed', message: 'User closed the wallet' };
+    expect(data).toHaveProperty('reason');
+    expect(data).toHaveProperty('message');
+    expect(data.reason).toBe('user_closed');
   });
 });
 
@@ -285,7 +280,7 @@ describe('EVM Sub-Protocol Section 7: Error Codes', () => {
     'unsupported_chain', 'unsupported_method',
     'insufficient_funds', 'nonce_too_low',
     'gas_estimation_failed', 'tx_rejected',
-    'chain_not_added', 'internal_error',
+    'internal_error',
   ];
 
   it('error object has code (string) and message (string)', () => {

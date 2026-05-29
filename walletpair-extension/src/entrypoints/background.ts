@@ -375,17 +375,6 @@ async function handleRpcRequest(
     return { error: { code: 4100, message: 'Not connected. Call eth_requestAccounts first.' } };
   }
 
-  // ── wallet_watchAsset: forward to wallet, silent success on failure ───
-  if (method === 'wallet_watchAsset') {
-    try {
-      const result = await evmProvider!.request({ method, params });
-      return { result };
-    } catch {
-      // Wallet doesn't support it — silent success
-      return { result: true };
-    }
-  }
-
   // ── wallet_requestPermissions: trigger accounts request ───────────────
   if (method === 'wallet_requestPermissions') {
     try {

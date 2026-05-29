@@ -90,7 +90,7 @@
         </button>
       </div>
     {:else if state.phase === 'pairing'}
-      <QrPairing uri={state.pairingUri ?? ''} />
+      <QrPairing uri={state.pairingUri ?? ''} fingerprint={state.sessionFingerprint} />
     {:else if state.phase === 'pending_accept'}
       <PendingAccept
         code={state.sessionFingerprint ?? ''}

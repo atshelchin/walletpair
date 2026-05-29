@@ -457,12 +457,13 @@ async fn duplicate_create_returns_channel_exists() {
     let ready = recv_json(&mut dapp1).await;
     assert_eq!(ready["t"], "ready");
 
-    // Second create on same channel fails
+    // Second create on same channel while in waiting state — replaces the old
+    // channel per spec §13 (waiting channels are replaced on re-create).
     let mut dapp2 = ws_connect(&addr).await;
     send_json(&mut dapp2, &create_msg(&ch, &dapp_peer_2)).await;
-    let close = recv_json(&mut dapp2).await;
-    assert_eq!(close["t"], "terminate");
-    assert_eq!(close["body"]["reason"], "channel_exists");
+    let ready2 = recv_json(&mut dapp2).await;
+    assert_eq!(ready2["t"], "ready");
+    assert_eq!(ready2["body"]["state"], "waiting");
 }
 
 #[tokio::test]
@@ -1287,8 +1288,8 @@ async fn max_channels_limit_enforced() {
     send_json(&mut ws3, &create_msg(&ch3, &dapp3)).await;
     let close = recv_json(&mut ws3).await;
     assert_eq!(close["t"], "terminate");
-    // The relay maps the max-channels condition to protocol_error
-    assert_eq!(close["body"]["reason"], "protocol_error");
+    // The relay maps the max-channels condition to rate_limited
+    assert_eq!(close["body"]["reason"], "rate_limited");
 }
 
 // 5. dApp sends res in connected state — role violation → invalid_role

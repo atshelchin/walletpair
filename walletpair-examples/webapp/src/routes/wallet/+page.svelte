@@ -122,7 +122,7 @@
 		const s = new WalletSession({
 			transport,
 			capabilities: {
-				methods: ['wallet_getAccounts', 'wallet_signMessage', 'wallet_signRawMessage'],
+				methods: ['wallet_getAccounts', 'wallet_signMessage'],
 				events: ['accountsChanged', 'chainChanged'],
 				chains: ['eip155:1']
 			},
@@ -174,23 +174,6 @@
 					signature: personalSign(
 						ethKey,
 						message,
-						crypto.secp256k1,
-						crypto.keccak_256,
-						crypto.utf8ToBytes,
-						crypto.concatBytes
-					)
-				};
-				break;
-			}
-			case 'wallet_signRawMessage': {
-				// data is hex-encoded bytes, decode and sign
-				const hexData = (req.params as any)?.data || '0x';
-				const rawBytes = hexToBytes(hexData.replace(/^0x/, ''));
-				const rawMessage = new TextDecoder().decode(rawBytes);
-				result = {
-					signature: personalSign(
-						ethKey,
-						rawMessage,
 						crypto.secp256k1,
 						crypto.keccak_256,
 						crypto.utf8ToBytes,
