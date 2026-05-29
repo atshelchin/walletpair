@@ -4,7 +4,8 @@
  * Pure JS (noble libraries v2), no native modules required.
  */
 
-import canonicalize from 'canonicalize';
+import _canonicalize from 'canonicalize';
+const canonicalize = (_canonicalize as { default: typeof _canonicalize.default }).default ?? _canonicalize.default;
 import { x25519 } from '@noble/curves/ed25519';
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
