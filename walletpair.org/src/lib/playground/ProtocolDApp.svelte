@@ -5,6 +5,8 @@
 	import MessageLog from './MessageLog.svelte';
 	import { playground, type LogEntry } from './state.svelte';
 
+	const STORAGE_KEY = 'walletpair.playground.dapp';
+
 	let phase: DAppPhase = $state('idle');
 	let pairingUri = $state('');
 	let sessionFingerprint = $state('------');
@@ -20,6 +22,67 @@
 	let method = $state('');
 	let params = $state('{}');
 	let log = $state<LogEntry[]>([]);
+
+	// Reconnect state
+	let hasSnapshot = $state(false);
+	let showReconnectPrompt = $state(false);
+
+	const persistence = {
+		save: (snapshot: string) => localStorage.setItem(STORAGE_KEY, snapshot),
+		load: () => localStorage.getItem(STORAGE_KEY),
+		clear: () => localStorage.removeItem(STORAGE_KEY)
+	};
+
+	// Check for existing snapshot on mount
+	$effect(() => {
+		const snap = localStorage.getItem(STORAGE_KEY);
+		if (snap && phase === 'idle' && !session) {
+			hasSnapshot = true;
+			showReconnectPrompt = true;
+		}
+	});
+
+	async function reconnectSession() {
+		showReconnectPrompt = false;
+		const transport = new WebSocketTransport(playground.relayUrl);
+		const s = new DAppSession({
+			transport,
+			meta: {
+				name: metaName || 'Protocol Playground',
+				description: 'Network-agnostic playground',
+				url: metaUrl || 'https://walletpair.org',
+				icon: metaIcon || 'https://walletpair.org/favicon.png'
+			},
+			persistence
+		} as ConstructorParameters<typeof DAppSession>[0]);
+		session = s;
+		setupSessionEvents(s);
+
+		try {
+			const restored = await s.restoreFromPersistence();
+			if (!restored) {
+				addLog('err', 'reconnect', 'Failed to restore session snapshot');
+				persistence.clear();
+				hasSnapshot = false;
+				session = null;
+				return;
+			}
+			// Restore UI state from session
+			sessionFingerprint = s.sessionFingerprint || '------';
+			walletCaps = (s.walletCapabilities as typeof walletCaps) ?? null;
+			if (walletCaps?.methods?.length) method = walletCaps.methods[0]!;
+			addLog('out', 'reconnect', `ch=${s.channelId.slice(0, 12)}... restoring...`);
+			await s.reconnect();
+		} catch (e: any) {
+			addLog('err', 'reconnect', e.message);
+		}
+	}
+
+	function dismissReconnect() {
+		showReconnectPrompt = false;
+		hasSnapshot = false;
+		persistence.clear();
+	}
 
 	function addLog(dir: 'out' | 'in' | 'err', type: string, detail = '') {
 		log = [...log, { dir, type, detail }];
@@ -74,15 +137,17 @@
 	}
 
 	async function connect() {
+		showReconnectPrompt = false;
 		const transport = new WebSocketTransport(playground.relayUrl);
 		const s = new DAppSession({
 			transport,
 			meta: {
 				name: metaName || 'Protocol Playground',
 				description: 'Network-agnostic playground',
-				url: metaUrl || location.origin,
+				url: metaUrl || 'https://walletpair.org',
 				icon: metaIcon || 'https://walletpair.org/favicon.png'
-			}
+			},
+			persistence
 		} as ConstructorParameters<typeof DAppSession>[0]);
 		session = s;
 		setupSessionEvents(s);
@@ -134,6 +199,8 @@
 		walletCaps = null;
 		method = '';
 		log = [];
+		hasSnapshot = false;
+		persistence.clear();
 	}
 
 	let copied = $state(false);
@@ -157,6 +224,17 @@
 			{phase}
 		</span>
 	</div>
+
+	<!-- Reconnect prompt -->
+	{#if showReconnectPrompt && phase === 'idle'}
+		<div class="reconnect-prompt">
+			<div class="reconnect-text">Previous session found. Resume or start fresh?</div>
+			<div class="row">
+				<button class="btn-primary" onclick={reconnectSession}>Reconnect</button>
+				<button class="btn-ghost" onclick={dismissReconnect}>New Session</button>
+			</div>
+		</div>
+	{/if}
 
 	<div class="field">
 		<label>Relay URL</label>
@@ -206,33 +284,57 @@
 		<!-- Negotiated capabilities -->
 		{#if walletCaps}
 			<div class="field">
-				<label>Negotiated Capabilities</label>
-				<div class="caps">
-					<span class="cap-label">Methods:</span> {walletCaps.methods?.join(', ') || 'none'}
-				</div>
-				<div class="caps">
-					<span class="cap-label">Events:</span> {walletCaps.events?.join(', ') || 'none'}
-				</div>
-				<div class="caps">
-					<span class="cap-label">Chains:</span> {walletCaps.chains?.join(', ') || 'none'}
+				<label>Wallet Capabilities</label>
+				<div class="caps-box">
+					<div class="caps-row">
+						<span class="caps-icon">⚡</span>
+						<span class="caps-label">Methods</span>
+						<div class="caps-tags">
+							{#each walletCaps.methods || [] as m}
+								<button
+									class="cap-tag"
+									class:active={method === m}
+									onclick={() => (method = m)}
+								>{m}</button>
+							{/each}
+							{#if !walletCaps.methods?.length}
+								<span class="caps-none">none</span>
+							{/if}
+						</div>
+					</div>
+					<div class="caps-row">
+						<span class="caps-icon">📡</span>
+						<span class="caps-label">Events</span>
+						<div class="caps-tags">
+							{#each walletCaps.events || [] as e}
+								<span class="cap-tag readonly">{e}</span>
+							{/each}
+							{#if !walletCaps.events?.length}
+								<span class="caps-none">none</span>
+							{/if}
+						</div>
+					</div>
+					<div class="caps-row">
+						<span class="caps-icon">🔗</span>
+						<span class="caps-label">Chains</span>
+						<div class="caps-tags">
+							{#each walletCaps.chains || [] as c}
+								<span class="cap-tag readonly">{c}</span>
+							{/each}
+							{#if !walletCaps.chains?.length}
+								<span class="caps-none">none</span>
+							{/if}
+						</div>
+					</div>
 				</div>
 			</div>
 		{/if}
 
 		<div class="field">
-			<label>Send Request</label>
-			{#if walletCaps?.methods?.length}
-				<select bind:value={method}>
-					{#each walletCaps.methods as m}
-						<option value={m}>{m}</option>
-					{/each}
-				</select>
-			{:else}
-				<input bind:value={method} placeholder="method name" />
-			{/if}
+			<label>Send Request — <code>{method || '(select a method above)'}</code></label>
 			<textarea bind:value={params} rows="3" placeholder="JSON params"></textarea>
 			<div class="row">
-				<button class="btn-primary" onclick={sendRequest}>Send</button>
+				<button class="btn-primary" onclick={sendRequest} disabled={!method}>Send</button>
 				<button class="btn-sm" onclick={sendPing}>Ping</button>
 				<button class="btn-danger" onclick={closeSession}>Close</button>
 			</div>
@@ -329,6 +431,99 @@
 	.meta-toggle { background: none; border: none; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 0.75rem; padding: 0; cursor: pointer; text-align: left; text-transform: uppercase; letter-spacing: 0.05em; }
 	.meta-toggle:hover { color: var(--color-text); }
 
-	.caps { font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-text-muted); padding: var(--space-1) 0; }
-	.cap-label { color: var(--color-text-subtle); font-weight: 600; }
+	/* Reconnect prompt */
+	.reconnect-prompt {
+		background: var(--color-surface-2);
+		border: 1px solid var(--color-accent);
+		border-radius: var(--radius-md);
+		padding: var(--space-3) var(--space-4);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.reconnect-text {
+		font-size: 0.85rem;
+		color: var(--color-text);
+	}
+	.btn-ghost {
+		background: transparent;
+		border: 1px solid var(--color-border);
+		color: var(--color-text-muted);
+	}
+	.btn-ghost:hover {
+		border-color: var(--color-text-subtle);
+		color: var(--color-text);
+	}
+
+	/* Capabilities display */
+	.caps-box {
+		background: var(--color-bg);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		padding: var(--space-3);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.caps-row {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-2);
+		font-size: 0.8rem;
+	}
+	.caps-icon {
+		flex-shrink: 0;
+		font-size: 0.75rem;
+		line-height: 1.8;
+	}
+	.caps-label {
+		flex-shrink: 0;
+		min-width: 4.5em;
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--color-text-subtle);
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+		line-height: 1.8;
+	}
+	.caps-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+	}
+	.cap-tag {
+		font-family: var(--font-mono);
+		font-size: 0.7rem;
+		padding: 2px 8px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--color-border);
+		background: var(--color-surface);
+		color: var(--color-text-muted);
+		cursor: pointer;
+		transition: border-color 0.15s, color 0.15s, background 0.15s;
+		white-space: nowrap;
+	}
+	.cap-tag:hover {
+		border-color: var(--color-accent);
+		color: var(--color-text);
+	}
+	.cap-tag.active {
+		border-color: var(--color-accent);
+		background: rgba(59, 130, 246, 0.15);
+		color: var(--color-accent);
+	}
+	.cap-tag.readonly {
+		cursor: default;
+	}
+	.cap-tag.readonly:hover {
+		border-color: var(--color-border);
+		color: var(--color-text-muted);
+	}
+	.caps-none {
+		font-size: 0.7rem;
+		color: var(--color-text-subtle);
+		font-style: italic;
+		line-height: 1.8;
+	}
 </style>

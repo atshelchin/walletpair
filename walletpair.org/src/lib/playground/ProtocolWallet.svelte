@@ -4,6 +4,8 @@
 	import MessageLog from './MessageLog.svelte';
 	import { playground, type LogEntry } from './state.svelte';
 
+	const STORAGE_KEY = 'walletpair.playground.wallet';
+
 	let metaName = $state('Protocol Wallet');
 	let metaUrl = $state('https://walletpair.org');
 	let metaIcon = $state('https://walletpair.org/favicon.png');
@@ -16,6 +18,22 @@
 
 	let pairingUriInput = $state('');
 	let phase: WalletPhase = $state('idle');
+
+	// Reconnect state
+	let showReconnectPrompt = $state(false);
+
+	const persistence = {
+		save: (snapshot: string) => localStorage.setItem(STORAGE_KEY, snapshot),
+		load: () => localStorage.getItem(STORAGE_KEY),
+		clear: () => localStorage.removeItem(STORAGE_KEY)
+	};
+
+	$effect(() => {
+		const snap = localStorage.getItem(STORAGE_KEY);
+		if (snap && phase === 'idle' && !session) {
+			showReconnectPrompt = true;
+		}
+	});
 	let sessionFingerprint = $state('------');
 	let session: WalletSession | null = $state(null);
 	let pendingReqs = $state<{ id: string; method: string; params: unknown }[]>([]);
@@ -62,7 +80,8 @@
 				description: 'Network-agnostic playground wallet',
 				url: metaUrl || 'https://walletpair.org',
 				icon: metaIcon || 'https://walletpair.org/favicon.png'
-			}
+			},
+			persistence
 		});
 		session = s;
 
@@ -140,6 +159,58 @@
 		sessionFingerprint = '------';
 		pendingReqs = [];
 		log = [];
+		showReconnectPrompt = false;
+		persistence.clear();
+	}
+
+	async function reconnectSession() {
+		showReconnectPrompt = false;
+		const transport = new WebSocketTransport(playground.relayUrl);
+		const s = new WalletSession({
+			transport,
+			capabilities: {
+				methods: parseCsv(capMethods),
+				events: parseCsv(capEvents),
+				chains: parseCsv(capChains)
+			},
+			meta: {
+				name: metaName || 'Protocol Wallet',
+				description: 'Network-agnostic playground wallet',
+				url: metaUrl || 'https://walletpair.org',
+				icon: metaIcon || 'https://walletpair.org/favicon.png'
+			},
+			persistence
+		});
+		session = s;
+
+		s.on('phase', (p) => {
+			phase = p;
+			addLog('in', 'phase', p);
+		});
+		s.on('request', ({ id, method, params }) => {
+			addLog('in', 'req', `id=${id} method=${method}`);
+			pendingReqs = [...pendingReqs, { id, method, params }];
+		});
+
+		try {
+			const restored = await s.restoreFromPersistence();
+			if (!restored) {
+				addLog('err', 'reconnect', 'Failed to restore session snapshot');
+				persistence.clear();
+				session = null;
+				return;
+			}
+			sessionFingerprint = (s as any).sessionFingerprint || '------';
+			addLog('out', 'reconnect', `ch=${s.channelId.slice(0, 12)}... restoring...`);
+			await s.reconnect();
+		} catch (e: any) {
+			addLog('err', 'reconnect', e.message);
+		}
+	}
+
+	function dismissReconnect() {
+		showReconnectPrompt = false;
+		persistence.clear();
 	}
 </script>
 
@@ -156,6 +227,17 @@
 			{phase}
 		</span>
 	</div>
+
+	<!-- Reconnect prompt -->
+	{#if showReconnectPrompt && phase === 'idle'}
+		<div class="reconnect-prompt">
+			<div class="reconnect-text">Previous session found. Resume or start fresh?</div>
+			<div class="row">
+				<button class="btn-primary" onclick={reconnectSession}>Reconnect</button>
+				<button class="btn-ghost" onclick={dismissReconnect}>New Session</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Metadata (collapsible) -->
 	<div class="field">
@@ -306,4 +388,17 @@
 
 	.meta-toggle { background: none; border: none; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 0.75rem; padding: 0; cursor: pointer; text-align: left; text-transform: uppercase; letter-spacing: 0.05em; }
 	.meta-toggle:hover { color: var(--color-text); }
+
+	.reconnect-prompt {
+		background: var(--color-surface-2);
+		border: 1px solid var(--color-accent);
+		border-radius: var(--radius-md);
+		padding: var(--space-3) var(--space-4);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.reconnect-text { font-size: 0.85rem; color: var(--color-text); }
+	.btn-ghost { background: transparent; border: 1px solid var(--color-border); color: var(--color-text-muted); }
+	.btn-ghost:hover { border-color: var(--color-text-subtle); color: var(--color-text); }
 </style>
