@@ -20,7 +20,7 @@
   "[!start-pkg]": "",
   "name": "walletpair-sdk",
   "type": "module",
-  "version": "0.0.0",
+  "version": "1.0.2",
   "main": "./src/index.ts",
   "license": "MIT",
   "files": [

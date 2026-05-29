@@ -1,5 +1,11 @@
 # walletpair-sdk
 
+## 1.0.2
+
+### Patch Changes
+
+- update readme.md
+
 ## 1.0.0
 
 ### Major Changes
