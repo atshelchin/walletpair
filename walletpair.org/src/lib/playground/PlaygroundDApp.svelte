@@ -19,6 +19,7 @@
 	let showMeta = $state(true);
 
 	let walletCaps = $state<{ methods?: string[]; events?: string[]; chains?: string[] } | null>(null);
+	let peerMeta = $state<{ name?: string; url?: string; icon?: string } | null>(null);
 	let method = $state('wallet_getAccounts');
 	let params = $state('{}');
 	let log = $state<LogEntry[]>([]);
@@ -39,7 +40,9 @@
 	});
 
 	function addLog(dir: 'out' | 'in' | 'err', type: string, detail = '') {
-		log = [...log, { dir, type, detail }];
+		const now = new Date();
+		const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
+		log = [...log, { dir, type, detail, time }];
 	}
 
 	async function renderQR(text: string) {
@@ -73,6 +76,7 @@
 
 		s.on('walletJoined', ({ capabilities, meta }) => {
 			walletCaps = capabilities as typeof walletCaps;
+			peerMeta = meta as typeof peerMeta;
 			if (walletCaps?.methods?.length) method = walletCaps.methods[0]!;
 			addLog(
 				'in',
@@ -156,6 +160,7 @@
 		sessionFingerprint = '------';
 		qrDataUrl = '';
 		walletCaps = null;
+		peerMeta = null;
 		log = [];
 		showReconnectPrompt = false;
 		persistence.clear();
@@ -288,6 +293,14 @@
 
 	<!-- Send Requests -->
 	{#if phase === 'connected'}
+		{#if peerMeta}
+			<div class="peer-info">
+				<span class="peer-label">Connected to</span>
+				<span class="peer-name">{peerMeta.name || 'Unknown Wallet'}</span>
+				{#if peerMeta.url}<span class="peer-url">{peerMeta.url}</span>{/if}
+			</div>
+		{/if}
+
 		{#if walletCaps}
 			<div class="field">
 				<label>Wallet Capabilities</label>
@@ -564,4 +577,9 @@
 	.cap-tag.active { border-color: var(--color-accent); background: rgba(59, 130, 246, 0.15); color: var(--color-accent); }
 	.cap-tag.readonly { cursor: default; }
 	.cap-tag.readonly:hover { border-color: var(--color-border); color: var(--color-text-muted); }
+
+	.peer-info { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+	.peer-label { font-size: 0.65rem; color: var(--color-text-subtle); text-transform: uppercase; letter-spacing: 0.05em; }
+	.peer-name { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; color: var(--color-text); }
+	.peer-url { font-family: var(--font-mono); font-size: 0.7rem; color: var(--color-text-muted); }
 </style>

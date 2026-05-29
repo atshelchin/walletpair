@@ -1,4 +1,4 @@
-export type LogEntry = { dir: 'out' | 'in' | 'err'; type: string; detail: string };
+export type LogEntry = { dir: 'out' | 'in' | 'err'; type: string; detail: string; time: string };
 
 class PlaygroundState {
 	relayUrl = $state('wss://relay.walletpair.org/v1');

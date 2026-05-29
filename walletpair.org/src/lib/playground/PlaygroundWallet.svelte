@@ -64,6 +64,7 @@
 	let ethKey = $state('');
 	let ethAddr = $state('--');
 	let pairingUriInput = $state('');
+	let peerMeta = $state<{ name?: string; url?: string; icon?: string } | null>(null);
 	let phase: WalletPhase = $state('idle');
 	let sessionFingerprint = $state('------');
 	let session: WalletSession | null = $state(null);
@@ -89,7 +90,9 @@
 	let ethCrypto: Awaited<ReturnType<typeof loadEthCrypto>> | null = null;
 
 	function addLog(dir: 'out' | 'in' | 'err', type: string, detail = '') {
-		log = [...log, { dir, type, detail }];
+		const now = new Date();
+		const time = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${now.getMilliseconds().toString().padStart(3, '0')}`;
+		log = [...log, { dir, type, detail, time }];
 	}
 
 	// ── Key management ──
@@ -162,6 +165,12 @@
 		session = s;
 
 		try {
+			const uriParams = new URLSearchParams(pairingUriInput.replace(/^walletpair:\?/, ''));
+			peerMeta = {
+				name: uriParams.get('name') || undefined,
+				url: uriParams.get('url') || undefined,
+				icon: uriParams.get('icon') || undefined
+			};
 			const code = s.prepareJoin(pairingUriInput);
 			sessionFingerprint = code;
 			addLog('in', 'fingerprint', code);
@@ -271,6 +280,7 @@
 		session = null;
 		phase = 'idle';
 		sessionFingerprint = '------';
+		peerMeta = null;
 		pendingReqs = [];
 		log = [];
 		showReconnectPrompt = false;
@@ -365,8 +375,16 @@
 		</div>
 	{/if}
 
-	<!-- Incoming Requests -->
 	{#if phase === 'connected'}
+		{#if peerMeta}
+			<div class="peer-info">
+				<span class="peer-label">Connected to</span>
+				<span class="peer-name">{peerMeta.name || 'Unknown dApp'}</span>
+				{#if peerMeta.url}<span class="peer-url">{peerMeta.url}</span>{/if}
+			</div>
+		{/if}
+
+	<!-- Incoming Requests -->
 		<div class="field">
 			<label>Incoming Requests</label>
 			{#if pendingReqs.length === 0}
@@ -621,4 +639,9 @@
 	.reconnect-text { font-size: 0.85rem; color: var(--color-text); }
 	.btn-ghost { background: transparent; border: 1px solid var(--color-border); color: var(--color-text-muted); }
 	.btn-ghost:hover { border-color: var(--color-text-subtle); color: var(--color-text); }
+
+	.peer-info { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+	.peer-label { font-size: 0.65rem; color: var(--color-text-subtle); text-transform: uppercase; letter-spacing: 0.05em; }
+	.peer-name { font-family: var(--font-mono); font-size: 0.85rem; font-weight: 600; color: var(--color-text); }
+	.peer-url { font-family: var(--font-mono); font-size: 0.7rem; color: var(--color-text-muted); }
 </style>
