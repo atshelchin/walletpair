@@ -231,6 +231,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
     }
 
     const id = `req-${++this.reqCounter}`
+    const sendKey = this.sendKey
 
     // Always seal: even parameterless requests must be authenticated via AEAD
     // to prevent method injection by a malicious relay.
@@ -243,7 +244,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
           ? (params as Record<string, unknown>)
           : { _params: params ?? {} }),
       }
-      const sealed = sealPayload(this.sendKey!, this.channelId, seq, sealedParams, hdr)
+      const sealed = sealPayload(sendKey, this.channelId, seq, sealedParams, hdr)
 
       const msg: ProtocolMessage = {
         v: 1,
@@ -260,7 +261,13 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
           reject(new Error(`Request ${method} timed out`))
         }, this.requestTimeout)
 
-        this.pendingRequests.set(id, { id, method, resolve: resolve as any, reject, timer })
+        this.pendingRequests.set(id, {
+          id,
+          method,
+          resolve: resolve as (v: unknown) => void,
+          reject,
+          timer,
+        })
         this.sendRaw(msg)
       })
     }
@@ -400,6 +407,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
         d.dappMeta ??
         (d.dappName ? { name: d.dappName, description: '', url: '', icon: '' } : this.meta)
       this.sessionStartTime = d.sessionStartTime ?? null
+      this.setPhase('connected')
       return true
     } catch {
       return false

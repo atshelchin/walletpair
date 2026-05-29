@@ -100,7 +100,7 @@ describe('Crypto Attack: Ciphertext bit-flip', () => {
 
     // Flip a bit in the ciphertext body (byte 10, well past the 4-byte seq)
     const tampered = new Uint8Array(bytes)
-    tampered[10] = tampered[10]! ^ 0x01
+    tampered[10] = (tampered[10] ?? 0) ^ 0x01
 
     expect(() => unsealPayload(key, ch, b64urlEncode(tampered))).toThrow()
   })
@@ -118,7 +118,7 @@ describe('Crypto Attack: Ciphertext bit-flip', () => {
     const bytes = b64urlDecode(sealed)
 
     const tampered = new Uint8Array(bytes)
-    tampered[tampered.length - 1] = tampered[tampered.length - 1]! ^ 0xff
+    tampered[tampered.length - 1] = (tampered[tampered.length - 1] ?? 0) ^ 0xff
 
     expect(() => unsealPayload(key, ch, b64urlEncode(tampered))).toThrow()
   })
@@ -137,7 +137,7 @@ describe('Crypto Attack: Ciphertext bit-flip', () => {
     const bytes = b64urlDecode(sealed)
 
     const tampered = new Uint8Array(bytes)
-    tampered[3] = tampered[3]! ^ 0x01 // flip low bit of seq
+    tampered[3] = (tampered[3] ?? 0) ^ 0x01 // flip low bit of seq
 
     expect(() => unsealPayload(key, ch, b64urlEncode(tampered))).toThrow()
   })
@@ -384,7 +384,7 @@ describe('Crypto Attack: Sealed join tampering', () => {
     // Tamper with the ciphertext
     const bytes = b64urlDecode(sealed)
     const tampered = new Uint8Array(bytes)
-    tampered[20] = tampered[20]! ^ 0xff // flip a byte in ciphertext
+    tampered[20] = (tampered[20] ?? 0) ^ 0xff // flip a byte in ciphertext
 
     expect(() => unsealJoin(joinKey, ch, b64urlEncode(tampered))).toThrow()
   })

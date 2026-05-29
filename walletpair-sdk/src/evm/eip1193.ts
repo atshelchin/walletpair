@@ -33,8 +33,8 @@ export interface EIP1193ProviderEvents {
 
 export interface EIP1193Provider {
   request(args: EIP1193RequestArgs): Promise<unknown>
-  on(event: string, handler: (...args: any[]) => void): void
-  removeListener(event: string, handler: (...args: any[]) => void): void
+  on(event: string, handler: (...args: unknown[]) => void): void
+  removeListener(event: string, handler: (...args: unknown[]) => void): void
 }
 
 // ---------------------------------------------------------------------------
@@ -234,8 +234,10 @@ export class WalletPairProvider implements EIP1193Provider {
       if (event === 'disconnect') {
         this.connected = false
         this.disconnected = true
-        const reason = (data as any)?.reason ?? 'unknown'
-        const msg = (data as any)?.message ?? `Disconnected by wallet (${reason})`
+        const d = data as Record<string, unknown>
+        const reason = String(d?.reason ?? 'unknown')
+        const msg =
+          typeof d?.message === 'string' ? d.message : `Disconnected by wallet (${reason})`
         this.emitter.emit('disconnect', { code: 4900, message: msg })
         this.session.close('normal')
         return
@@ -245,7 +247,7 @@ export class WalletPairProvider implements EIP1193Provider {
         // - Simple: { accounts: ['0x...'] } or just ['0x...']
         // - Sub-protocol: { accounts: [{ address: '0x...', chains?: [...] }] }
         const payload = data as { accounts?: (string | { address: string })[] } | string[]
-        const rawAccounts = Array.isArray(payload) ? payload : (payload as any)?.accounts
+        const rawAccounts = Array.isArray(payload) ? payload : payload?.accounts
         if (Array.isArray(rawAccounts)) {
           this.accounts = rawAccounts.map((a: string | { address: string }) =>
             typeof a === 'string' ? a : a.address,
@@ -259,7 +261,7 @@ export class WalletPairProvider implements EIP1193Provider {
         // - raw string 'eip155:137' or '0x89'
         const raw =
           typeof data === 'object' && data !== null
-            ? ((data as any).chainId ?? (data as any).chain)
+            ? ((data as Record<string, unknown>).chainId ?? (data as Record<string, unknown>).chain)
             : data
         let newChainId: number | null = null
         if (typeof raw === 'string') {
@@ -340,12 +342,14 @@ export class WalletPairProvider implements EIP1193Provider {
     return mappedResult
   }
 
+  // biome-ignore lint/suspicious/noExplicitAny: EIP-1193 interface requires generic handler signature
   on(event: string, handler: (...args: any[]) => void): void {
-    this.emitter.on(event as keyof EIP1193ProviderEvents, handler as any)
+    this.emitter.on(event as keyof EIP1193ProviderEvents, handler as (data: unknown) => void)
   }
 
+  // biome-ignore lint/suspicious/noExplicitAny: EIP-1193 interface requires generic handler signature
   removeListener(event: string, handler: (...args: any[]) => void): void {
-    this.emitter.off(event as keyof EIP1193ProviderEvents, handler as any)
+    this.emitter.off(event as keyof EIP1193ProviderEvents, handler as (data: unknown) => void)
   }
 
   getChainId(): string {

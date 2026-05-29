@@ -81,7 +81,7 @@ export function computeSharedSecret(
   // RFC 7748 §6: low-order points produce all-zero output — reject to
   // prevent invalid key derivation.
   let acc = 0
-  for (let i = 0; i < shared.length; i++) acc |= shared[i]!
+  for (let i = 0; i < shared.length; i++) acc |= shared[i] ?? 0
   if (acc === 0) {
     throw new Error('X25519 produced all-zero shared secret (low-order public key)')
   }
@@ -249,7 +249,7 @@ function buildAad(channelIdHex: string, header?: AadHeader): Uint8Array {
 }
 
 /** Maximum sequence number (2^32 - 1). Session MUST close before reaching this. */
-const MAX_SEQ = 0xFFFFFFFF
+const MAX_SEQ = 0xffffffff
 
 export function sealPayload(
   encryptionKey: Uint8Array,

@@ -17,7 +17,7 @@ import {
 } from '../../crypto.js'
 import { DAppSession } from '../../dapp-session.js'
 import { MockTransport, makeJoinBody, makeSealedJoin } from '../../test-helpers.js'
-import type { ProtocolMessage } from '../../types.js'
+import type { CloseMessage, ProtocolMessage, RequestMessage } from '../../types.js'
 import { WalletSession } from '../../wallet-session.js'
 
 function wait(ms = 50): Promise<void> {
@@ -129,9 +129,9 @@ describe('Malicious Relay: Public key substitution in join', () => {
     expect(errorMsg).toContain('decrypt')
 
     // DApp should have sent close with decryption_failed
-    const closeMsg = transport.sent.find((m) => m.t === 'close') as unknown as Record<string, unknown>
+    const closeMsg = transport.sent.find((m) => m.t === 'close') as CloseMessage | undefined
     expect(closeMsg).toBeTruthy()
-    expect(closeMsg.body.reason).toBe('decryption_failed')
+    expect(closeMsg?.body.reason).toBe('decryption_failed')
   })
 })
 
@@ -156,8 +156,8 @@ describe('Malicious Relay: Message replay', () => {
     // First request succeeds with seq=0
     const p0 = session.request('wallet_getAccounts')
     await wait(20)
-    const req0 = transport.sent.find((m) => m.t === 'req') as unknown as Record<string, unknown>
-    const req0Id = req0.body.id
+    const req0 = transport.sent.find((m) => m.t === 'req') as RequestMessage | undefined
+    const req0Id = req0?.body.id ?? ''
 
     const validSealed = sealPayload(
       recvKey,
@@ -180,8 +180,8 @@ describe('Malicious Relay: Message replay', () => {
     // Second request: relay replays the SAME sealed payload (seq=0)
     const p1 = session.request('wallet_getAccounts')
     await wait(20)
-    const req1 = transport.sent.filter((m) => m.t === 'req')[1] as unknown as Record<string, unknown>
-    const req1Id = req1.body.id
+    const req1 = transport.sent.filter((m) => m.t === 'req')[1] as RequestMessage | undefined
+    const req1Id = req1?.body.id ?? ''
 
     // Relay creates a new envelope but copies the old sealed (seq=0)
     // Note: the AAD won't match because id differs, so it fails at AEAD level.
@@ -286,9 +286,9 @@ describe('Malicious Relay: Reflection attack', () => {
     await wait(20)
 
     // Capture the outbound req
-    const reqMsg = transport.sent.find((m) => m.t === 'req') as unknown as Record<string, unknown>
-    const reqId = reqMsg.body.id
-    const reqSealed = reqMsg.body.sealed
+    const reqMsg = transport.sent.find((m) => m.t === 'req') as RequestMessage | undefined
+    const reqId = reqMsg?.body.id ?? ''
+    const reqSealed = reqMsg?.body.sealed ?? ''
 
     // Relay reflects the req's sealed payload back as a res
     transport.receive({
@@ -574,8 +574,8 @@ describe('Malicious Relay: Forged ping/pong', () => {
     // Verify encrypted communication still works after the forged ping
     const p = session.request('wallet_getAccounts')
     await wait(20)
-    const req = transport.sent.filter((m) => m.t === 'req').pop() as unknown as Record<string, unknown>
-    const reqId = req.body.id
+    const req = transport.sent.filter((m) => m.t === 'req').pop() as RequestMessage | undefined
+    const reqId = req?.body.id ?? ''
 
     transport.receive({
       v: 1,

@@ -4,8 +4,8 @@
 
 type Handler<T> = (data: T) => void
 
-// biome-ignore lint: index signature needed for generic emitter
-export class Emitter<Events extends { [key: string]: unknown }> {
+export class Emitter<Events extends Record<string, unknown>> {
+  // biome-ignore lint/suspicious/noExplicitAny: generic handler storage requires any
   private handlers = new Map<keyof Events, Set<Handler<any>>>()
 
   on<K extends keyof Events>(event: K, handler: Handler<Events[K]>): () => void {

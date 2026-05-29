@@ -110,11 +110,11 @@ describe('Section 14 — DApp state machine', () => {
   describe('valid transitions: idle -> waiting -> pending_accept -> connected -> closed', () => {
     it('full happy path', () => {
       let state: DAppState = 'idle'
-      state = dappTransition(state, 'send_create')!
+      state = dappTransition(state, 'send_create') ?? 'closed'
       expect(state).toBe('waiting')
-      state = dappTransition(state, 'receive_join')!
+      state = dappTransition(state, 'receive_join') ?? 'closed'
       expect(state).toBe('pending_accept')
-      state = dappTransition(state, 'sealed_join_verified_send_accept')!
+      state = dappTransition(state, 'sealed_join_verified_send_accept') ?? 'closed'
       expect(state).toBe('connected')
     })
 
@@ -220,9 +220,9 @@ describe('Section 14 — Wallet state machine', () => {
   describe('valid transitions: idle -> waiting_accept -> connected -> closed', () => {
     it('full happy path', () => {
       let state: WalletState = 'idle'
-      state = walletTransition(state, 'send_join')!
+      state = walletTransition(state, 'send_join') ?? 'closed'
       expect(state).toBe('waiting_accept')
-      state = walletTransition(state, 'receive_ready_connected')!
+      state = walletTransition(state, 'receive_ready_connected') ?? 'closed'
       expect(state).toBe('connected')
     })
 
@@ -346,42 +346,42 @@ describe('Section 14 — Cross-cutting properties', () => {
   it('reconnect path reuses the full handshake flow (create/join/accept)', () => {
     // DApp: disconnected -> waiting (via create) -> pending_accept (via join) -> connected
     let dapp: DAppState = 'disconnected'
-    dapp = dappTransition(dapp, 'send_create_reconnect')!
+    dapp = dappTransition(dapp, 'send_create_reconnect') ?? 'closed'
     expect(dapp).toBe('waiting')
-    dapp = dappTransition(dapp, 'receive_join')!
+    dapp = dappTransition(dapp, 'receive_join') ?? 'closed'
     expect(dapp).toBe('pending_accept')
-    dapp = dappTransition(dapp, 'sealed_join_verified_send_accept')!
+    dapp = dappTransition(dapp, 'sealed_join_verified_send_accept') ?? 'closed'
     expect(dapp).toBe('connected')
 
     // Wallet: disconnected -> waiting_accept (via join) -> connected
     let wallet: WalletState = 'disconnected'
-    wallet = walletTransition(wallet, 'send_join_reconnect')!
+    wallet = walletTransition(wallet, 'send_join_reconnect') ?? 'closed'
     expect(wallet).toBe('waiting_accept')
-    wallet = walletTransition(wallet, 'receive_ready_connected')!
+    wallet = walletTransition(wallet, 'receive_ready_connected') ?? 'closed'
     expect(wallet).toBe('connected')
   })
 
   it('race condition recovery: multiple channel_exists before successful reconnect', () => {
     let state: DAppState = 'disconnected'
     // Multiple transient failures
-    state = dappTransition(state, 'receive_channel_exists')!
+    state = dappTransition(state, 'receive_channel_exists') ?? 'closed'
     expect(state).toBe('disconnected')
-    state = dappTransition(state, 'receive_channel_exists')!
+    state = dappTransition(state, 'receive_channel_exists') ?? 'closed'
     expect(state).toBe('disconnected')
     // Eventually succeeds
-    state = dappTransition(state, 'send_create_reconnect')!
+    state = dappTransition(state, 'send_create_reconnect') ?? 'closed'
     expect(state).toBe('waiting')
   })
 
   it('race condition recovery: multiple channel_not_found before wallet reconnects', () => {
     let state: WalletState = 'disconnected'
     // Multiple transient failures
-    state = walletTransition(state, 'receive_channel_not_found')!
+    state = walletTransition(state, 'receive_channel_not_found') ?? 'closed'
     expect(state).toBe('disconnected')
-    state = walletTransition(state, 'receive_channel_not_found')!
+    state = walletTransition(state, 'receive_channel_not_found') ?? 'closed'
     expect(state).toBe('disconnected')
     // Eventually succeeds
-    state = walletTransition(state, 'send_join_reconnect')!
+    state = walletTransition(state, 'send_join_reconnect') ?? 'closed'
     expect(state).toBe('waiting_accept')
   })
 })

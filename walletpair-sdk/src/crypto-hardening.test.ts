@@ -334,7 +334,7 @@ describe('unsealPayload error paths', () => {
   it('throws on tampered seq bytes', () => {
     const sealed = sealPayload(key, ch, 5, { test: true })
     const bytes = b64urlDecode(sealed)
-    bytes[0]! ^= 0xff // tamper seq byte
+    bytes[0] = (bytes[0] ?? 0) ^ 0xff // tamper seq byte
     const tampered = b64urlEncode(bytes)
     // Changing seq changes nonce → decryption fails
     expect(() => unsealPayload(key, ch, tampered)).toThrow()
@@ -343,7 +343,7 @@ describe('unsealPayload error paths', () => {
   it('throws on single-bit flip in ciphertext', () => {
     const sealed = sealPayload(key, ch, 0, { x: 1 })
     const bytes = b64urlDecode(sealed)
-    bytes[bytes.length - 1]! ^= 0x01 // flip 1 bit in tag
+    bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0x01 // flip 1 bit in tag
     expect(() => unsealPayload(key, ch, b64urlEncode(bytes))).toThrow()
   })
 })
@@ -375,7 +375,7 @@ describe('sealJoin / unsealJoin error paths', () => {
     const caps = { methods: ['wallet_getAccounts'], events: [], chains: ['eip155:1'] }
     const sealed = sealJoin(joinKey, ch, caps, { name: 'W' })
     const bytes = b64urlDecode(sealed)
-    bytes[bytes.length - 1]! ^= 0xff
+    bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 0xff
     expect(() => unsealJoin(joinKey, ch, b64urlEncode(bytes))).toThrow()
   })
 

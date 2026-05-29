@@ -378,6 +378,7 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       }
       this.dappName = d.dappName ?? undefined
       this.sessionStartTime = d.sessionStartTime ?? null
+      this.setPhase('connected')
       return true
     } catch {
       return false
