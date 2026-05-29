@@ -44,6 +44,18 @@
 		</button>
 	</div>
 
+	<!-- Active mode indicator -->
+	<div class="mode-indicator">
+		<span class="mode-dot"></span>
+		{#if playground.mode === 'protocol'}
+			<span>Protocol Mode</span>
+			<span class="mode-hint">Network-agnostic — send any method name, respond with any JSON</span>
+		{:else}
+			<span>EVM Mode</span>
+			<span class="mode-hint">Ethereum — ephemeral EOA wallet with real secp256k1 signing</span>
+		{/if}
+	</div>
+
 	{#if isMobile}
 		<!-- Mobile: tabbed view -->
 		<div class="tabs">
@@ -155,6 +167,49 @@
 	.mode-desc {
 		font-size: 0.75rem;
 		color: var(--color-text-subtle);
+	}
+
+	/* ── Mode Indicator ── */
+	.mode-indicator {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-3) var(--space-4);
+		margin-bottom: var(--space-4);
+		background: var(--color-surface);
+		border: 1px solid var(--color-accent);
+		border-radius: var(--radius-md);
+		font-family: var(--font-mono);
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--color-text);
+	}
+
+	.mode-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--color-accent);
+		flex-shrink: 0;
+	}
+
+	.mode-hint {
+		font-weight: 400;
+		font-size: 0.75rem;
+		color: var(--color-text-muted);
+		margin-left: auto;
+	}
+
+	@media (max-width: 640px) {
+		.mode-indicator {
+			flex-wrap: wrap;
+		}
+
+		.mode-hint {
+			width: 100%;
+			margin-left: 0;
+			padding-left: 16px;
+		}
 	}
 
 	/* ── Split ── */

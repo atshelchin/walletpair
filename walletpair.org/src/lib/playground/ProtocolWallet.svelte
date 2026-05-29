@@ -209,7 +209,7 @@
 	.panel-header { display: flex; align-items: center; justify-content: space-between; }
 	.panel-header h3 { font-family: var(--font-mono); font-size: 1rem; font-weight: 600; display: flex; align-items: center; gap: var(--space-2); }
 
-	.badge { font-size: 0.65rem; font-weight: 500; color: var(--color-text-subtle); background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: 1px 6px; }
+	.badge { font-size: 0.65rem; font-weight: 500; color: var(--color-accent); background: rgba(59, 130, 246, 0.1); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: var(--radius-sm); padding: 1px 6px; }
 
 	.status { display: flex; align-items: center; gap: var(--space-2); font-size: 0.8rem; color: var(--color-text-muted); font-family: var(--font-mono); }
 	.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-text-subtle); }

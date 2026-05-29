@@ -230,7 +230,7 @@
 
 <div class="panel">
 	<div class="panel-header">
-		<h3>Wallet</h3>
+		<h3>Wallet <span class="badge evm">EVM</span></h3>
 		<span class="status">
 			<span
 				class="dot"
@@ -347,6 +347,22 @@
 		font-family: var(--font-mono);
 		font-size: 1rem;
 		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.badge {
+		font-size: 0.65rem;
+		font-weight: 500;
+		border-radius: var(--radius-sm);
+		padding: 1px 6px;
+	}
+
+	.badge.evm {
+		color: #a78bfa;
+		background: rgba(167, 139, 250, 0.1);
+		border: 1px solid rgba(167, 139, 250, 0.3);
 	}
 
 	.status {

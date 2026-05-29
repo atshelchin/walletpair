@@ -223,9 +223,9 @@
 	.badge {
 		font-size: 0.65rem;
 		font-weight: 500;
-		color: var(--color-text-subtle);
-		background: var(--color-surface-2);
-		border: 1px solid var(--color-border);
+		color: var(--color-accent);
+		background: rgba(59, 130, 246, 0.1);
+		border: 1px solid rgba(59, 130, 246, 0.3);
 		border-radius: var(--radius-sm);
 		padding: 1px 6px;
 	}
