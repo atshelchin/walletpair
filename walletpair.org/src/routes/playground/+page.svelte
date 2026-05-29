@@ -58,23 +58,25 @@
 
 	{#if isMobile}
 		<!-- Mobile: tabbed view -->
-		<div class="tabs">
-			<button
-				class="tab"
-				class:active={playground.activeTab === 'dapp'}
-				onclick={() => (playground.activeTab = 'dapp')}
-			>
-				dApp
-			</button>
-			<button
-				class="tab"
-				class:active={playground.activeTab === 'wallet'}
-				onclick={() => (playground.activeTab = 'wallet')}
-			>
-				Wallet
-			</button>
-		</div>
-		{#if playground.activeTab === 'dapp'}
+		{#if playground.transport !== 'ble'}
+			<div class="tabs">
+				<button
+					class="tab"
+					class:active={playground.activeTab === 'dapp'}
+					onclick={() => (playground.activeTab = 'dapp')}
+				>
+					dApp
+				</button>
+				<button
+					class="tab"
+					class:active={playground.activeTab === 'wallet'}
+					onclick={() => (playground.activeTab = 'wallet')}
+				>
+					Wallet
+				</button>
+			</div>
+		{/if}
+		{#if playground.activeTab === 'dapp' || playground.transport === 'ble'}
 			{#if playground.mode === 'protocol'}
 				<ProtocolDApp />
 			{:else}
@@ -92,10 +94,26 @@
 		<div class="split">
 			{#if playground.mode === 'protocol'}
 				<ProtocolDApp />
-				<ProtocolWallet />
+				{#if playground.transport === 'ble'}
+					<div class="ble-wallet-hint">
+						<div class="ble-hint-icon">📱</div>
+						<h3>Wallet on your device</h3>
+						<p>In Bluetooth mode, the wallet runs on your mobile device. Scan the QR code with your WalletPair-compatible wallet app.</p>
+					</div>
+				{:else}
+					<ProtocolWallet />
+				{/if}
 			{:else}
 				<PlaygroundDApp />
-				<PlaygroundWallet />
+				{#if playground.transport === 'ble'}
+					<div class="ble-wallet-hint">
+						<div class="ble-hint-icon">📱</div>
+						<h3>Wallet on your device</h3>
+						<p>In Bluetooth mode, the wallet runs on your mobile device. Scan the QR code with your WalletPair-compatible wallet app.</p>
+					</div>
+				{:else}
+					<PlaygroundWallet />
+				{/if}
 			{/if}
 		</div>
 	{/if}
@@ -248,6 +266,36 @@
 	.tab.active {
 		background: var(--color-surface-2);
 		color: var(--color-text);
+	}
+
+	/* ── BLE wallet hint ── */
+	.ble-wallet-hint {
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-lg);
+		padding: var(--space-8) var(--space-6);
+		text-align: center;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.ble-hint-icon {
+		font-size: 2rem;
+	}
+
+	.ble-wallet-hint h3 {
+		font-family: var(--font-mono);
+		font-size: 1rem;
+		font-weight: 600;
+	}
+
+	.ble-wallet-hint p {
+		font-size: 0.85rem;
+		color: var(--color-text-muted);
+		max-width: 280px;
+		line-height: 1.5;
 	}
 
 	@media (max-width: 480px) {

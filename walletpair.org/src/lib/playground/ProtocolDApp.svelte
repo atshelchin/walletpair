@@ -297,17 +297,46 @@
 		</div>
 	{/if}
 
-	<div class="field">
-		<label>Relay URL</label>
-		<div class="row">
-			<input bind:value={playground.relayUrl} placeholder="wss://..." />
-			{#if phase === 'idle'}
-				<button class="btn-primary" onclick={connect}>Connect</button>
-			{:else}
-				<button class="btn-danger" onclick={reset}>Reset</button>
+	<!-- Transport selector -->
+	{#if phase === 'idle'}
+		<div class="field">
+			<label>Transport</label>
+			<div class="row">
+				<button class="transport-btn" class:active={playground.transport === 'ws'} onclick={() => (playground.transport = 'ws')}>WebSocket</button>
+				<button class="transport-btn" class:active={playground.transport === 'ble'} onclick={() => (playground.transport = 'ble')} disabled={!bleSupported}>
+					Bluetooth {!bleSupported ? '(unsupported)' : ''}
+				</button>
+			</div>
+		</div>
+	{/if}
+
+	{#if playground.transport === 'ws'}
+		<div class="field">
+			<label>Relay URL</label>
+			<div class="row">
+				<input bind:value={playground.relayUrl} placeholder="wss://..." />
+				{#if phase === 'idle'}
+					<button class="btn-primary" onclick={connect}>Connect</button>
+				{:else}
+					<button class="btn-danger" onclick={reset}>Reset</button>
+				{/if}
+			</div>
+		</div>
+	{:else}
+		<div class="field">
+			<div class="row">
+				{#if phase === 'idle'}
+					<button class="btn-primary" onclick={connect}>Create Channel</button>
+				{:else}
+					<button class="btn-primary" onclick={bleScan} disabled={phase === 'connected'}>Scan for Wallet</button>
+					<button class="btn-danger" onclick={reset}>Reset</button>
+				{/if}
+			</div>
+			{#if bleStatus}
+				<div class="ble-status">{bleStatus}</div>
 			{/if}
 		</div>
-	</div>
+	{/if}
 
 	<!-- Metadata (collapsible) -->
 	<div class="field">
@@ -598,6 +627,13 @@
 		font-style: italic;
 		line-height: 1.8;
 	}
+
+	.transport-btn { flex: 1; text-align: center; padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-2); color: var(--color-text-muted); font-size: 0.8rem; font-family: var(--font-mono); transition: border-color 0.15s, background 0.15s; }
+	.transport-btn:hover { border-color: var(--color-text-subtle); }
+	.transport-btn.active { border-color: var(--color-accent); background: rgba(59, 130, 246, 0.1); color: var(--color-accent); }
+	.transport-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+	.ble-status { font-size: 0.75rem; color: var(--color-text-muted); font-family: var(--font-mono); }
 
 	.peer-info { display: flex; flex-direction: column; gap: 2px; padding: var(--space-3); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 	.peer-label { font-size: 0.65rem; color: var(--color-text-subtle); text-transform: uppercase; letter-spacing: 0.05em; }
