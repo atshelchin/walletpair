@@ -9,13 +9,18 @@
 	let metaIcon = $state('https://walletpair.org/favicon.png');
 	let showMeta = $state(true);
 
+	// Editable capabilities
+	let capMethods = $state('myapp.getData, myapp.setData, myapp.deleteData');
+	let capEvents = $state('dataChanged');
+	let capChains = $state('myapp:mainnet');
+
 	let pairingUriInput = $state('');
 	let phase: WalletPhase = $state('idle');
 	let sessionFingerprint = $state('------');
 	let session: WalletSession | null = $state(null);
 	let pendingReqs = $state<{ id: string; method: string; params: unknown }[]>([]);
 	let resultJson = $state('{ "status": "ok" }');
-	let eventName = $state('custom.event');
+	let eventName = $state('dataChanged');
 	let eventData = $state('{ "key": "value" }');
 	let log = $state<LogEntry[]>([]);
 
@@ -27,7 +32,16 @@
 		pairingUriInput = playground.pairingUri;
 	}
 
-	async function joinChannel() {
+	function parseCsv(s: string): string[] {
+		return s.split(',').map((x) => x.trim()).filter(Boolean);
+	}
+
+	// Step 1: prepareJoin — derive keys, show fingerprint
+	async function prepareJoinChannel() {
+		const methods = parseCsv(capMethods);
+		const events = parseCsv(capEvents);
+		const chains = parseCsv(capChains);
+
 		const transport = new WebSocketTransport(
 			pairingUriInput.includes('relay=')
 				? decodeURIComponent(
@@ -42,11 +56,7 @@
 
 		const s = new WalletSession({
 			transport,
-			capabilities: {
-				methods: ['*'],
-				events: ['*'],
-				chains: ['*']
-			},
+			capabilities: { methods, events, chains },
 			meta: {
 				name: metaName || 'Protocol Wallet',
 				description: 'Network-agnostic playground wallet',
@@ -61,18 +71,26 @@
 			addLog('in', 'phase', p);
 		});
 
-		(s as any).on('sessionFingerprint', (fingerprint: string) => {
-			sessionFingerprint = fingerprint;
-		});
-
 		s.on('request', ({ id, method, params }) => {
 			addLog('in', 'req', `id=${id} method=${method}`);
 			pendingReqs = [...pendingReqs, { id, method, params }];
 		});
 
 		try {
-			const code = await s.joinFromUri(pairingUriInput);
-			addLog('out', 'join', `ch=${s.channelId.slice(0, 12)}... code=${code}`);
+			const code = s.prepareJoin(pairingUriInput);
+			sessionFingerprint = code;
+			addLog('in', 'fingerprint', code);
+		} catch (e: any) {
+			addLog('err', 'prepare', e.message);
+		}
+	}
+
+	// Step 2: confirmJoin — user verified fingerprint, send join
+	async function confirmJoinChannel() {
+		if (!session) return;
+		try {
+			await session.confirmJoin();
+			addLog('out', 'join', `ch=${session.channelId.slice(0, 12)}...`);
 		} catch (e: any) {
 			addLog('err', 'join', e.message);
 		}
@@ -151,7 +169,17 @@
 		{/if}
 	</div>
 
-	<!-- Pairing URI -->
+	<!-- Capabilities -->
+	{#if phase === 'idle'}
+		<div class="field">
+			<label>Capabilities (comma-separated)</label>
+			<input bind:value={capMethods} placeholder="Methods: method1, method2, ..." />
+			<input bind:value={capEvents} placeholder="Events: event1, event2, ..." />
+			<input bind:value={capChains} placeholder="Chains: myapp:mainnet, ..." />
+		</div>
+	{/if}
+
+	<!-- Pairing URI + two-step join -->
 	<div class="field">
 		<label>Pairing URI</label>
 		<div class="row">
@@ -161,18 +189,28 @@
 			{#if playground.pairingUri && !pairingUriInput}
 				<button class="btn-sm" onclick={fillFromDApp}>Use dApp's URI</button>
 			{/if}
-			{#if phase === 'idle'}
-				<button class="btn-primary" onclick={joinChannel} disabled={!pairingUriInput}>Join</button>
-			{:else}
+			{#if phase === 'idle' && sessionFingerprint === '------'}
+				<button class="btn-primary" onclick={prepareJoinChannel} disabled={!pairingUriInput}>
+					Prepare Join
+				</button>
+			{/if}
+			{#if phase !== 'idle'}
 				<button class="btn-danger" onclick={reset}>Reset</button>
 			{/if}
 		</div>
 	</div>
 
+	<!-- Session Fingerprint + Confirm -->
 	{#if sessionFingerprint !== '------'}
 		<div class="field">
-			<label>Session Fingerprint</label>
+			<label>Session Fingerprint (verify with dApp before confirming)</label>
 			<div class="fingerprint">{sessionFingerprint}</div>
+			{#if phase === 'idle'}
+				<div class="row">
+					<button class="btn-primary" onclick={confirmJoinChannel}>Confirm Join</button>
+					<button class="btn-danger" onclick={reset}>Reject</button>
+				</div>
+			{/if}
 		</div>
 	{/if}
 

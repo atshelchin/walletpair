@@ -16,8 +16,9 @@
 	let metaIcon = $state('https://walletpair.org/favicon.png');
 	let showMeta = $state(true);
 
-	let method = $state('myapp.getData');
-	let params = $state('{ "key": "hello" }');
+	let walletCaps = $state<{ methods?: string[]; events?: string[]; chains?: string[] } | null>(null);
+	let method = $state('');
+	let params = $state('{}');
 	let log = $state<LogEntry[]>([]);
 
 	function addLog(dir: 'out' | 'in' | 'err', type: string, detail = '') {
@@ -54,10 +55,12 @@
 		});
 
 		s.on('walletJoined', ({ capabilities, meta }) => {
+			walletCaps = capabilities as typeof walletCaps;
+			if (walletCaps?.methods?.length) method = walletCaps.methods[0]!;
 			addLog(
 				'in',
 				'join',
-				`wallet=${meta?.name || 'unknown'} caps=${JSON.stringify(capabilities || {})}`
+				`wallet=${meta?.name || 'unknown'} methods=[${walletCaps?.methods?.join(', ')}]`
 			);
 		});
 
@@ -128,6 +131,8 @@
 		playground.pairingUri = '';
 		sessionFingerprint = '------';
 		qrDataUrl = '';
+		walletCaps = null;
+		method = '';
 		log = [];
 	}
 
@@ -198,9 +203,33 @@
 	{/if}
 
 	{#if phase === 'connected'}
+		<!-- Negotiated capabilities -->
+		{#if walletCaps}
+			<div class="field">
+				<label>Negotiated Capabilities</label>
+				<div class="caps">
+					<span class="cap-label">Methods:</span> {walletCaps.methods?.join(', ') || 'none'}
+				</div>
+				<div class="caps">
+					<span class="cap-label">Events:</span> {walletCaps.events?.join(', ') || 'none'}
+				</div>
+				<div class="caps">
+					<span class="cap-label">Chains:</span> {walletCaps.chains?.join(', ') || 'none'}
+				</div>
+			</div>
+		{/if}
+
 		<div class="field">
-			<label>Send Request (any method)</label>
-			<input bind:value={method} placeholder="method name" />
+			<label>Send Request</label>
+			{#if walletCaps?.methods?.length}
+				<select bind:value={method}>
+					{#each walletCaps.methods as m}
+						<option value={m}>{m}</option>
+					{/each}
+				</select>
+			{:else}
+				<input bind:value={method} placeholder="method name" />
+			{/if}
 			<textarea bind:value={params} rows="3" placeholder="JSON params"></textarea>
 			<div class="row">
 				<button class="btn-primary" onclick={sendRequest}>Send</button>
@@ -299,4 +328,7 @@
 
 	.meta-toggle { background: none; border: none; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 0.75rem; padding: 0; cursor: pointer; text-align: left; text-transform: uppercase; letter-spacing: 0.05em; }
 	.meta-toggle:hover { color: var(--color-text); }
+
+	.caps { font-family: var(--font-mono); font-size: 0.75rem; color: var(--color-text-muted); padding: var(--space-1) 0; }
+	.cap-label { color: var(--color-text-subtle); font-weight: 600; }
 </style>
