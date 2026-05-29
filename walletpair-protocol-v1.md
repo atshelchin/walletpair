@@ -1338,34 +1338,21 @@ sealed = AAAAACrtHnaWPCUjTZouAj_fQNNbnhx6mj_RIcBFwU315WJ3JiE_6-JFn_TCTSxwnUwZ0At
 ## Appendix B: Sub-Protocol Specification Guide
 
 WalletPair delegates all business logic to **sub-protocols**, one per
-blockchain ecosystem. A sub-protocol MUST define the following seven
-items for each network it targets:
+blockchain ecosystem. A sub-protocol MUST define the following nine
+sections. See `walletpair-evm-subprotocol-v1.md` as a reference
+implementation.
 
-| # | Module | What to define |
-|---|--------|----------------|
-| 1 | **Namespace & version** | Identifier (e.g., `evm`), version integer, CAIP-2 prefix (e.g., `eip155`). |
-| 2 | **Chain identification** | CAIP-2 format, chain ID encoding in params, format conversion rules. |
-| 3 | **Account identification** | Address format, length, checksum, forbidden values. |
-| 4 | **Methods** | For each method: params schema, result schema, error codes, validation rules, user confirmation requirements. MUST include at least one account query method and one signing method. |
-| 5 | **Events** | For each event: data schema, trigger conditions, dApp handling. SHOULD include `accountsChanged`, `chainChanged` (if multi-chain), and `disconnect` (wallet-initiated session end, encrypted and distinct from transport `close`). |
-| 6 | **Data encoding** | How binary data, integers, addresses, transactions, and signatures are encoded within `sealed` JSON. |
-| 7 | **Security constraints** | User confirmation matrix, blind signing policy, cross-chain replay rules, high-risk pattern detection, session isolation. |
-
-### B.1 Document Structure
-
-```text
-# WalletPair <Network> Sub-Protocol v<N>
-
-## 1. Namespace and Version
-## 2. Chain Identification
-## 3. Account Identification
-## 4. Capabilities
-## 5. Data Encoding
-## 6. Methods
-## 7. Events
-## 8. Error Codes
-## 9. Security Requirements
-```
+| # | Section | What to define |
+|---|---------|----------------|
+| 1 | **Namespace and Version** | Identifier (e.g., `evm`), version integer, CAIP-2 prefix (e.g., `eip155`). |
+| 2 | **Chain Identification** | CAIP-2 format, chain ID encoding in params, format conversion rules. |
+| 3 | **Account Identification** | Address format, length, checksum, forbidden values. |
+| 4 | **Capabilities** | Full registry of methods, events, and chains. Declare which methods are required vs. optional. |
+| 5 | **Data Encoding** | How binary data, integers, addresses, transactions, and signatures are encoded within `sealed` JSON. |
+| 6 | **Methods** | For each method: params schema, result schema, validation rules, user confirmation requirements. MUST include at least one account query method and one signing method. |
+| 7 | **Events** | For each event: data schema, trigger conditions, dApp handling. SHOULD include `accountsChanged`, `chainChanged` (if multi-chain), and `disconnect` (wallet-initiated session end, encrypted and distinct from transport `close`). |
+| 8 | **Error Codes** | All error codes with meaning. Include both standard codes (from main protocol Section 4.4) and sub-protocol-specific codes. |
+| 9 | **Security Requirements** | User confirmation matrix, blind signing policy, cross-chain replay rules, high-risk pattern detection, session isolation. |
 
 ### B.2 Cross-Network Differences
 
