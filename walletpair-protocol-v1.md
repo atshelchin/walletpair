@@ -905,6 +905,46 @@ channel close requiring fresh pairing.
 - The dApp MAY retry pending requests with the same `req.id`.
 - The dApp SHOULD refresh state (e.g., `wallet_getAccounts`).
 
+**Reconnect race conditions.**
+
+Two race conditions can occur during reconnect. Implementations MUST
+handle both.
+
+*Race 1 — wallet `join` arrives before dApp `create`.* The wallet
+reconnects faster than the dApp. Its `join` arrives at the relay for a
+channel that does not yet exist (the previous channel was already
+cleaned up, or this is a different relay instance after restart). The
+relay MUST respond with `terminate` reason `channel_not_found`. The
+wallet MUST treat this as a transient failure, back off, and retry
+`join`. The wallet MUST NOT treat `channel_not_found` during reconnect
+as a permanent error. After the dApp sends `create` and the channel
+enters `waiting` state, the wallet's next `join` attempt succeeds
+normally.
+
+*Race 2 — stale `connected` state blocks `create`.* One peer's
+transport disconnects (e.g., TCP FIN lost, mobile radio off), but the
+relay has not yet detected the disconnection (no WebSocket close frame
+received, heartbeat timeout not yet elapsed). The other peer detects
+the disconnection first and attempts to reconnect by sending `create`.
+The relay rejects with `channel_exists` because it still considers the
+channel `connected`. The dApp MUST treat `channel_exists` as a
+transient failure during reconnect: back off and retry. The relay will
+eventually detect the stale peer's disconnection (via heartbeat timeout
+or WebSocket close), clean up the channel, and accept the subsequent
+`create`.
+
+Relay implementations SHOULD detect stale connections promptly. When a
+relay receives `create` for a channel in `connected` state and one of
+the two attached WebSocket connections is no longer alive (write fails
+or TCP keepalive has expired), the relay SHOULD proactively clean up
+the dead connection and the channel, then process the `create`
+normally, rather than rejecting it.
+
+Both peers MUST use the standard reconnect backoff schedule when
+retrying after either race condition. The maximum retry window before
+giving up SHOULD be at least 60 seconds to allow the relay time to
+detect stale connections.
+
 **Reconnect backoff:** 1s -> 2s -> 5s -> 10s -> 30s.
 
 ## 14. State Machine
@@ -938,6 +978,8 @@ disconnected
   -> send create (same ch, from) ----------------> waiting
      (relay treats as new channel creation;
       wallet rejoins with sealed_join=null)
+  -> receive channel_exists terminate -----------> disconnected
+     (stale connected state; back off and retry)
   -> session lifetime expired (Section 15 rule 16) -> closed
   -> give up ------------------------------------> closed
 closed
@@ -966,6 +1008,8 @@ disconnected
   -> send join (same ch, from, sealed_join=null) -> waiting_accept
      (relay treats as new join; dApp auto-accepts
       after matching from against persisted key)
+  -> receive channel_not_found terminate --------> disconnected
+     (dApp has not yet re-created; back off and retry)
   -> session lifetime expired (Section 15 rule 16) -> closed
   -> give up ------------------------------------> closed
 closed

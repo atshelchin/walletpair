@@ -275,6 +275,33 @@ decrypt or forge sealed messages without the traffic keys derived from
 the X25519 shared secret. The legitimate peer detects the impostor when
 AEAD decryption fails and closes the channel.
 
+### 7.5 Reconnect Race Conditions
+
+Stateless reconnect introduces two race conditions because peers
+reconnect independently and cannot coordinate timing.
+
+**Race 1 — wallet arrives before dApp.** The dApp owns channel
+creation, but the wallet may detect the transport disconnection first
+and send `join` before the dApp sends `create`. The relay has no
+channel state, so it replies `channel_not_found`. Treating this as a
+permanent error would break reconnect whenever the wallet is faster.
+The fix is simple: the wallet stays in `disconnected`, backs off, and
+retries. No new mechanism is needed — the existing backoff schedule
+handles it.
+
+**Race 2 — stale connected state.** TCP disconnections are not always
+detected instantly (lost FIN, mobile radio off). The relay may still
+hold the old channel in `connected` state when the surviving peer tries
+to `create`. Rejecting with `channel_exists` is correct (the relay
+cannot know whether the old connection is truly dead), but the
+reconnecting peer must not give up. It backs off and retries until the
+relay's heartbeat timeout cleans up the stale connection. To reduce
+this window, relays SHOULD proactively probe the liveness of attached
+connections when receiving a `create` for an existing channel.
+
+Both races resolve themselves through the existing backoff schedule
+without requiring new message types or relay-side session memory.
+
 ## 8. Session Expiry Rationale
 
 The 24-hour maximum session lifetime bounds the exposure window if
