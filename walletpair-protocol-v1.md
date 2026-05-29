@@ -37,38 +37,23 @@ Each channel has exactly two peer roles and one adapter.
 
 ### DApp
 
-Creates the channel, accepts the wallet, sends requests. May send:
-
-```text
-create, accept, req, ping, pong, close
-```
-
-To reject a wallet, the dApp sends `close` with an appropriate reason
-(e.g., `user_rejected` or `unsupported_capability`). There is no
-separate reject message.
+Creates the channel, accepts the wallet, sends requests. To reject a
+wallet, the dApp sends `close` with an appropriate reason (e.g.,
+`user_rejected` or `unsupported_capability`). There is no separate
+reject message.
 
 ### Wallet
 
-Joins an existing channel, handles requests, pushes events. May send:
-
-```text
-join, res, evt, ping, pong, close
-```
+Joins an existing channel, handles requests, pushes events.
 
 ### Transport Adapter
 
 The adapter (relay, BLE stack, etc.) manages channel state. It is not a
-peer. It may send:
-
-```text
-ready, terminate
-```
-
-Adapter messages use `from` = `"_adapter"` (reserved identifier, not a
-key). Peers MUST reject any peer-sent message where `from` equals
+peer. Adapter messages use `from` = `"_adapter"` (reserved identifier,
+not a key). Peers MUST reject any peer-sent message where `from` equals
 `"_adapter"`.
 
-The wallet does not create channels. The dApp does not send events.
+See Section 5 for which message types each role may send.
 
 ## 3. Identifiers
 
@@ -663,8 +648,8 @@ If the relay becomes unavailable, peers reconnect to the same relay
 }
 ```
 
-DApp `meta` fields: `name`, `description`, `url`, `icon` (all
-required). This metadata is plaintext and visible to the relay.
+DApp `meta` fields are defined in Section 4.2. This metadata is
+plaintext and visible to the relay.
 
 Adapter replies with `ready`:
 `{ "state": "waiting", "role": "dapp", "self": "<dapp-pubkey>", "remote": null, "reconnect": false }`
@@ -690,10 +675,8 @@ Adapter forwards `join` to dApp and replies to wallet with
 
 **Step 3: DApp accepts.**
 
-DApp decrypts `sealed_join`. Successful decryption binds the join to the
-pairing URI and to the wallet public key in `from`; it does not by
-itself authenticate a real-world wallet vendor or user identity. The
-dApp MAY auto-accept, but applications that need user identity MUST
+DApp decrypts `sealed_join` (see Section 6.5 for processing details).
+The dApp MAY auto-accept, but applications that need user identity MUST
 verify accounts or signatures through encrypted methods after the
 session connects.
 
@@ -718,12 +701,9 @@ subsequent `req`, `res`, `evt` MUST be encrypted.
 
 Rules:
 
-1. Only the dApp sends `req`. Only the wallet sends `res`.
-2. `res.id` MUST equal the matching `req.id`.
-3. Each request receives exactly one response.
-4. The decrypted `req.sealed` is `{ "_method": "<name>", ...params }`.
-   The decrypted `res.sealed` contains `_ok` and either `_result` or
-   `code`/`message`.
+1. `res.id` MUST equal the matching `req.id`.
+2. Each request receives exactly one response.
+3. See Section 4.3 for decrypted payload format.
 
 ### 9.1 Request Idempotency
 
@@ -751,13 +731,11 @@ broadcast tx hashes separately (keyed by `req.id`, max **256** entries,
 LRU). Never re-broadcast for a cached `req.id`.
 
 **Cache security.** The idempotency cache contains decrypted response
-data. Wallet implementations MUST store the cache in memory that is not
-swappable to disk, or encrypt the cache at rest using a key derived from
-the session's traffic key. The cache MUST be securely erased (zeroed)
-when the channel is closed. On platforms that do not support memory
-locking (e.g., browser environments), implementations SHOULD minimize
-cache lifetime and clear entries as soon as the dApp acknowledges
-receipt.
+data. Wallet implementations MUST store the cache in non-swappable
+memory, or encrypt it at rest using a key derived from the session's
+traffic key. The cache MUST be securely erased (zeroed) when the
+channel is closed. See Section 6.2 (Key Erasure) for platform-specific
+guidance on memory locking.
 
 The params hash comparison MUST use constant-time comparison.
 
@@ -765,10 +743,9 @@ The params hash comparison MUST use constant-time comparison.
 
 Rules:
 
-1. Only the wallet sends `evt`.
-2. Events do not require a response.
-3. Event ordering follows transport order while connected.
-4. No event replay guarantee after reconnect. The dApp SHOULD call a
+1. Events do not require a response.
+2. Event ordering follows transport order while connected.
+3. No event replay guarantee after reconnect. The dApp SHOULD call a
    snapshot method (e.g., `wallet_getAccounts`) after reconnect.
 
 ## 11. Heartbeat
@@ -863,11 +840,8 @@ replies with `ready.waiting`.
 ```
 
 On reconnect, `sealed_join` is `null` because capabilities were already
-negotiated during initial pairing. The dApp already has the session
-scope from the original handshake. The dApp sees `sealed_join: null`
-and recognizes this as a reconnect from a known wallet (by matching
-`from` against its persisted `peer_public_key`). The dApp auto-sends
-`accept`.
+negotiated during initial pairing. The dApp matches `from` against its
+persisted `peer_public_key` and auto-sends `accept`.
 
 The relay sends `ready.connected` to both peers with `reconnect: true`.
 
@@ -891,7 +865,6 @@ channel close requiring fresh pairing.
 **After reconnect:**
 
 - Traffic keys, sequence counters, and idempotency cache persist.
-  Sequence counters MUST NEVER be reset.
 - Gaps in sequence numbers are expected (in-flight messages lost during
   disconnect).
 - The dApp MAY retry pending requests with the same `req.id`.
@@ -992,19 +965,12 @@ closed
     expected remote peer public key.
 15. A peer MUST reject `ready.connected` if `remote` does not match the
     peer public key used to derive the handshake transcript.
-16. **Session expiry.** A channel MUST have a maximum session lifetime.
-    The recommended default is 24 hours from `ready.connected`. Both
-    peers MUST track the session start time and close the channel with
-    reason `timeout` when the lifetime expires. After expiry, the peers
-    MUST initiate a fresh pairing to re-establish a channel (reconnect
-    MUST NOT be used after session expiry). The wallet SHOULD display
-    the remaining session lifetime to the user and warn before expiry.
-    If a peer receives a message on an expired session, it MUST respond
-    with `close` reason `timeout`. The relay SHOULD also enforce session
-    expiry independently and terminate channels that exceed the
-    configured TTL (using `terminate` with reason `timeout`).
-    Implementations MAY allow users to configure a shorter session
-    lifetime but MUST NOT allow unlimited sessions.
+16. **Session expiry.** A channel MUST have a maximum session lifetime
+    (recommended default: 24 hours from `ready.connected`). On expiry,
+    close with reason `timeout` and require fresh pairing — reconnect
+    MUST NOT be used after session expiry. The relay SHOULD also enforce
+    expiry independently via `terminate`. Implementations MUST NOT allow
+    unlimited sessions.
 
 ## 16. Transport Requirements
 
@@ -1165,12 +1131,12 @@ The relay or transport may be compromised. It MUST NOT be able to:
 1. `ch` MUST be 256-bit cryptographically random.
 2. `from` MUST match sender's X25519 public key.
 3. Ephemeral key pairs MUST be generated per channel.
-4. Reject messages with non-increasing sequence numbers.
-5. Relay MUST NOT log or store `sealed` content.
-6. Sequence counters MUST NEVER be reset for a given traffic key.
-7. Applications MUST NOT treat initial `join` as proof of user identity.
+4. Applications MUST NOT treat initial `join` as proof of user identity.
    User identity and account ownership must be established through
    encrypted wallet methods and user-approved signatures where needed.
+
+See also: sequence number rules (Section 6.4), relay storage
+restrictions (Section 17.2), and protocol rules (Section 15).
 
 ### 19.4 Privacy
 
