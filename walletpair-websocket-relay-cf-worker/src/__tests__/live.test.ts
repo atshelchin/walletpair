@@ -464,4 +464,487 @@ describe("Live — subprotocol", () => {
     expect(ws.protocol).toBe("walletpair.v1");
     ws.close();
   });
+
+  it("connects without subprotocol header", async () => {
+    const ch = freshCh();
+    const ws = new WebSocket(`${RELAY_URL}?ch=${ch}`);
+    await new Promise<void>((resolve, reject) => {
+      ws.on("open", () => resolve());
+      ws.on("error", reject);
+      setTimeout(() => reject(new Error("timeout")), 5000);
+    });
+    // Should still connect (subprotocol is optional per spec)
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+    ws.close();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Helper: full pairing setup
+// ─────────────────────────────────────────────
+const META = { name: "T", description: "", url: "", icon: "https://x.com/i.png" };
+async function pair(ch: string) {
+  const dapp = await openWs(ch);
+  dapp.ws.send(msg(ch, "create", DAPP_KEY, { meta: META }));
+  await dapp.waitForN(1);
+
+  const wallet = await openWs(ch);
+  wallet.ws.send(msg(ch, "join", WALLET_KEY, { sealed_join: "data" }));
+  await wallet.waitForN(1);
+  await dapp.waitForN(2);
+
+  dapp.ws.send(msg(ch, "accept", DAPP_KEY, { target: WALLET_KEY }));
+  await dapp.waitForN(3);
+  await wallet.waitForN(2);
+
+  return { dapp, wallet };
+}
+
+// ─────────────────────────────────────────────
+// Role enforcement (additional)
+// ─────────────────────────────────────────────
+describe("Live — role enforcement", () => {
+  it("rejects res from dApp", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    dapp.ws.send(msg(ch, "res", DAPP_KEY, { id: "r-1", sealed: "data" }));
+    await waitFor(2000);
+
+    const term = dapp.msgs.find((m) => parse(m).t === "terminate");
+    if (term) expect(parse(term).body.reason).toBe("invalid_role");
+    else expect(dapp.ws.readyState).toBeGreaterThanOrEqual(2);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+
+  it("rejects evt from dApp", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    dapp.ws.send(msg(ch, "evt", DAPP_KEY, { id: "e-1", sealed: "data" }));
+    await waitFor(2000);
+
+    const term = dapp.msgs.find((m) => parse(m).t === "terminate");
+    if (term) expect(parse(term).body.reason).toBe("invalid_role");
+    else expect(dapp.ws.readyState).toBeGreaterThanOrEqual(2);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Close from both sides
+// ─────────────────────────────────────────────
+describe("Live — close", () => {
+  it("wallet-initiated close reaches dApp", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    wallet.ws.send(msg(ch, "close", WALLET_KEY, { reason: "user_rejected" }));
+    await waitFor(1000);
+
+    const closeMsg = dapp.msgs.find((m) => parse(m).t === "close");
+    expect(closeMsg).toBeDefined();
+    expect(parse(closeMsg!).body.reason).toBe("user_rejected");
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+
+  it("close with each valid reason", async () => {
+    for (const reason of ["normal", "user_rejected", "unsupported_capability", "timeout", "decryption_failed"]) {
+      const ch = freshCh();
+      const { dapp, wallet } = await pair(ch);
+
+      dapp.ws.send(msg(ch, "close", DAPP_KEY, { reason }));
+      await waitFor(1000);
+
+      const closeMsg = wallet.msgs.find((m) => parse(m).t === "close");
+      expect(closeMsg).toBeDefined();
+      expect(parse(closeMsg!).body.reason).toBe(reason);
+
+      dapp.ws.close();
+      wallet.ws.close();
+    }
+  }, 30000);
+});
+
+// ─────────────────────────────────────────────
+// Message ordering and interleaving
+// ─────────────────────────────────────────────
+describe("Live — message ordering", () => {
+  it("multiple rapid req/res in sequence", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    for (let i = 0; i < 5; i++) {
+      dapp.ws.send(msg(ch, "req", DAPP_KEY, { id: `r-${i}`, sealed: `req${i}` }));
+    }
+    await waitFor(1000);
+
+    // Wallet should have all 5
+    const reqs = wallet.msgs.filter((m) => parse(m).t === "req");
+    expect(reqs.length).toBe(5);
+
+    // Respond to all
+    for (let i = 0; i < 5; i++) {
+      wallet.ws.send(msg(ch, "res", WALLET_KEY, { id: `r-${i}`, sealed: `res${i}` }));
+    }
+    await waitFor(1000);
+
+    const ress = dapp.msgs.filter((m) => parse(m).t === "res");
+    expect(ress.length).toBe(5);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+
+  it("evt interleaved between req and res", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    dapp.ws.send(msg(ch, "req", DAPP_KEY, { id: "r-1", sealed: "req" }));
+    await waitFor(500);
+
+    // Wallet sends evt before responding
+    wallet.ws.send(msg(ch, "evt", WALLET_KEY, { id: "e-1", sealed: "accts_changed" }));
+    await waitFor(500);
+
+    // Then responds
+    wallet.ws.send(msg(ch, "res", WALLET_KEY, { id: "r-1", sealed: "res" }));
+    await waitFor(500);
+
+    const evts = dapp.msgs.filter((m) => parse(m).t === "evt");
+    const ress = dapp.msgs.filter((m) => parse(m).t === "res");
+    expect(evts.length).toBe(1);
+    expect(ress.length).toBe(1);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+
+  it("multiple evt without req", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    for (let i = 0; i < 3; i++) {
+      wallet.ws.send(msg(ch, "evt", WALLET_KEY, { id: `e-${i}`, sealed: `evt${i}` }));
+    }
+    await waitFor(1000);
+
+    const evts = dapp.msgs.filter((m) => parse(m).t === "evt");
+    expect(evts.length).toBe(3);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Validation edge cases
+// ─────────────────────────────────────────────
+describe("Live — validation edge cases", () => {
+  it("rejects terminate from client", async () => {
+    const ch = freshCh();
+    const ws = await openWs(ch);
+    ws.ws.send(msg(ch, "terminate", DAPP_KEY, { reason: "timeout" }));
+    await ws.waitMsg();
+
+    const term = parse(ws.msgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body.reason).toBe("protocol_error");
+    ws.ws.close();
+  });
+
+  it("rejects unknown message type", async () => {
+    const ch = freshCh();
+    const ws = await openWs(ch);
+    ws.ws.send(msg(ch, "foobar", DAPP_KEY));
+    await ws.waitMsg();
+
+    const term = parse(ws.msgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body.reason).toBe("protocol_error");
+    ws.ws.close();
+  });
+
+  it("rejects malformed JSON", async () => {
+    const ch = freshCh();
+    const ws = await openWs(ch);
+    ws.ws.send("{not valid json");
+    await ws.waitMsg();
+
+    const term = parse(ws.msgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body.reason).toBe("protocol_error");
+    ws.ws.close();
+  });
+
+  it("rejects missing body", async () => {
+    const ch = freshCh();
+    const ws = await openWs(ch);
+    ws.ws.send(JSON.stringify({ v: 1, t: "create", ch, ts: Date.now(), from: DAPP_KEY }));
+    await ws.waitMsg();
+
+    const term = parse(ws.msgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body.reason).toBe("protocol_error");
+    ws.ws.close();
+  });
+
+  it("rejects invalid peer ID format", async () => {
+    const ch = freshCh();
+    const ws = await openWs(ch);
+    ws.ws.send(JSON.stringify({ v: 1, t: "create", ch, ts: Date.now(), from: "not-valid-base64url", body: { meta: {} } }));
+    await ws.waitMsg();
+
+    const term = parse(ws.msgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body.reason).toBe("protocol_error");
+    ws.ws.close();
+  });
+
+  it("rejects create without meta", async () => {
+    const ch = freshCh();
+    const ws = await openWs(ch);
+    ws.ws.send(msg(ch, "create", DAPP_KEY, {}));
+    await ws.waitMsg();
+
+    const term = parse(ws.msgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body.reason).toBe("protocol_error");
+    ws.ws.close();
+  });
+
+  it("rejects join without sealed_join key", async () => {
+    const ch = freshCh();
+    const dapp = await openWs(ch);
+    dapp.ws.send(msg(ch, "create", DAPP_KEY, { meta: META }));
+    await dapp.waitForN(1);
+
+    const wallet = await openWs(ch);
+    wallet.ws.send(msg(ch, "join", WALLET_KEY, {})); // missing sealed_join
+    await wallet.waitMsg();
+
+    const term = parse(wallet.msgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body.reason).toBe("protocol_error");
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+});
+
+// ─────────────────────────────────────────────
+// State machine: req/res/evt before connected
+// ─────────────────────────────────────────────
+describe("Live — pre-connected state", () => {
+  it("rejects req in waiting state", async () => {
+    const ch = freshCh();
+    const dapp = await openWs(ch);
+    dapp.ws.send(msg(ch, "create", DAPP_KEY, { meta: META }));
+    await dapp.waitForN(1);
+
+    dapp.ws.send(msg(ch, "req", DAPP_KEY, { id: "r-1", sealed: "data" }));
+    await waitFor(2000);
+
+    const term = dapp.msgs.find((m) => parse(m).t === "terminate");
+    if (term) expect(parse(term).body.reason).toBe("invalid_state");
+    else expect(dapp.ws.readyState).toBeGreaterThanOrEqual(2);
+
+    dapp.ws.close();
+  });
+
+  it("rejects evt in pending_accept state", async () => {
+    const ch = freshCh();
+    const dapp = await openWs(ch);
+    dapp.ws.send(msg(ch, "create", DAPP_KEY, { meta: META }));
+    await dapp.waitForN(1);
+
+    const wallet = await openWs(ch);
+    wallet.ws.send(msg(ch, "join", WALLET_KEY, { sealed_join: "data" }));
+    await wallet.waitForN(1);
+
+    // Wallet sends evt before accept
+    wallet.ws.send(msg(ch, "evt", WALLET_KEY, { id: "e-1", sealed: "data" }));
+    await waitFor(2000);
+
+    const term = wallet.msgs.find((m) => parse(m).t === "terminate");
+    if (term) expect(parse(term).body.reason).toBe("invalid_state");
+    else expect(wallet.ws.readyState).toBeGreaterThanOrEqual(2);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+
+  it("allows ping in waiting state", async () => {
+    const ch = freshCh();
+    const dapp = await openWs(ch);
+    dapp.ws.send(msg(ch, "create", DAPP_KEY, { meta: META }));
+    await dapp.waitForN(1);
+
+    dapp.ws.send(msg(ch, "ping", DAPP_KEY));
+    await waitFor(1000);
+
+    // No terminate — ping is allowed
+    const terminates = dapp.msgs.filter((m) => parse(m).t === "terminate");
+    expect(terminates.length).toBe(0);
+
+    dapp.ws.close();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Pending request tracking
+// ─────────────────────────────────────────────
+describe("Live — pending request tracking", () => {
+  it("res clears pending slot, allows new req", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    // Fill up to 32
+    for (let i = 0; i < 32; i++) {
+      dapp.ws.send(msg(ch, "req", DAPP_KEY, { id: `r-${i}`, sealed: "data" }));
+    }
+    await waitFor(500);
+
+    // Respond to one — wait for dApp to receive the response first
+    wallet.ws.send(msg(ch, "res", WALLET_KEY, { id: "r-0", sealed: "res" }));
+    await waitFor(1000);
+
+    // Now send one more (pending count should be 31, not 32)
+    dapp.ws.send(msg(ch, "req", DAPP_KEY, { id: "r-new", sealed: "data" }));
+    await waitFor(1000);
+
+    // dApp should NOT have received a terminate (the 33rd req went through)
+    const dappTerms = dapp.msgs.filter((m) => parse(m).t === "terminate");
+    expect(dappTerms.length).toBe(0);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  }, 30000);
+});
+
+// ─────────────────────────────────────────────
+// Ready message format verification
+// ─────────────────────────────────────────────
+describe("Live — ready message format", () => {
+  it("ready.waiting has all required fields", async () => {
+    const ch = freshCh();
+    const dapp = await openWs(ch);
+    dapp.ws.send(msg(ch, "create", DAPP_KEY, { meta: META }));
+    await dapp.waitForN(1);
+
+    const r = parse(dapp.msgs[0]);
+    expect(r.v).toBe(1);
+    expect(r.t).toBe("ready");
+    expect(r.ch).toBe(ch);
+    expect(typeof r.ts).toBe("number");
+    expect(r.from).toBe("_adapter");
+    expect(r.body).toHaveProperty("state", "waiting");
+    expect(r.body).toHaveProperty("role", "dapp");
+    expect(r.body).toHaveProperty("self", DAPP_KEY);
+    expect(r.body).toHaveProperty("remote", null);
+    expect(r.body).toHaveProperty("reconnect", false);
+
+    dapp.ws.close();
+  });
+
+  it("ready.connected has correct remote field for both peers", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    const dappConnected = parse(dapp.msgs[2]);
+    expect(dappConnected.body.self).toBe(DAPP_KEY);
+    expect(dappConnected.body.remote).toBe(WALLET_KEY);
+    expect(dappConnected.body.role).toBe("dapp");
+
+    const walletConnected = parse(wallet.msgs[1]);
+    expect(walletConnected.body.self).toBe(WALLET_KEY);
+    expect(walletConnected.body.remote).toBe(DAPP_KEY);
+    expect(walletConnected.body.role).toBe("wallet");
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+});
+
+// ─────────────────────────────────────────────
+// Message forwarding fidelity
+// ─────────────────────────────────────────────
+describe("Live — message forwarding", () => {
+  it("join message forwarded verbatim to dApp", async () => {
+    const ch = freshCh();
+    const dapp = await openWs(ch);
+    dapp.ws.send(msg(ch, "create", DAPP_KEY, { meta: META }));
+    await dapp.waitForN(1);
+
+    const wallet = await openWs(ch);
+    const joinMsg = msg(ch, "join", WALLET_KEY, { sealed_join: "test_sealed_data_123" });
+    wallet.ws.send(joinMsg);
+    await wallet.waitForN(1);
+    await dapp.waitForN(2);
+
+    // dApp should receive the exact join with sealed_join intact
+    const fwd = parse(dapp.msgs[1]);
+    expect(fwd.t).toBe("join");
+    expect(fwd.from).toBe(WALLET_KEY);
+    expect(fwd.body.sealed_join).toBe("test_sealed_data_123");
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+
+  it("req forwarded with all body fields intact", async () => {
+    const ch = freshCh();
+    const { dapp, wallet } = await pair(ch);
+
+    dapp.ws.send(msg(ch, "req", DAPP_KEY, { id: "req-abc-123", sealed: "long_sealed_payload_data" }));
+    await waitFor(500);
+
+    const walletReq = wallet.msgs.filter((m) => parse(m).t === "req");
+    expect(walletReq.length).toBe(1);
+    const req = parse(walletReq[0]);
+    expect(req.body.id).toBe("req-abc-123");
+    expect(req.body.sealed).toBe("long_sealed_payload_data");
+    expect(req.from).toBe(DAPP_KEY);
+
+    dapp.ws.close();
+    wallet.ws.close();
+  });
+});
+
+// ─────────────────────────────────────────────
+// HTTP endpoints
+// ─────────────────────────────────────────────
+describe("Live — HTTP endpoints", () => {
+  it("returns 404 for unknown path", async () => {
+    const resp = await fetch("https://relay.walletpair.org/unknown");
+    expect(resp.status).toBe(404);
+  });
+
+  it("returns 400 for invalid ch format via WebSocket", async () => {
+    // WebSocket with invalid ch should fail to connect or get closed
+    const ws = new WebSocket(`${RELAY_URL}?ch=tooshort`, ["walletpair.v1"]);
+    const result = await new Promise<string>((resolve) => {
+      ws.on("open", () => resolve("opened"));
+      ws.on("error", () => resolve("error"));
+      ws.on("close", () => resolve("closed"));
+      setTimeout(() => resolve("timeout"), 5000);
+    });
+    // Server should reject — either connection error or immediate close
+    expect(["error", "closed"]).toContain(result);
+    try { ws.close(); } catch { /* already closed */ }
+  });
+
+  it("CORS preflight returns 204", async () => {
+    const resp = await fetch("https://relay.walletpair.org/v1", {
+      method: "OPTIONS",
+    });
+    expect(resp.status).toBe(204);
+    expect(resp.headers.get("access-control-allow-origin")).toBe("*");
+  });
 });
