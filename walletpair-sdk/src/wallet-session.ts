@@ -186,10 +186,15 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       throw new Error('Must call prepareJoin() first')
     }
 
-    // Update transport URL if WebSocket
+    // Update transport URL if WebSocket, add ?ch= for CF Worker relay routing
     const transportWithUrl = this.transport as Transport & { setUrl?: (url: string) => void }
     if (typeof transportWithUrl.setUrl === 'function') {
-      transportWithUrl.setUrl(this.relayUrl)
+      let url = this.relayUrl
+      if (this.channelId && !url.includes('?ch=')) {
+        const sep = url.includes('?') ? '&' : '?'
+        url = `${url}${sep}ch=${this.channelId}`
+      }
+      transportWithUrl.setUrl(url)
     }
 
     await this.transport.connect()
@@ -860,6 +865,16 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
   private async doReconnectAttempt(): Promise<void> {
     if (this.intentionalClose || this.phase === 'closed') return
     try {
+      // Re-set URL with ?ch= for CF Worker relay routing
+      const t = this.transport as any
+      if (typeof t.setUrl === 'function' && this.channelId) {
+        let url = this.relayUrl
+        if (!url.includes('?ch=')) {
+          const sep = url.includes('?') ? '&' : '?'
+          url = `${url}${sep}ch=${this.channelId}`
+        }
+        t.setUrl(url)
+      }
       await this.transport.connect()
       this.setPhase('waiting_accept')
       await this.sendJoin()

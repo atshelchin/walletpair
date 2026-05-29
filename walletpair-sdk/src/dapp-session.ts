@@ -185,6 +185,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
    * is ready (e.g. after showing QR and before BLE scan).
    */
   async connectTransport(): Promise<void> {
+    this.setTransportChannelHint()
     await this.transport.connect()
     this.setPhase('waiting')
     this.sendRaw({
@@ -892,6 +893,18 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   // Internal: transport
   // -------------------------------------------------------------------------
 
+  /** Append ?ch= to transport URL for CF Worker relay routing. Rust relay ignores it. */
+  private setTransportChannelHint(): void {
+    const t = this.transport as { setUrl?: (url: string) => void; url?: string }
+    if (typeof t.setUrl === 'function') {
+      const base = (t as any).url ?? ''
+      if (base && !base.includes('?ch=')) {
+        const sep = base.includes('?') ? '&' : '?'
+        t.setUrl(`${base}${sep}ch=${this.channelId}`)
+      }
+    }
+  }
+
   private sendRaw(msg: ProtocolMessage): void {
     // §15 rule 10: max 64 KB on the wire
     const json = JSON.stringify(msg)
@@ -930,6 +943,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
   private async doReconnectAttempt(): Promise<void> {
     if (this.intentionalClose || this.phase === 'closed') return
     try {
+      this.setTransportChannelHint()
       await this.transport.connect()
       this.sendRaw({
         v: 1,
