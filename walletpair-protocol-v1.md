@@ -175,7 +175,7 @@ Error codes appear in the `code` field of error responses
 | `unsupported_method` | Requested method is not in `capabilities.methods`. |
 | `unsupported_chain` | Requested chain is not in `capabilities.chains`. |
 | `protocol_error` | Malformed message structure (e.g., `sealed` absent after `ready.connected`). |
-| `rate_limited` | Too many pending requests (see Section 15 rule 11). |
+| `rate_limited` | Too many pending requests (see Section 15 rule 11). Not to be confused with the close/terminate reason of the same name in Section 12.3. |
 | `internal_error` | Wallet encountered an unexpected internal error. |
 | `user_rejected` | User explicitly rejected the request in the wallet UI. |
 
@@ -857,8 +857,7 @@ closed), the relay creates a new channel with the same `ch`. If the
 previous channel still exists in `waiting` state, the relay replaces
 it. If the channel exists in `connected` state (the other peer is
 still attached), the relay MUST reject with `channel_exists`. The
-relay then
-replies with `ready.waiting`.
+relay then replies with `ready.waiting`.
 
 **Wallet reconnects** by sending `join` with `sealed_join` set to
 `null`:
