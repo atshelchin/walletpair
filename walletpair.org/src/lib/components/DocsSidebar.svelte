@@ -6,13 +6,17 @@
 <aside class="sidebar">
 	<nav>
 		{#each docsNav as item}
-			<a
-				href={item.href}
-				class="sidebar-link"
-				class:active={page.url.pathname === item.href}
-			>
-				{item.title}
-			</a>
+			{#if item.separator}
+				<div class="separator">{item.title}</div>
+			{:else}
+				<a
+					href={item.href}
+					class="sidebar-link"
+					class:active={page.url.pathname === item.href}
+				>
+					{item.title}
+				</a>
+			{/if}
 		{/each}
 	</nav>
 </aside>
@@ -32,6 +36,16 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
+	}
+
+	.separator {
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: var(--color-text-subtle);
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		padding: var(--space-3) var(--space-3) var(--space-1);
+		margin-top: var(--space-2);
 	}
 
 	.sidebar-link {

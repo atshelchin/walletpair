@@ -11,8 +11,8 @@
 	let session: DAppSession | null = $state(null);
 	let qrDataUrl = $state('');
 
-	let method = $state('wallet_getAccounts');
-	let params = $state('{}');
+	let method = $state('myapp.getData');
+	let params = $state('{ "key": "hello" }');
 	let log = $state<LogEntry[]>([]);
 
 	function addLog(dir: 'out' | 'in' | 'err', type: string, detail = '') {
@@ -52,7 +52,7 @@
 			addLog(
 				'in',
 				'join',
-				`wallet=${meta?.name || 'unknown'} chains=${JSON.stringify(capabilities?.chains || [])}`
+				`wallet=${meta?.name || 'unknown'} caps=${JSON.stringify(capabilities || {})}`
 			);
 		});
 
@@ -70,8 +70,8 @@
 		const s = new DAppSession({
 			transport,
 			meta: {
-				name: 'WalletPair Playground',
-				description: 'Interactive playground',
+				name: 'Protocol Playground',
+				description: 'Network-agnostic playground',
 				url: location.origin,
 				icon: ''
 			}
@@ -81,8 +81,7 @@
 
 		try {
 			await s.createPairing();
-			sessionFingerprint =
-				(s as any).sessionFingerprint ?? '------';
+			sessionFingerprint = (s as any).sessionFingerprint ?? '------';
 			addLog('out', 'create', `ch=${s.channelId.slice(0, 12)}...`);
 		} catch (e: any) {
 			addLog('err', 'connect', e.message);
@@ -91,8 +90,6 @@
 
 	async function sendRequest() {
 		if (!session) return;
-		const m = method === 'custom' ? prompt('Method name:') : method;
-		if (!m) return;
 		let p;
 		try {
 			p = JSON.parse(params);
@@ -100,9 +97,9 @@
 			addLog('err', 'params', 'Invalid JSON');
 			return;
 		}
-		addLog('out', 'req', `method=${m}`);
+		addLog('out', 'req', `method=${method}`);
 		try {
-			await session.request(m, Object.keys(p).length > 0 ? p : undefined);
+			await session.request(method, Object.keys(p).length > 0 ? p : undefined);
 		} catch (e: any) {
 			addLog('err', 'req_error', e.message);
 		}
@@ -132,19 +129,11 @@
 	function copyUri() {
 		navigator.clipboard.writeText(pairingUri);
 	}
-
-	function onMethodChange() {
-		if (method === 'wallet_signMessage') params = '{"message": "Hello WalletPair!"}';
-		else if (method === 'wallet_signTypedData') params = '{}';
-		else if (method === 'wallet_sendTransaction')
-			params = '{"chain":"eip155:1","address":"0x...","tx":{"to":"0x...","value":"0x0","data":"0x","type":"0x2","chainId":"0x1"}}';
-		else params = '{}';
-	}
 </script>
 
 <div class="panel">
 	<div class="panel-header">
-		<h3>dApp</h3>
+		<h3>dApp <span class="badge">Protocol</span></h3>
 		<span class="status">
 			<span
 				class="dot"
@@ -156,7 +145,6 @@
 		</span>
 	</div>
 
-	<!-- Relay URL + Connect -->
 	<div class="field">
 		<label>Relay URL</label>
 		<div class="row">
@@ -169,7 +157,6 @@
 		</div>
 	</div>
 
-	<!-- QR Code & URI -->
 	{#if phase !== 'idle'}
 		<div class="field">
 			<label>Pairing QR</label>
@@ -190,17 +177,10 @@
 		{/if}
 	{/if}
 
-	<!-- Send Requests -->
 	{#if phase === 'connected'}
 		<div class="field">
-			<label>Send Request</label>
-			<select bind:value={method} onchange={onMethodChange}>
-				<option value="wallet_getAccounts">wallet_getAccounts</option>
-				<option value="wallet_signMessage">wallet_signMessage</option>
-				<option value="wallet_signTypedData">wallet_signTypedData</option>
-				<option value="wallet_sendTransaction">wallet_sendTransaction</option>
-				<option value="custom">custom...</option>
-			</select>
+			<label>Send Request (any method)</label>
+			<input bind:value={method} placeholder="method name" />
 			<textarea bind:value={params} rows="3" placeholder="JSON params"></textarea>
 			<div class="row">
 				<button class="btn-primary" onclick={sendRequest}>Send</button>
@@ -235,6 +215,19 @@
 		font-family: var(--font-mono);
 		font-size: 1rem;
 		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.badge {
+		font-size: 0.65rem;
+		font-weight: 500;
+		color: var(--color-text-subtle);
+		background: var(--color-surface-2);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-sm);
+		padding: 1px 6px;
 	}
 
 	.status {
@@ -252,131 +245,35 @@
 		border-radius: 50%;
 		background: var(--color-text-subtle);
 	}
-	.dot.connected {
-		background: var(--color-success);
-	}
-	.dot.waiting {
-		background: var(--color-warning);
-	}
-	.dot.error {
-		background: var(--color-error);
-	}
+	.dot.connected { background: var(--color-success); }
+	.dot.waiting { background: var(--color-warning); }
+	.dot.error { background: var(--color-error); }
 
-	.field {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-	}
+	.field { display: flex; flex-direction: column; gap: var(--space-2); }
+	label { font-size: 0.75rem; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+	.row { display: flex; gap: var(--space-2); }
 
-	label {
-		font-size: 0.75rem;
-		color: var(--color-text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
+	input, textarea {
+		background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+		padding: var(--space-2) var(--space-3); color: var(--color-text); font-family: var(--font-mono); font-size: 0.8rem; width: 100%;
 	}
-
-	.row {
-		display: flex;
-		gap: var(--space-2);
-	}
-
-	input,
-	select,
-	textarea {
-		background: var(--color-bg);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		padding: var(--space-2) var(--space-3);
-		color: var(--color-text);
-		font-family: var(--font-mono);
-		font-size: 0.8rem;
-		width: 100%;
-	}
-
-	textarea {
-		resize: vertical;
-		min-height: 60px;
-	}
-
-	input:focus,
-	select:focus,
-	textarea:focus {
-		outline: none;
-		border-color: var(--color-accent);
-	}
+	textarea { resize: vertical; min-height: 60px; }
+	input:focus, textarea:focus { outline: none; border-color: var(--color-accent); }
 
 	button {
-		padding: var(--space-2) var(--space-3);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		background: var(--color-surface-2);
-		color: var(--color-text-muted);
-		font-size: 0.8rem;
-		font-family: var(--font-mono);
-		white-space: nowrap;
-		transition:
-			background 0.15s,
-			border-color 0.15s;
+		padding: var(--space-2) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+		background: var(--color-surface-2); color: var(--color-text-muted); font-size: 0.8rem; font-family: var(--font-mono);
+		white-space: nowrap; transition: background 0.15s, border-color 0.15s;
 	}
+	button:hover { background: var(--color-border); }
+	.btn-primary { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+	.btn-primary:hover { background: var(--color-accent-hover); }
+	.btn-danger { color: var(--color-error); border-color: var(--color-error); background: transparent; }
+	.btn-danger:hover { background: rgba(239, 68, 68, 0.1); }
+	.btn-sm { font-size: 0.7rem; padding: var(--space-1) var(--space-2); }
 
-	button:hover {
-		background: var(--color-border);
-	}
-
-	.btn-primary {
-		background: var(--color-accent);
-		border-color: var(--color-accent);
-		color: #fff;
-	}
-	.btn-primary:hover {
-		background: var(--color-accent-hover);
-	}
-
-	.btn-danger {
-		color: var(--color-error);
-		border-color: var(--color-error);
-		background: transparent;
-	}
-	.btn-danger:hover {
-		background: rgba(239, 68, 68, 0.1);
-	}
-
-	.btn-sm {
-		font-size: 0.7rem;
-		padding: var(--space-1) var(--space-2);
-	}
-
-	.qr-wrap {
-		text-align: center;
-		padding: var(--space-2) 0;
-	}
-
-	.qr-wrap img {
-		display: inline-block;
-		border-radius: var(--radius-md);
-		width: 160px;
-		height: 160px;
-	}
-
-	.uri-box {
-		font-family: var(--font-mono);
-		font-size: 0.7rem;
-		color: var(--color-text-subtle);
-		word-break: break-all;
-		background: var(--color-bg);
-		border: 1px solid var(--color-border);
-		border-radius: var(--radius-sm);
-		padding: var(--space-2);
-		max-height: 60px;
-		overflow-y: auto;
-	}
-
-	.fingerprint {
-		font-family: var(--font-mono);
-		font-size: 1.5rem;
-		font-weight: 600;
-		text-align: center;
-		color: var(--color-accent);
-		letter-spacing: 0.15em;
-	}
+	.qr-wrap { text-align: center; padding: var(--space-2) 0; }
+	.qr-wrap img { display: inline-block; border-radius: var(--radius-md); width: 160px; height: 160px; }
+	.uri-box { font-family: var(--font-mono); font-size: 0.7rem; color: var(--color-text-subtle); word-break: break-all; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: var(--space-2); max-height: 60px; overflow-y: auto; }
+	.fingerprint { font-family: var(--font-mono); font-size: 1.5rem; font-weight: 600; text-align: center; color: var(--color-accent); letter-spacing: 0.15em; }
 </style>

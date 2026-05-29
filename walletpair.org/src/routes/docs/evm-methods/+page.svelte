@@ -1,12 +1,22 @@
 <svelte:head>
-	<title>EVM Methods — WalletPair</title>
+	<title>EVM Sub-Protocol — WalletPair</title>
 </svelte:head>
 
-<h1>EVM Methods Reference</h1>
+<h1>EVM Sub-Protocol</h1>
 
 <p>
-	All EVM methods use the <code>wallet_</code> prefix. Requests and responses are JSON objects
-	encrypted end-to-end.
+	The EVM sub-protocol defines how WalletPair sessions interact with EIP-155 compatible chains
+	(Ethereum, Polygon, Arbitrum, Base, etc.). It is one of several
+	<a href="/docs/sub-protocols">sub-protocols</a> that plug into the chain-agnostic core protocol.
+</p>
+
+<p>
+	Namespace: <code>evm</code> · Version: <code>1</code> · CAIP-2 prefix: <code>eip155</code>
+</p>
+
+<p>
+	All methods use the <code>wallet_</code> prefix. Requests and responses are JSON objects
+	encrypted end-to-end by the core protocol.
 </p>
 
 <h2 id="methods">Methods</h2>

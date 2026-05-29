@@ -10,6 +10,13 @@
 	replay application data.
 </p>
 
+<p>
+	The core protocol is <strong>network-agnostic</strong>. It handles pairing, encryption, and
+	message transport without any knowledge of blockchain specifics. All chain-specific logic
+	(signing, transactions, account formats) is delegated to
+	<a href="/docs/sub-protocols">sub-protocols</a> — one per blockchain ecosystem.
+</p>
+
 <h2 id="pairing">Pairing</h2>
 
 <p>Pairing establishes the encrypted channel:</p>
@@ -106,23 +113,53 @@
 	<li><strong>closed</strong> — session ended, keys erased</li>
 </ol>
 
-<h2 id="multichain">Multi-Chain (CAIP-2)</h2>
+<h2 id="multichain">Multi-Network (CAIP-2)</h2>
 
 <p>
 	WalletPair uses <a href="https://chainagnostic.org/CAIPs/caip-2" target="_blank" rel="noopener">CAIP-2</a> chain
-	identifiers. For EVM chains, the format is <code>eip155:&lt;chain_id&gt;</code>.
+	identifiers to support any blockchain network. The core protocol doesn't know or care which
+	chain you're on — it just routes encrypted bytes.
+</p>
+
+<p>Each network ecosystem has its own CAIP-2 prefix:</p>
+
+<table>
+	<thead>
+		<tr><th>Network</th><th>CAIP-2 Prefix</th><th>Examples</th></tr>
+	</thead>
+	<tbody>
+		<tr><td>EVM</td><td><code>eip155</code></td><td><code>eip155:1</code> (Ethereum), <code>eip155:137</code> (Polygon)</td></tr>
+		<tr><td>Solana</td><td><code>solana</code></td><td><code>solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp</code></td></tr>
+		<tr><td>Sui</td><td><code>sui</code></td><td><code>sui:mainnet</code></td></tr>
+		<tr><td>Tron</td><td><code>tron</code></td><td><code>tron:mainnet</code></td></tr>
+		<tr><td>Bitcoin</td><td><code>bip122</code></td><td><code>bip122:000000000019d6689c085ae165831e93</code></td></tr>
+	</tbody>
+</table>
+
+<p>
+	The wallet declares supported chains in <code>capabilities.chains</code>. A single session can
+	span multiple chains within the same ecosystem.
+</p>
+
+<h2 id="sub-protocols">Sub-Protocols</h2>
+
+<p>
+	WalletPair delegates all chain-specific logic to <strong>sub-protocols</strong>. The core protocol
+	defines pairing, encryption, and message transport. Sub-protocols define:
 </p>
 
 <ul>
-	<li><code>eip155:1</code> — Ethereum Mainnet</li>
-	<li><code>eip155:137</code> — Polygon</li>
-	<li><code>eip155:42161</code> — Arbitrum</li>
-	<li><code>eip155:8453</code> — Base</li>
+	<li>Account and address formats</li>
+	<li>Transaction signing methods and parameters</li>
+	<li>Message signing standards</li>
+	<li>Events (accountsChanged, chainChanged, etc.)</li>
+	<li>Data encoding rules</li>
 </ul>
 
 <p>
-	The wallet declares supported chains in <code>capabilities.chains</code>. Chain switching happens
-	via <code>wallet_switchChain</code>, and the wallet pushes a <code>chainChanged</code> event.
+	Currently, the <a href="/docs/evm-methods">EVM sub-protocol</a> is fully specified. Sub-protocols
+	for Solana, Sui, and other ecosystems can be authored following the
+	<a href="/docs/sub-protocols">sub-protocol specification guide</a>.
 </p>
 
 <h2 id="relay">The Relay</h2>
@@ -141,6 +178,7 @@
 </ul>
 
 <p>
-	You can <a href="/docs/relay">self-host the relay</a> for full control, or use the public relay
-	for development.
+	The relay is network-agnostic — it routes bytes for EVM, Solana, Bitcoin, or any future
+	sub-protocol without knowing the difference. You can
+	<a href="/docs/relay">self-host the relay</a> for full control, or use the public relay for development.
 </p>

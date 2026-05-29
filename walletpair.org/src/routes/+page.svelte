@@ -20,9 +20,9 @@
 		},
 		{
 			icon: '◆',
-			title: 'EVM Complete',
+			title: 'Multi-Network',
 			description:
-				'All transaction types, EIP-191/712 signing, multi-chain via CAIP-2.'
+				'Chain-agnostic core with sub-protocols for EVM, Solana, Sui, and more via CAIP-2.'
 		},
 		{
 			icon: '✓',

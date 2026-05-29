@@ -1,6 +1,7 @@
 export interface NavItem {
 	title: string;
 	href: string;
+	separator?: boolean;
 }
 
 export const docsNav: NavItem[] = [
@@ -9,8 +10,10 @@ export const docsNav: NavItem[] = [
 	{ title: 'Core Concepts', href: '/docs/core-concepts' },
 	{ title: 'dApp Integration', href: '/docs/dapp-integration' },
 	{ title: 'Wallet Integration', href: '/docs/wallet-integration' },
-	{ title: 'Wagmi Connector', href: '/docs/wagmi' },
-	{ title: 'EVM Methods', href: '/docs/evm-methods' },
 	{ title: 'Self-Hosting Relay', href: '/docs/relay' },
-	{ title: 'Security', href: '/docs/security' }
+	{ title: 'Security', href: '/docs/security' },
+	{ title: 'Sub-Protocols', href: '', separator: true },
+	{ title: 'Sub-Protocols Overview', href: '/docs/sub-protocols' },
+	{ title: 'EVM Sub-Protocol', href: '/docs/evm-methods' },
+	{ title: 'Wagmi Connector', href: '/docs/wagmi' }
 ];

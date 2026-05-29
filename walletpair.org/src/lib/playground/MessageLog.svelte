@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { LogEntry } from './state.svelte.ts';
+	import type { LogEntry } from './state.svelte';
 
 	let { entries }: { entries: LogEntry[] } = $props();
 

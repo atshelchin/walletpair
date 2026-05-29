@@ -2,7 +2,7 @@
 	import { WalletSession, WebSocketTransport, hexToBytes, bytesToHex } from 'walletpair-sdk';
 	import type { WalletPhase } from 'walletpair-sdk';
 	import MessageLog from './MessageLog.svelte';
-	import { playground, type LogEntry } from './state.svelte.ts';
+	import { playground, type LogEntry } from './state.svelte';
 
 	// ── Ethereum crypto (lazy-loaded) ──
 	async function loadEthCrypto() {

@@ -1,7 +1,9 @@
 <script lang="ts">
 	import PlaygroundDApp from '$lib/playground/PlaygroundDApp.svelte';
 	import PlaygroundWallet from '$lib/playground/PlaygroundWallet.svelte';
-	import { playground } from '$lib/playground/state.svelte.ts';
+	import ProtocolDApp from '$lib/playground/ProtocolDApp.svelte';
+	import ProtocolWallet from '$lib/playground/ProtocolWallet.svelte';
+	import { playground } from '$lib/playground/state.svelte';
 
 	let width = $state(0);
 	const isMobile = $derived(width < 768);
@@ -20,6 +22,26 @@
 			Test the full WalletPair flow in your browser. Connect the dApp panel to the wallet
 			panel, send requests, and see encrypted messages in real time.
 		</p>
+	</div>
+
+	<!-- Mode switcher -->
+	<div class="mode-switcher">
+		<button
+			class="mode-btn"
+			class:active={playground.mode === 'protocol'}
+			onclick={() => (playground.mode = 'protocol')}
+		>
+			<span class="mode-label">Protocol</span>
+			<span class="mode-desc">Network-agnostic · raw requests & responses</span>
+		</button>
+		<button
+			class="mode-btn"
+			class:active={playground.mode === 'evm'}
+			onclick={() => (playground.mode = 'evm')}
+		>
+			<span class="mode-label">EVM</span>
+			<span class="mode-desc">Ethereum · signing, accounts, transactions</span>
+		</button>
 	</div>
 
 	{#if isMobile}
@@ -41,15 +63,28 @@
 			</button>
 		</div>
 		{#if playground.activeTab === 'dapp'}
-			<PlaygroundDApp />
+			{#if playground.mode === 'protocol'}
+				<ProtocolDApp />
+			{:else}
+				<PlaygroundDApp />
+			{/if}
 		{:else}
-			<PlaygroundWallet />
+			{#if playground.mode === 'protocol'}
+				<ProtocolWallet />
+			{:else}
+				<PlaygroundWallet />
+			{/if}
 		{/if}
 	{:else}
 		<!-- Desktop: split view -->
 		<div class="split">
-			<PlaygroundDApp />
-			<PlaygroundWallet />
+			{#if playground.mode === 'protocol'}
+				<ProtocolDApp />
+				<ProtocolWallet />
+			{:else}
+				<PlaygroundDApp />
+				<PlaygroundWallet />
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -62,7 +97,7 @@
 	}
 
 	.playground-header {
-		margin-bottom: var(--space-6);
+		margin-bottom: var(--space-4);
 	}
 
 	.playground-header h1 {
@@ -78,6 +113,51 @@
 		max-width: 600px;
 	}
 
+	/* ── Mode Switcher ── */
+	.mode-switcher {
+		display: flex;
+		gap: var(--space-3);
+		margin-bottom: var(--space-6);
+	}
+
+	.mode-btn {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: var(--space-3) var(--space-4);
+		background: var(--color-surface);
+		border: 1px solid var(--color-border);
+		border-radius: var(--radius-md);
+		text-align: left;
+		cursor: pointer;
+		transition:
+			border-color 0.15s,
+			background 0.15s;
+	}
+
+	.mode-btn:hover {
+		border-color: var(--color-text-subtle);
+	}
+
+	.mode-btn.active {
+		border-color: var(--color-accent);
+		background: var(--color-surface-2);
+	}
+
+	.mode-label {
+		font-family: var(--font-mono);
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: var(--color-text);
+	}
+
+	.mode-desc {
+		font-size: 0.75rem;
+		color: var(--color-text-subtle);
+	}
+
+	/* ── Split ── */
 	.split {
 		display: grid;
 		grid-template-columns: 1fr 1fr;
@@ -85,6 +165,7 @@
 		align-items: start;
 	}
 
+	/* ── Tabs (mobile) ── */
 	.tabs {
 		display: flex;
 		gap: 2px;
@@ -112,5 +193,11 @@
 	.tab.active {
 		background: var(--color-surface-2);
 		color: var(--color-text);
+	}
+
+	@media (max-width: 480px) {
+		.mode-switcher {
+			flex-direction: column;
+		}
 	}
 </style>
