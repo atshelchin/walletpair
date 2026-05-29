@@ -5,6 +5,7 @@
  * Pure JS (noble libraries v2), no native modules required.
  */
 
+import canonicalize from 'canonicalize';
 import { x25519 } from '@noble/curves/ed25519.js';
 import { hkdf } from '@noble/hashes/hkdf.js';
 import { sha256 } from '@noble/hashes/sha2.js';
@@ -52,15 +53,7 @@ export { bytesToHex, hexToBytes };
 // ---------------------------------------------------------------------------
 
 export function canonicalJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-
-  const obj = value as Record<string, unknown>;
-  return `{${Object.keys(obj)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`)
-    .join(',')}}`;
+  return canonicalize(value) ?? 'null';
 }
 
 // ---------------------------------------------------------------------------

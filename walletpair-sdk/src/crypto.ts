@@ -4,6 +4,7 @@
  * Pure JS (noble libraries v2), no native modules required.
  */
 
+import canonicalize from 'canonicalize';
 import { x25519 } from '@noble/curves/ed25519';
 import { hkdf } from '@noble/hashes/hkdf';
 import { sha256 } from '@noble/hashes/sha256';
@@ -111,16 +112,7 @@ export interface DirectionalSessionKeys {
 }
 
 export function canonicalJson(value: unknown): string {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-
-  const obj = value as Record<string, unknown>;
-  const entries = Object.keys(obj)
-    .sort()
-    .filter((key) => obj[key] !== undefined) // omit undefined values (match JSON.stringify)
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`);
-  return `{${entries.join(',')}}`;
+  return canonicalize(value) ?? 'null';
 }
 
 export function computeHandshakeTranscriptHash(

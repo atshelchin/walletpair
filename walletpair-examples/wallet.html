@@ -128,6 +128,7 @@ import { hmac } from 'https://esm.sh/@noble/hashes@1.7.1/hmac';
 import { keccak_256 } from 'https://esm.sh/@noble/hashes@1.7.1/sha3';
 import { chacha20poly1305 } from 'https://esm.sh/@noble/ciphers@1.2.1/chacha';
 import { bytesToHex, hexToBytes, utf8ToBytes, concatBytes } from 'https://esm.sh/@noble/hashes@1.7.1/utils';
+import canonicalize from 'https://esm.sh/canonicalize@2.0.0';
 
 // ---------------------------------------------------------------------------
 // Base64url helpers
@@ -156,12 +157,9 @@ function lp(s) {
   return concatBytes(len, bytes);
 }
 
-// Canonical JSON (RFC 8785 compatible)
+// Canonical JSON (RFC 8785 — using the canonicalize library)
 function canonicalJson(value) {
-  if (value === undefined) return 'null';
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(canonicalJson).join(',') + ']';
-  return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + canonicalJson(value[k])).join(',') + '}';
+  return canonicalize(value) ?? 'null';
 }
 
 function deriveRootKey(sharedSecret, channelIdHex) {

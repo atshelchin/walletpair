@@ -165,17 +165,17 @@ describe('canonicalJson — numbers', () => {
     expect(canonicalJson(1e21)).toBe('1e+21');
   });
 
-  it('NaN → "null" (JSON.stringify behavior)', () => {
-    expect(canonicalJson(NaN)).toBe('null');
+  it('NaN → throws (RFC 8785 rejects non-finite numbers)', () => {
+    expect(() => canonicalJson(NaN)).toThrow();
   });
 
-  it('Infinity → "null" (JSON.stringify behavior)', () => {
-    expect(canonicalJson(Infinity)).toBe('null');
-    expect(canonicalJson(-Infinity)).toBe('null');
+  it('Infinity → throws (RFC 8785 rejects non-finite numbers)', () => {
+    expect(() => canonicalJson(Infinity)).toThrow();
+    expect(() => canonicalJson(-Infinity)).toThrow();
   });
 
-  it('NaN and Infinity in objects → null values', () => {
-    expect(canonicalJson({ a: NaN, b: Infinity })).toBe('{"a":null,"b":null}');
+  it('NaN and Infinity in objects → throws', () => {
+    expect(() => canonicalJson({ a: NaN, b: Infinity })).toThrow();
   });
 });
 
