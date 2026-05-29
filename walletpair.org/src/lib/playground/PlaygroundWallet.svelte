@@ -54,6 +54,8 @@
 	}
 
 	// ── State ──
+	const STORAGE_KEY = 'walletpair.playground.evm.wallet';
+
 	let metaName = $state('EVM Wallet');
 	let metaUrl = $state('https://walletpair.org');
 	let metaIcon = $state('https://walletpair.org/favicon.png');
@@ -65,6 +67,21 @@
 	let phase: WalletPhase = $state('idle');
 	let sessionFingerprint = $state('------');
 	let session: WalletSession | null = $state(null);
+
+	let showReconnectPrompt = $state(false);
+
+	const persistence = {
+		save: (snapshot: string) => localStorage.setItem(STORAGE_KEY, snapshot),
+		load: () => localStorage.getItem(STORAGE_KEY),
+		clear: () => localStorage.removeItem(STORAGE_KEY)
+	};
+
+	$effect(() => {
+		const snap = localStorage.getItem(STORAGE_KEY);
+		if (snap && phase === 'idle' && !session) {
+			showReconnectPrompt = true;
+		}
+	});
 	let pendingReqs = $state<{ id: string; method: string; params: unknown }[]>([]);
 	let eventName = $state('accountsChanged');
 	let log = $state<LogEntry[]>([]);
@@ -102,35 +119,19 @@
 		pairingUriInput = playground.pairingUri;
 	}
 
-	// ── Join ──
-	async function joinChannel() {
-		if (!ethKey || ethAddr === '--') {
-			addLog('err', 'key', 'Generate or enter an ETH key first');
-			return;
-		}
+	function parseRelayFromUri(uri: string): string {
+		return uri.includes('relay=')
+			? decodeURIComponent(
+					uri.replace(/^walletpair:\?/, '').split('&').find((p) => p.startsWith('relay='))?.slice(6) || ''
+				)
+			: playground.relayUrl;
+	}
 
-		const transport = new WebSocketTransport(
-			pairingUriInput.includes('relay=')
-				? decodeURIComponent(
-						pairingUriInput
-							.replace(/^walletpair:\?/, '')
-							.split('&')
-							.find((p) => p.startsWith('relay='))
-							?.slice(6) || ''
-					)
-				: playground.relayUrl
-		);
-
+	function createWalletSession(transport: WebSocketTransport): WalletSession {
 		const s = new WalletSession({
 			transport,
 			capabilities: {
-				methods: [
-					'wallet_getAccounts',
-					'wallet_signTransaction',
-					'wallet_signMessage',
-					'wallet_signTypedData',
-					'wallet_switchChain'
-				],
+				methods: ['wallet_getAccounts', 'wallet_signTransaction', 'wallet_signMessage', 'wallet_signTypedData', 'wallet_switchChain'],
 				events: ['accountsChanged', 'chainChanged', 'disconnect'],
 				chains: ['eip155:1']
 			},
@@ -139,30 +140,72 @@
 				description: 'WalletPair playground wallet',
 				url: metaUrl || 'https://walletpair.org',
 				icon: metaIcon || 'https://walletpair.org/favicon.png'
-			}
+			},
+			persistence
 		});
-		session = s;
-
-		s.on('phase', (p) => {
-			phase = p;
-			addLog('in', 'phase', p);
-		});
-
-		(s as any).on('sessionFingerprint', (fingerprint: string) => {
-			sessionFingerprint = fingerprint;
-		});
-
+		s.on('phase', (p) => { phase = p; addLog('in', 'phase', p); });
 		s.on('request', ({ id, method, params }) => {
 			addLog('in', 'req', `id=${id} method=${method}`);
 			pendingReqs = [...pendingReqs, { id, method, params }];
 		});
+		return s;
+	}
+
+	// ── Two-step join ──
+	async function prepareJoinChannel() {
+		if (!ethKey || ethAddr === '--') {
+			addLog('err', 'key', 'Generate or enter an ETH key first');
+			return;
+		}
+		const transport = new WebSocketTransport(parseRelayFromUri(pairingUriInput));
+		const s = createWalletSession(transport);
+		session = s;
 
 		try {
-			const code = await s.joinFromUri(pairingUriInput);
-			addLog('out', 'join', `ch=${s.channelId.slice(0, 12)}... code=${code}`);
+			const code = s.prepareJoin(pairingUriInput);
+			sessionFingerprint = code;
+			addLog('in', 'fingerprint', code);
+		} catch (e: any) {
+			addLog('err', 'prepare', e.message);
+		}
+	}
+
+	async function confirmJoinChannel() {
+		if (!session) return;
+		try {
+			await session.confirmJoin();
+			addLog('out', 'join', `ch=${session.channelId.slice(0, 12)}...`);
 		} catch (e: any) {
 			addLog('err', 'join', e.message);
 		}
+	}
+
+	// ── Reconnect ──
+	async function reconnectSession() {
+		showReconnectPrompt = false;
+		const transport = new WebSocketTransport(playground.relayUrl);
+		const s = createWalletSession(transport);
+		session = s;
+
+		try {
+			const restored = await s.restoreFromPersistence();
+			if (!restored) {
+				addLog('err', 'reconnect', 'Failed to restore session');
+				persistence.clear();
+				session = null;
+				return;
+			}
+			sessionFingerprint = (s as any).sessionFingerprint || '------';
+			addLog('out', 'reconnect', `ch=${s.channelId.slice(0, 12)}... restoring...`);
+			await s.reconnect();
+		} catch (e: any) {
+			addLog('err', 'reconnect', e.message);
+		}
+	}
+
+	function dismissReconnect() {
+		showReconnectPrompt = false;
+		persistence.clear();
 	}
 
 	// ── Request handling ──
@@ -230,6 +273,8 @@
 		sessionFingerprint = '------';
 		pendingReqs = [];
 		log = [];
+		showReconnectPrompt = false;
+		persistence.clear();
 	}
 </script>
 
@@ -246,6 +291,17 @@
 			{phase}
 		</span>
 	</div>
+
+	<!-- Reconnect prompt -->
+	{#if showReconnectPrompt && phase === 'idle'}
+		<div class="reconnect-prompt">
+			<div class="reconnect-text">Previous EVM wallet session found. Resume or start fresh?</div>
+			<div class="row">
+				<button class="btn-primary" onclick={reconnectSession}>Reconnect</button>
+				<button class="btn-ghost" onclick={dismissReconnect}>New Session</button>
+			</div>
+		</div>
+	{/if}
 
 	<!-- Metadata (collapsible) -->
 	<div class="field">
@@ -274,7 +330,7 @@
 		<div class="addr">{ethAddr}</div>
 	</div>
 
-	<!-- Pairing URI -->
+	<!-- Pairing URI + two-step join -->
 	<div class="field">
 		<label>Pairing URI</label>
 		<div class="row">
@@ -284,25 +340,28 @@
 			{#if playground.pairingUri && !pairingUriInput}
 				<button class="btn-sm" onclick={fillFromDApp}>Use dApp's URI</button>
 			{/if}
-			{#if phase === 'idle'}
-				<button
-					class="btn-primary"
-					onclick={joinChannel}
-					disabled={!pairingUriInput || !ethKey}
-				>
-					Join
+			{#if phase === 'idle' && sessionFingerprint === '------'}
+				<button class="btn-primary" onclick={prepareJoinChannel} disabled={!pairingUriInput || !ethKey}>
+					Prepare Join
 				</button>
-			{:else}
+			{/if}
+			{#if phase !== 'idle'}
 				<button class="btn-danger" onclick={reset}>Reset</button>
 			{/if}
 		</div>
 	</div>
 
-	<!-- Fingerprint -->
+	<!-- Session Fingerprint + Confirm -->
 	{#if sessionFingerprint !== '------'}
 		<div class="field">
-			<label>Session Fingerprint</label>
+			<label>Session Fingerprint (verify with dApp before confirming)</label>
 			<div class="fingerprint">{sessionFingerprint}</div>
+			{#if phase === 'idle'}
+				<div class="row">
+					<button class="btn-primary" onclick={confirmJoinChannel}>Confirm Join</button>
+					<button class="btn-danger" onclick={reset}>Reject</button>
+				</div>
+			{/if}
 		</div>
 	{/if}
 
@@ -557,4 +616,9 @@
 	.meta-toggle:hover {
 		color: var(--color-text);
 	}
+
+	.reconnect-prompt { background: var(--color-surface-2); border: 1px solid var(--color-accent); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+	.reconnect-text { font-size: 0.85rem; color: var(--color-text); }
+	.btn-ghost { background: transparent; border: 1px solid var(--color-border); color: var(--color-text-muted); }
+	.btn-ghost:hover { border-color: var(--color-text-subtle); color: var(--color-text); }
 </style>
