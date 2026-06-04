@@ -1,5 +1,15 @@
 # walletpair-sdk
 
+## 1.0.5
+
+### Patch Changes
+
+- Fix canonicalize CJS/ESM interop and linter cleanups
+
+  - Fix `canonicalize is not a function` error caused by incorrect CJS/ESM default export unwrapping. Use runtime `typeof` check instead of static `.default` access.
+  - Fix `secp256k1.Signature.fromBytes` crash in personalSign example — `secp256k1.sign()` already returns a Signature object, no need to call `fromBytes`.
+  - Apply linter fixes: non-null assertions replaced with nullish coalescing, hex literal normalization.
+
 ## 1.0.3
 
 ### Patch Changes
