@@ -49,6 +49,9 @@ let walletRpcUrls: Record<string, string> = {};
 /** EIP-5792 wallet capabilities keyed by hex chain ID, relayed from wallet */
 let walletEip5792Capabilities: Record<string, Record<string, unknown>> = {};
 
+/** Contract bytecode provided by wallet for counterfactual eth_getCode responses */
+let walletContractBytecode: string | null = null;
+
 // Exponential backoff state for reconnection
 let reconnectAttempt = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -219,6 +222,12 @@ function attachSessionListeners(autoAccepted: boolean) {
       walletEip5792Capabilities = capabilities.walletCapabilities;
       console.log('[WalletPair] Received wallet capabilities:', Object.keys(walletEip5792Capabilities).join(', '));
     }
+
+    // Capture contract bytecode for counterfactual eth_getCode
+    if (capabilities?.contractBytecode) {
+      walletContractBytecode = capabilities.contractBytecode;
+      console.log('[WalletPair] Received contract bytecode for counterfactual detection');
+    }
   };
   sessionRef.on('walletJoined', onWalletJoined);
 
@@ -280,6 +289,7 @@ function handleSessionClosed() {
   pairingInProgress = false;
   walletRpcUrls = {};
   walletEip5792Capabilities = {};
+  walletContractBytecode = null;
   // Reject all deferred requests since session is gone
   rejectAllDeferred(4001, 'Session closed');
 
@@ -499,6 +509,26 @@ async function handleRpcRequest(
   // ── wallet_getCapabilities (EIP-5792, local) ──────────────────────────
   if (method === 'wallet_getCapabilities') {
     return { result: walletEip5792Capabilities };
+  }
+
+  // ── eth_getCode: smart wallet override for counterfactual addresses ────
+  // If the wallet provided contract bytecode via capabilities and the dApp
+  // queries getCode for the connected address, return the wallet-provided
+  // bytecode when the contract hasn't been deployed yet (counterfactual).
+  if (method === 'eth_getCode' && connectedWallet && walletContractBytecode) {
+    const queryAddress = (params as [string, string])?.[0]?.toLowerCase();
+    if (queryAddress === connectedWallet.address.toLowerCase()) {
+      const chainId = connectedWallet.chainId ?? 1;
+      try {
+        const realCode = await proxyRpcCall(chainId, method, params, walletRpcUrls);
+        if (realCode && realCode !== '0x') {
+          if (shouldLog) updateActivityStatus(activityId, 'success', { result: realCode }).catch(() => {});
+          return { result: realCode };
+        }
+      } catch { /* fall through to wallet-provided bytecode */ }
+      if (shouldLog) updateActivityStatus(activityId, 'success', { result: walletContractBytecode }).catch(() => {});
+      return { result: walletContractBytecode };
+    }
   }
 
   // ── Read-only methods → proxy to public RPC ───────────────────────────

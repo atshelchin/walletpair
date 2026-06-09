@@ -149,6 +149,13 @@ export interface Capabilities {
    * Example: { "0x1": { "atomic": { "status": "supported" } } }
    */
   walletCapabilities?: Record<string, Record<string, unknown>> | undefined
+  /**
+   * Contract bytecode for counterfactual smart wallet detection.
+   * When provided, the dApp-side returns this for eth_getCode queries
+   * against the connected address if the contract is not yet deployed.
+   * This lets dApps detect the address as a smart contract wallet.
+   */
+  contractBytecode?: string | undefined
 }
 
 export interface DAppMeta {
