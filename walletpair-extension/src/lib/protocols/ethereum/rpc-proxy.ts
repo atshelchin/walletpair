@@ -30,8 +30,17 @@ export const DEFAULT_RPC: Record<number, string> = {
 /** RPC proxy timeout (30 seconds) */
 const RPC_TIMEOUT_MS = 30_000;
 
+/** Fallback discovery timeout (5 seconds per candidate) */
+const FALLBACK_TIMEOUT_MS = 5_000;
+
 /** Max RPC response size (2 MB) */
 const RPC_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+
+/** In-memory cache: chainId → working fallback RPC URL */
+const fallbackCache = new Map<number, { url: string; ts: number }>();
+
+/** Cache TTL: 10 minutes */
+const FALLBACK_CACHE_TTL_MS = 10 * 60 * 1000;
 
 /**
  * Proxy an RPC call to a public node for the given chain.
@@ -49,10 +58,48 @@ export async function evmProxyRpcCall(
 ): Promise<unknown> {
   const chainId = parseInt(chainRef, 10);
   const rpcUrl = customRpcUrls[chainId] ?? customRpcUrls[chainRef] ?? DEFAULT_RPC[chainId];
-  if (!rpcUrl) {
-    throw Object.assign(new Error(`No RPC URL configured for chain ${chainId}`), { code: -32601 });
+
+  // Try primary RPC first
+  if (rpcUrl) {
+    try {
+      return await rpcFetch(rpcUrl, method, params);
+    } catch (err) {
+      // Primary failed — try fallback
+      console.warn(`[RPC] Primary RPC failed for chain ${chainId}:`, (err as Error).message);
+    }
   }
 
+  // Try cached fallback
+  const cached = fallbackCache.get(chainId);
+  if (cached && Date.now() - cached.ts < FALLBACK_CACHE_TTL_MS) {
+    try {
+      return await rpcFetch(cached.url, method, params);
+    } catch {
+      // Cached fallback also failed — invalidate and discover new one
+      fallbackCache.delete(chainId);
+    }
+  }
+
+  // Discover a working RPC from ethereum-data API
+  const fallbackUrl = await discoverFallbackRpc(chainId);
+  if (fallbackUrl) {
+    try {
+      const result = await rpcFetch(fallbackUrl, method, params);
+      // Cache the working URL
+      fallbackCache.set(chainId, { url: fallbackUrl, ts: Date.now() });
+      return result;
+    } catch (err) {
+      throw Object.assign(new Error((err as Error).message ?? 'All RPCs failed'), { code: -32603 });
+    }
+  }
+
+  throw Object.assign(new Error(`No working RPC found for chain ${chainId}`), { code: -32601 });
+}
+
+// ── Internal helpers ─────────────────────────────────────────────────────
+
+/** Execute a single JSON-RPC fetch against the given URL. */
+async function rpcFetch(rpcUrl: string, method: string, params: unknown): Promise<unknown> {
   const body = JSON.stringify({
     jsonrpc: '2.0',
     id: 1,
@@ -101,4 +148,62 @@ export async function evmProxyRpcCall(
     throw Object.assign(new Error(json.error.message ?? 'RPC error'), { code: json.error.code ?? -32603 });
   }
   return json.result;
+}
+
+/**
+ * Fetch RPC list from ethereum-data API and find the first working one.
+ * Returns the first URL that successfully responds to eth_chainId, or null.
+ */
+async function discoverFallbackRpc(chainId: number): Promise<string | null> {
+  const apiUrl = `https://ethereum-data.awesometools.dev/chains/eip155-${chainId}.json`;
+
+  let urls: string[];
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FALLBACK_TIMEOUT_MS);
+    const res = await fetch(apiUrl, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = await res.json();
+    urls = data.rpc;
+    if (!Array.isArray(urls)) return null;
+  } catch {
+    return null;
+  }
+
+  // Filter: only HTTPS, no template variables, no WebSocket
+  const candidates = urls.filter(
+    (u: string) => u.startsWith('https://') && !u.includes('${'),
+  );
+
+  // Race: try candidates in parallel batches of 3, return first success
+  for (let i = 0; i < candidates.length; i += 3) {
+    const batch = candidates.slice(i, i + 3);
+    const result = await Promise.any(
+      batch.map(async (url) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), FALLBACK_TIMEOUT_MS);
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (!res.ok) throw new Error('bad status');
+          const json = await res.json();
+          if (json.error) throw new Error('rpc error');
+          return url;
+        } catch (err) {
+          clearTimeout(timer);
+          throw err;
+        }
+      }),
+    ).catch(() => null);
+
+    if (result) return result;
+  }
+
+  return null;
 }
