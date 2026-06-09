@@ -17,8 +17,10 @@
       state = s;
     });
     const unsub = onStateUpdate((s) => {
-      state = s;
-      loading = false;
+      // Don't interrupt loading transition — startPairing handles its own state
+      if (!loading) {
+        state = s;
+      }
     });
     return unsub;
   });
@@ -27,7 +29,7 @@
     loading = true;
     const [s] = await Promise.all([
       sendToBackground<ExtensionState>({ action: 'start-pairing' }),
-      new Promise((r) => setTimeout(r, 600)), // min loading time for smooth transition
+      new Promise((r) => setTimeout(r, 800)), // smooth transition before showing QR
     ]);
     state = s;
     loading = false;
