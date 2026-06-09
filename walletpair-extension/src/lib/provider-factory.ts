@@ -61,6 +61,7 @@ export function createProvider(postMessage: PostMessageFn) {
 
   const provider: Record<string, any> = {
     isWalletPair: true,
+    isMetaMask: true,
 
     async request(args: { method: string; params?: unknown }): Promise<unknown> {
       const { method, params } = args;

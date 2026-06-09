@@ -56,7 +56,7 @@ function hexChainToCaip2(hex: string): string {
 
 /** Validate that a transaction object contains all required fields. */
 function validateTxFields(tx: Record<string, unknown> | undefined): void {
-  const required = ['value', 'data', 'type', 'chainId']
+  const required = ['chainId']
   const missing = required.filter((f) => tx?.[f] === undefined || tx?.[f] === null)
   if (missing.length > 0) {
     throw Object.assign(new Error(`Missing required transaction fields: ${missing.join(', ')}`), {
