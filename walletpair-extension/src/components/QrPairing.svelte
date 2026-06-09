@@ -27,6 +27,23 @@
 </script>
 
 <div class="pairing">
+  <div class="steps">
+    <div class="step active">
+      <span class="step-num">1</span>
+      <span class="step-label">Scan</span>
+    </div>
+    <div class="step-line"></div>
+    <div class="step">
+      <span class="step-num">2</span>
+      <span class="step-label">Verify</span>
+    </div>
+    <div class="step-line"></div>
+    <div class="step">
+      <span class="step-num">3</span>
+      <span class="step-label">Done</span>
+    </div>
+  </div>
+
   <div class="status-badge">
     <span class="status-dot"></span>
     Waiting for wallet...
@@ -78,6 +95,57 @@
     flex-direction: column;
     align-items: center;
     gap: 14px;
+    animation: fadeIn 0.3s ease-out;
+  }
+
+  .steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    margin-bottom: 8px;
+    width: 100%;
+    max-width: 240px;
+  }
+  .step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .step-num {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 700;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+  .step.active .step-num {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+  }
+  .step-label {
+    font-size: 9px;
+    color: var(--text-dimmer);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .step.active .step-label {
+    color: var(--accent-hover);
+  }
+  .step-line {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+    margin: 0 6px;
+    margin-bottom: 14px;
   }
 
   .status-badge {

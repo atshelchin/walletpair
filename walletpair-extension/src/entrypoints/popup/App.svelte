@@ -68,20 +68,21 @@
     {#if page === 'settings'}
       <SettingsView onBack={() => (page = 'main')} />
     {:else if state.phase === 'idle' || state.phase === 'error'}
-      <div class="idle-view">
+      <div class="idle-view animate-in">
         <!-- Decorative glow -->
         <div class="hero-glow"></div>
         <div class="hero-icon">
-          <svg viewBox="0 0 80 80" width="88" height="88" fill="none">
-            <circle cx="40" cy="40" r="38" fill="var(--accent)" opacity="0.08" />
-            <circle cx="40" cy="40" r="28" fill="var(--accent)" opacity="0.12" />
-            <!-- Connection icon: two endpoints with a link -->
-            <rect x="20" y="34" width="12" height="12" rx="3" fill="var(--accent)" opacity="0.7" />
-            <rect x="48" y="34" width="12" height="12" rx="3" fill="var(--accent)" />
-            <!-- Link line -->
-            <path d="M32 40H48" stroke="var(--accent)" stroke-width="2.5" stroke-dasharray="3 2" opacity="0.5" />
-            <!-- Center diamond -->
-            <path d="M36 40L40 36L44 40L40 44Z" fill="white" opacity="0.9" />
+          <svg viewBox="0 0 80 80" width="72" height="72" fill="none">
+            <!-- Shield outline -->
+            <path d="M40 6L14 20v20c0 16.6 11.1 32.1 26 36 14.9-3.9 26-19.4 26-36V20L40 6z"
+                  fill="var(--accent)" opacity="0.1" stroke="var(--accent)" stroke-width="1.5"/>
+            <!-- Inner shield -->
+            <path d="M40 12L18 24v16c0 13.3 9.4 25.7 22 28.8 12.6-3.1 22-15.5 22-28.8V24L40 12z"
+                  fill="var(--accent)" opacity="0.08"/>
+            <!-- Chain link icon inside -->
+            <path d="M33 36a5 5 0 010-7.07l3.54-3.54a5 5 0 017.07 0l.7.71" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" fill="none"/>
+            <path d="M47 44a5 5 0 010 7.07l-3.54 3.54a5 5 0 01-7.07 0l-.7-.71" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" fill="none"/>
+            <path d="M44 36L36 44" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>
           </svg>
         </div>
         <div class="hero-text">
@@ -89,6 +90,16 @@
           <p class="subtitle">
             Scan with any WalletPair-compatible wallet to bridge your wallet to dApps
           </p>
+          <div class="trust-row">
+            <span class="trust-badge">
+              <svg viewBox="0 0 12 12" width="12" height="12" fill="var(--green)"><path d="M6 1a5 5 0 100 10A5 5 0 006 1zm-.5 7.5l-2-2 .7-.7L5.5 7.1l3.3-3.3.7.7-4 4z"/></svg>
+              End-to-end encrypted
+            </span>
+            <span class="trust-badge">
+              <svg viewBox="0 0 12 12" width="12" height="12" fill="var(--text-dim)"><path d="M6 0C2.7 0 0 2.7 0 6s2.7 6 6 6 6-2.7 6-6S9.3 0 6 0zM9 6.8H6.8V9H5.2V6.8H3V5.2h2.2V3h1.6v2.2H9v1.6z"/></svg>
+              Open source
+            </span>
+          </div>
         </div>
         {#if state.error}
           <div class="error-banner">
@@ -111,7 +122,9 @@
         </button>
       </div>
     {:else if state.phase === 'pairing'}
-      <QrPairing uri={state.pairingUri ?? ''} fingerprint={state.sessionFingerprint} />
+      <div class="animate-slide">
+        <QrPairing uri={state.pairingUri ?? ''} fingerprint={state.sessionFingerprint} />
+      </div>
     {:else if state.phase === 'pending_accept'}
       <PendingAccept
         code={state.sessionFingerprint ?? ''}
@@ -120,7 +133,9 @@
         onReject={rejectWallet}
       />
     {:else if state.phase === 'connected'}
-      <ConnectedView wallet={state.wallet} onDisconnect={disconnect} />
+      <div class="animate-scale">
+        <ConnectedView wallet={state.wallet} onDisconnect={disconnect} />
+      </div>
     {:else if state.phase === 'disconnected'}
       <div class="disconnected-view">
         <div class="status-badge orange">
@@ -331,5 +346,18 @@
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
+  }
+
+  .trust-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 4px;
+  }
+  .trust-badge {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-dimmer);
   }
 </style>

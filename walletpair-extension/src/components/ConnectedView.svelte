@@ -57,9 +57,7 @@
     </div>
 
     <div class="wallet-info">
-      {#if wallet?.name}
-        <span class="wallet-name">{wallet.name}</span>
-      {/if}
+      <span class="wallet-name">{wallet?.name || 'Wallet'}</span>
       <button class="address-btn" onclick={copyAddress} title="Copy address">
         <span class="address">{shortAddress}</span>
         {#if copied}
@@ -77,6 +75,13 @@
     <div class="chain-badge">{chainName}</div>
   </div>
 
+  <div class="trust-footer">
+    <svg viewBox="0 0 12 12" width="11" height="11" fill="var(--text-dimmer)">
+      <path d="M6 1L2 3.5v3C2 9.8 3.8 12.6 6 13.5c2.2-.9 4-3.7 4-7V3.5L6 1z"/>
+    </svg>
+    <span>Secured by WalletPair — end-to-end encrypted</span>
+  </div>
+
   <div class="actions">
     <button class="btn-disconnect" onclick={onDisconnect}>Disconnect</button>
   </div>
@@ -90,6 +95,7 @@
     align-items: center;
     gap: 20px;
     padding-top: 16px;
+    animation: fadeInScale 0.3s ease-out;
   }
 
   .status-badge {
@@ -104,6 +110,7 @@
   .status-badge.green {
     background: var(--green-dim);
     color: var(--green);
+    box-shadow: 0 0 12px rgba(34, 197, 94, 0.2);
   }
 
   .status-dot {
@@ -209,5 +216,20 @@
     color: var(--red);
     border-color: var(--red);
     background: var(--red-dim);
+  }
+
+  .trust-footer {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: 10px;
+    color: var(--text-dimmer);
+    padding-top: 12px;
+  }
+
+  @keyframes fadeInScale {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
   }
 </style>
