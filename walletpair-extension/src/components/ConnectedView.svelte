@@ -18,19 +18,42 @@
   let activity = $state<ActivityEntry[]>([]);
   let currentOrigin = $state<string | undefined>(undefined);
 
-  $effect(() => {
-    // Get the current active tab's origin for filtering
+  function updateCurrentOrigin() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const url = tabs[0]?.url;
       if (url) {
         try { currentOrigin = new URL(url).origin; } catch { /* ignore */ }
       }
     });
+  }
+
+  $effect(() => {
+    updateCurrentOrigin();
+
+    // Re-query origin when user switches tabs or windows
+    const onTabActivated = () => updateCurrentOrigin();
+    const onWindowFocused = (windowId: number) => {
+      if (windowId !== chrome.windows.WINDOW_ID_NONE) updateCurrentOrigin();
+    };
+    // Also catches in-tab navigations (e.g. SPA route changes)
+    const onTabUpdated = (_tabId: number, info: { url?: string }) => {
+      if (info.url) updateCurrentOrigin();
+    };
+
+    chrome.tabs.onActivated.addListener(onTabActivated);
+    chrome.windows.onFocusChanged.addListener(onWindowFocused);
+    chrome.tabs.onUpdated.addListener(onTabUpdated);
 
     const load = () => getActivityLog().then(a => { activity = a; });
     load();
     const timer = setInterval(load, 2000);
-    return () => clearInterval(timer);
+
+    return () => {
+      clearInterval(timer);
+      chrome.tabs.onActivated.removeListener(onTabActivated);
+      chrome.windows.onFocusChanged.removeListener(onWindowFocused);
+      chrome.tabs.onUpdated.removeListener(onTabUpdated);
+    };
   });
 
   async function handleClearActivity() {
