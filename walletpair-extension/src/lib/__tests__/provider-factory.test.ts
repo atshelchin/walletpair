@@ -411,3 +411,139 @@ describe('PROVIDER_INFO', () => {
     expect(Object.isFrozen(PROVIDER_INFO)).toBe(true);
   });
 });
+
+// ── Regression: Fix #3 — Request timeout memory leak ───────────────
+
+describe('Fix #3: timeout cleanup on response', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('clears pending timeout when response arrives', async () => {
+    const { provider, handleMessage, pending } = setup();
+
+    const promise = provider.request({ method: 'eth_blockNumber' });
+    expect(vi.getTimerCount()).toBeGreaterThanOrEqual(1);
+
+    const [id] = [...pending.keys()];
+    handleMessage({
+      channel: 'walletpair-ext',
+      type: 'wp-response',
+      id,
+      result: '0xabc',
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await promise).toBe('0xabc');
+  });
+
+  it('removes pending map entry on response', async () => {
+    const { provider, handleMessage, pending } = setup();
+
+    const promise = provider.request({ method: 'eth_blockNumber' });
+    expect(pending.size).toBe(1);
+
+    const [id] = [...pending.keys()];
+    handleMessage({
+      channel: 'walletpair-ext',
+      type: 'wp-response',
+      id,
+      result: '0x1',
+    });
+
+    expect(pending.size).toBe(0);
+    expect(await promise).toBe('0x1');
+  });
+
+  it('clears pending timeout on error response too', async () => {
+    const { provider, handleMessage, pending } = setup();
+
+    const promise = provider.request({ method: 'eth_blockNumber' });
+    expect(vi.getTimerCount()).toBeGreaterThanOrEqual(1);
+
+    const [id] = [...pending.keys()];
+    handleMessage({
+      channel: 'walletpair-ext',
+      type: 'wp-response',
+      id,
+      error: { code: -32000, message: 'fail' },
+    });
+
+    expect(vi.getTimerCount()).toBe(0);
+    await expect(promise).rejects.toThrow();
+  });
+});
+
+// ── Regression: Fix #12 — send() callback id ──────────────────────
+
+describe('Fix #12: send() unique ids', () => {
+  it('two sync send() calls return different ids', () => {
+    const { provider } = setup();
+    const r1 = provider.send('eth_chainId');
+    const r2 = provider.send('eth_chainId');
+    expect(r1.id).not.toBe(r2.id);
+  });
+
+  it('send(payload, callback) uses the payload id when provided', async () => {
+    const { provider, pending } = setup();
+    const cb = vi.fn();
+    provider.send({ method: 'eth_blockNumber', id: 999 }, cb);
+
+    const [id] = [...pending.keys()];
+    pending.get(id)!.resolve('0xff');
+    pending.delete(id);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cb).toHaveBeenCalledWith(null, expect.objectContaining({ id: 999 }));
+  });
+
+  it('send(payload, callback) generates unique id when payload has no id', async () => {
+    const { provider, pending } = setup();
+    const cb = vi.fn();
+    provider.send({ method: 'eth_blockNumber' }, cb);
+
+    const [id] = [...pending.keys()];
+    pending.get(id)!.resolve('0xff');
+    pending.delete(id);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cb).toHaveBeenCalledWith(null, expect.objectContaining({
+      id: expect.any(Number),
+      jsonrpc: '2.0',
+      result: '0xff',
+    }));
+  });
+
+  it('sendAsync uses the payload id when provided', async () => {
+    const { provider, pending } = setup();
+    const cb = vi.fn();
+    provider.sendAsync({ method: 'eth_blockNumber', id: 777 }, cb);
+
+    const [id] = [...pending.keys()];
+    pending.get(id)!.resolve('0xaa');
+    pending.delete(id);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cb).toHaveBeenCalledWith(null, expect.objectContaining({ id: 777 }));
+  });
+
+  it('sendAsync generates unique id when payload has no id', async () => {
+    const { provider, pending } = setup();
+    const cb = vi.fn();
+    provider.sendAsync({ method: 'eth_blockNumber' }, cb);
+
+    const [id] = [...pending.keys()];
+    pending.get(id)!.resolve('0xbb');
+    pending.delete(id);
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(cb).toHaveBeenCalledWith(null, expect.objectContaining({
+      id: expect.any(Number),
+      jsonrpc: '2.0',
+      result: '0xbb',
+    }));
+  });
+});

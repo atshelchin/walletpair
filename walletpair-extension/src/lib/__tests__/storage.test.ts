@@ -6,6 +6,10 @@ import {
   saveConnectedWallet,
   getSessionState,
   saveSessionState,
+  grantPermission,
+  getPermissions,
+  addActivityEntry,
+  getActivityLog,
 } from '../storage';
 
 // ── Mock chrome.storage.local ──────────────────────────────────────────
@@ -119,6 +123,93 @@ describe('storage', () => {
       expect(chromeStorageLocal.remove).toHaveBeenCalledWith('sessionState');
       const state = await getSessionState();
       expect(state).toBeNull();
+    });
+  });
+
+  // ── Regression: Fix #5 — Mutex for permissions ──────────────────
+
+  describe('Fix #5: concurrent grantPermission (mutex)', () => {
+    it('two concurrent grantPermission calls for different origins both succeed', async () => {
+      await Promise.all([
+        grantPermission('https://a.com'),
+        grantPermission('https://b.com'),
+      ]);
+      const perms = await getPermissions();
+      expect(perms['https://a.com']).toBeDefined();
+      expect(perms['https://a.com'].granted).toBe(true);
+      expect(perms['https://b.com']).toBeDefined();
+      expect(perms['https://b.com'].granted).toBe(true);
+    });
+
+    it('three concurrent grantPermission calls preserve all entries', async () => {
+      await Promise.all([
+        grantPermission('https://x.com'),
+        grantPermission('https://y.com'),
+        grantPermission('https://z.com'),
+      ]);
+      const perms = await getPermissions();
+      expect(Object.keys(perms)).toHaveLength(3);
+      expect(perms['https://x.com'].granted).toBe(true);
+      expect(perms['https://y.com'].granted).toBe(true);
+      expect(perms['https://z.com'].granted).toBe(true);
+    });
+  });
+
+  // ── Regression: Fix #5 — Mutex for activity log ─────────────────
+
+  describe('Fix #5: concurrent addActivityEntry (mutex)', () => {
+    it('two concurrent addActivityEntry calls both appear in the log', async () => {
+      const entry1 = {
+        id: 'e1',
+        timestamp: Date.now(),
+        origin: 'https://a.com',
+        method: 'eth_sendTransaction',
+        category: 'tx' as const,
+        status: 'pending' as const,
+      };
+      const entry2 = {
+        id: 'e2',
+        timestamp: Date.now(),
+        origin: 'https://b.com',
+        method: 'personal_sign',
+        category: 'sign' as const,
+        status: 'pending' as const,
+      };
+
+      await Promise.all([
+        addActivityEntry(entry1),
+        addActivityEntry(entry2),
+      ]);
+
+      const log = await getActivityLog();
+      expect(log).toHaveLength(2);
+      const ids = log.map((e: { id: string }) => e.id);
+      expect(ids).toContain('e1');
+      expect(ids).toContain('e2');
+    });
+
+    it('three concurrent addActivityEntry calls all appear', async () => {
+      const makeEntry = (id: string) => ({
+        id,
+        timestamp: Date.now(),
+        origin: 'https://test.com',
+        method: 'eth_call',
+        category: 'read' as const,
+        status: 'success' as const,
+      });
+
+      await Promise.all([
+        addActivityEntry(makeEntry('a')),
+        addActivityEntry(makeEntry('b')),
+        addActivityEntry(makeEntry('c')),
+      ]);
+
+      const log = await getActivityLog();
+      expect(log).toHaveLength(3);
+      const ids = log.map((e: { id: string }) => e.id);
+      expect(ids).toContain('a');
+      expect(ids).toContain('b');
+      expect(ids).toContain('c');
     });
   });
 });

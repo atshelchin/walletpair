@@ -17,16 +17,20 @@ export default defineContentScript({
     // Port connection with auto-reconnect
     let port: chrome.runtime.Port | null = null;
     let portDead = false; // true if extension context invalidated (e.g., extension updated)
+    let portConnecting = false; // Fix #2: guard against concurrent port creation
 
     function getPort(): chrome.runtime.Port | null {
       if (portDead) return null;
       if (port) return port;
+      if (portConnecting) return null; // another call is already creating a port
 
       try {
+        portConnecting = true;
         port = chrome.runtime.connect({ name: 'walletpair-content' });
         port.onMessage.addListener(handleBackgroundMessage);
         port.onDisconnect.addListener(() => {
           port = null;
+          portConnecting = false;
           // Check if extension context was invalidated
           if (chrome.runtime.lastError?.message?.includes('Extension context invalidated')) {
             portDead = true;
@@ -35,6 +39,7 @@ export default defineContentScript({
         return port;
       } catch {
         portDead = true;
+        portConnecting = false;
         return null;
       }
     }
@@ -45,9 +50,11 @@ export default defineContentScript({
       if (p) {
         try {
           p.postMessage(msg);
-          return;
+          return; // Fix #4: only return on success, don't fall through
         } catch {
           port = null;
+          portConnecting = false;
+          // Fall through to sendMessage fallback — message was NOT sent via port
         }
       }
 

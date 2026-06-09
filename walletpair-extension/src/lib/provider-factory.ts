@@ -43,7 +43,7 @@ export interface ProviderState {
  *                      (defaults to window.postMessage)
  */
 export function createProvider(postMessage: PostMessageFn) {
-  const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+  const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   let reqCounter = 0;
   const eventListeners = new Map<string, Set<(...args: any[]) => void>>();
 
@@ -84,18 +84,19 @@ export function createProvider(postMessage: PostMessageFn) {
 
       const id = `wp-${++reqCounter}-${Date.now()}`;
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject });
-        postMessage(
-          { type: 'wp-request', id, payload: { method, params }, channel: MSG_CHANNEL },
-          '*',
-        );
-
-        setTimeout(() => {
+        // Fix #3: Store timer handle so we can clear it when response arrives
+        const timer = setTimeout(() => {
           if (pending.has(id)) {
             pending.delete(id);
             reject(new ProviderRpcError(-32603, 'Request timed out'));
           }
         }, 60_000);
+
+        pending.set(id, { resolve, reject, timer });
+        postMessage(
+          { type: 'wp-request', id, payload: { method, params }, channel: MSG_CHANNEL },
+          '*',
+        );
       });
     },
 
@@ -139,7 +140,7 @@ export function createProvider(postMessage: PostMessageFn) {
       return provider.request({ method: 'eth_requestAccounts' });
     },
 
-    send(methodOrPayload: string | { method: string; params?: unknown[] }, callbackOrParams?: unknown) {
+    send(methodOrPayload: string | { method: string; params?: unknown[]; id?: number }, callbackOrParams?: unknown) {
       if (typeof methodOrPayload === 'string') {
         const syncMethods: Record<string, () => unknown> = {
           eth_accounts: () => state.isConnected ? [...state.accounts] : [],
@@ -149,18 +150,20 @@ export function createProvider(postMessage: PostMessageFn) {
         };
         if (methodOrPayload in syncMethods) {
           return {
-            id: 1,
+            id: ++reqCounter,
             jsonrpc: '2.0' as const,
             result: syncMethods[methodOrPayload](),
           };
         }
         return provider.request({ method: methodOrPayload, params: callbackOrParams as unknown[] });
       }
+      // Fix #12: Use request id from payload, or generate a unique one
+      const rpcId = methodOrPayload.id ?? ++reqCounter;
       if (typeof callbackOrParams === 'function') {
         provider
           .request({ method: methodOrPayload.method, params: methodOrPayload.params })
           .then((result: unknown) =>
-            (callbackOrParams as Function)(null, { id: 1, jsonrpc: '2.0', result }),
+            (callbackOrParams as Function)(null, { id: rpcId, jsonrpc: '2.0', result }),
           )
           .catch((err: Error) => (callbackOrParams as Function)(err));
         return;
@@ -172,9 +175,10 @@ export function createProvider(postMessage: PostMessageFn) {
       payload: { method: string; params?: unknown[]; id?: number },
       callback: (err: Error | null, result?: unknown) => void,
     ) {
+      const rpcId = payload.id ?? ++reqCounter;
       provider
         .request({ method: payload.method, params: payload.params })
-        .then((result: unknown) => callback(null, { id: payload.id, jsonrpc: '2.0', result }))
+        .then((result: unknown) => callback(null, { id: rpcId, jsonrpc: '2.0', result }))
         .catch((err: Error) => callback(err));
     },
 
@@ -202,6 +206,7 @@ export function createProvider(postMessage: PostMessageFn) {
       const p = pending.get(msg.id);
       if (!p) return;
       pending.delete(msg.id);
+      clearTimeout(p.timer); // Fix #3: prevent leaked timeout
 
       if (msg.error) {
         p.reject(new ProviderRpcError(

@@ -471,3 +471,178 @@ describe("ChannelDO — join without create", () => {
     expect(term.body).toMatchObject({ reason: "channel_not_found" });
   });
 });
+
+// ─────────────────────────────────────────────
+// Regression: Fix #1 — handleCreate peerId validation
+// ─────────────────────────────────────────────
+describe("ChannelDO — create peerId validation (Fix #1)", () => {
+  const OTHER_DAPP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+  it("rejects create from different peerId on existing channel", async () => {
+    // Original dApp creates the channel
+    const dappWs = await connectWs();
+    const dappMsgs = collectMessages(dappWs);
+    dappWs.send(msg("create", DAPP_KEY, { meta: { name: "T" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(dappMsgs.length).toBe(1);
+    expect(parse(dappMsgs[0]).body).toMatchObject({ state: "waiting" });
+
+    // Different peerId tries to create on same channel via subsequent message
+    // (i.e. a WS that already has a role sends create with a different peerId)
+    // To trigger handleMessage's create branch, we need an already-attached WS.
+    // The simplest way: the original dApp sends create again but with a spoofed from.
+    // However, the from is validated against the attachment's peerId.
+    // The fix is in handleMessage: if dappPeerId is set and msg.from !== dappPeerId, reject.
+    //
+    // We test this by having a second WS connect and create with a different key.
+    // Since handleFirstMessage -> handleCreate runs for new WS, this goes through
+    // the "waiting" branch which replaces. But in handleMessage (subsequent create),
+    // a different peerId is rejected.
+    //
+    // To hit the handleMessage path: first create, then send another create on same WS
+    // but the 'from' won't match attachment. Let's test with a new WS that first joins
+    // (gets role), then tries to create — but that's complex.
+    //
+    // Simpler: a new WS sends create with OTHER_DAPP_KEY as first message.
+    // This goes through handleFirstMessage -> handleCreate -> "waiting" branch.
+    // The fix #1 is specifically in handleMessage (subsequent message, not first).
+    // To test it: send two messages on the SAME WS where second is create with different from.
+    // But protocol.ts validates peerId format, so we need a valid-format key.
+
+    // The dApp WS already has role "dapp" with DAPP_KEY.
+    // Sending create again from the same WS with a different peerId triggers handleMessage.
+    dappWs.send(msg("create", OTHER_DAPP_KEY, { meta: { name: "Imposter" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should get terminated with invalid_role
+    const lastMsg = parse(dappMsgs[dappMsgs.length - 1]);
+    expect(lastMsg.t).toBe("terminate");
+    expect(lastMsg.body).toMatchObject({ reason: "invalid_role" });
+  });
+
+  it("same peerId can re-create via new WS (existing behavior preserved)", async () => {
+    // dApp creates the channel on first WS
+    const dappWs1 = await connectWs();
+    const dappMsgs1 = collectMessages(dappWs1);
+    dappWs1.send(msg("create", DAPP_KEY, { meta: { name: "T" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(dappMsgs1.length).toBe(1);
+    expect(parse(dappMsgs1[0]).body).toMatchObject({ state: "waiting" });
+
+    // Same peerId re-creates via a new WS (goes through handleFirstMessage)
+    const dappWs2 = await connectWs();
+    const dappMsgs2 = collectMessages(dappWs2);
+    dappWs2.send(msg("create", DAPP_KEY, { meta: { name: "T2" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // New WS gets ready.waiting (re-create succeeds)
+    expect(dappMsgs2.length).toBe(1);
+    const readyMsg = parse(dappMsgs2[0]);
+    expect(readyMsg.t).toBe("ready");
+    expect(readyMsg.body).toMatchObject({ state: "waiting", role: "dapp" });
+
+    // Old WS gets terminated
+    const oldTerm = dappMsgs1.find((m) => parse(m).t === "terminate");
+    expect(oldTerm).toBeDefined();
+  });
+
+  it("different peerId on new WS also gets rejected via handleFirstMessage", async () => {
+    // Original dApp creates
+    const dappWs = await connectWs();
+    const dappMsgs = collectMessages(dappWs);
+    dappWs.send(msg("create", DAPP_KEY, { meta: { name: "T" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Wallet joins to move to pending_accept
+    const walletWs = await connectWs();
+    collectMessages(walletWs);
+    walletWs.send(msg("join", WALLET_KEY, { sealed_join: "data" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Different peerId tries to create on a new WS — should be rejected
+    // because state is pending_accept (channel_exists)
+    const imposterWs = await connectWs();
+    const imposterMsgs = collectMessages(imposterWs);
+    imposterWs.send(msg("create", OTHER_DAPP_KEY, { meta: { name: "Imposter" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(imposterMsgs.length).toBe(1);
+    const term = parse(imposterMsgs[0]);
+    expect(term.t).toBe("terminate");
+    expect(term.body).toMatchObject({ reason: "channel_exists" });
+  });
+});
+
+// ─────────────────────────────────────────────
+// Regression: Fix #5 — Alarm reset on wallet disconnect from pending_accept
+// ─────────────────────────────────────────────
+describe("ChannelDO — wallet disconnect from pending_accept (Fix #5)", () => {
+  it("reverts to waiting state when wallet disconnects during pending_accept", async () => {
+    // dApp creates
+    const dappWs = await connectWs();
+    const dappMsgs = collectMessages(dappWs);
+    dappWs.send(msg("create", DAPP_KEY, { meta: { name: "T" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(parse(dappMsgs[0]).body).toMatchObject({ state: "waiting" });
+
+    // Wallet joins (moves to pending_accept)
+    const walletWs = await connectWs();
+    const walletMsgs = collectMessages(walletWs);
+    walletWs.send(msg("join", WALLET_KEY, { sealed_join: "data" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(parse(walletMsgs[0]).body).toMatchObject({ state: "waiting", role: "wallet" });
+
+    // Wallet disconnects
+    walletWs.close(1000, "wallet_left");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // A new wallet should be able to join (proves state reverted to "waiting")
+    const wallet2Ws = await connectWs();
+    const wallet2Msgs = collectMessages(wallet2Ws);
+    wallet2Ws.send(msg("join", WALLET_KEY, { sealed_join: "data2" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // New wallet gets ready.waiting — channel is back in waiting state
+    expect(wallet2Msgs.length).toBeGreaterThanOrEqual(1);
+    const wallet2Ready = parse(wallet2Msgs[0]);
+    expect(wallet2Ready.t).toBe("ready");
+    expect(wallet2Ready.body).toMatchObject({ state: "waiting", role: "wallet" });
+  });
+
+  it("dApp still receives forwarded join from new wallet after first wallet disconnects", async () => {
+    // dApp creates
+    const dappWs = await connectWs();
+    const dappMsgs = collectMessages(dappWs);
+    dappWs.send(msg("create", DAPP_KEY, { meta: { name: "T" } }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // First wallet joins
+    const walletWs = await connectWs();
+    collectMessages(walletWs);
+    walletWs.send(msg("join", WALLET_KEY, { sealed_join: "data" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // dApp should have: ready.waiting + forwarded join = 2 messages
+    expect(dappMsgs.length).toBe(2);
+
+    // First wallet disconnects
+    walletWs.close(1000, "wallet_left");
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second wallet joins
+    const wallet2Ws = await connectWs();
+    collectMessages(wallet2Ws);
+    wallet2Ws.send(msg("join", WALLET_KEY, { sealed_join: "data_retry" }));
+    await new Promise((r) => setTimeout(r, 50));
+
+    // dApp should have received the second join forwarded
+    expect(dappMsgs.length).toBe(3);
+    const secondJoin = parse(dappMsgs[2]);
+    expect(secondJoin.t).toBe("join");
+    expect(secondJoin.from).toBe(WALLET_KEY);
+  });
+});

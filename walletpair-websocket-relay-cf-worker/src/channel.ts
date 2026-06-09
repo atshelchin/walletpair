@@ -338,7 +338,11 @@ export class ChannelDO extends DurableObject<Env> {
 
     switch (msg.t) {
       case "create": {
-        // Re-create from dApp: only valid if from same peer
+        // Re-create from dApp: only valid if from same peer (Fix #1)
+        if (this.dappPeerId && msg.from !== this.dappPeerId) {
+          this.sendAndClose(ws, buildTerminate(ch, "invalid_role"));
+          return;
+        }
         await this.handleCreate(ws, ch, msg.from);
         return;
       }
@@ -406,31 +410,47 @@ export class ChannelDO extends DurableObject<Env> {
       return;
     }
 
-    // Transition to connected
-    this.channelState = "connected";
-
     const walletId = this.walletPeerId!;
     const reconnect = this.isReconnect;
 
-    // Send ready.connected to dApp
+    // Fix #2: Send ready.connected to both peers BEFORE transitioning state,
+    // so if a send fails we can revert instead of being stuck in "connected"
+    // with a missing peer.
     const dappWs = this.findPeerWs("dapp");
+    const walletWs = this.findPeerWs("wallet");
+
+    let dappOk = false;
+    let walletOk = false;
+
     if (dappWs) {
       try {
         dappWs.send(buildReadyConnected(ch, "dapp", from, walletId, reconnect));
+        dappOk = true;
       } catch {
         // disconnected
       }
     }
 
-    // Send ready.connected to wallet
-    const walletWs = this.findPeerWs("wallet");
     if (walletWs) {
       try {
         walletWs.send(buildReadyConnected(ch, "wallet", walletId, from, reconnect));
+        walletOk = true;
       } catch {
         // disconnected
       }
     }
+
+    // Only transition if at least one peer received the message
+    if (!dappOk && !walletOk) {
+      // Both peers gone — close channel
+      this.channelState = "closed";
+      await this.persistState();
+      await this.ctx.storage.deleteAlarm();
+      return;
+    }
+
+    // Transition to connected
+    this.channelState = "connected";
 
     // Update alarm to connected TTL
     await this.ctx.storage.setAlarm(Date.now() + CONNECTED_TTL_MS);
@@ -488,8 +508,16 @@ export class ChannelDO extends DurableObject<Env> {
       try {
         otherWs.send(rawText);
       } catch {
-        // Other peer disconnected
+        // Fix #3: Notify sender that peer is unreachable instead of silent drop
+        try {
+          ws.send(buildTerminate(ch, "channel_not_found"));
+        } catch { /* sender also gone */ }
       }
+    } else if (msgType === "req") {
+      // Fix #3: Peer not connected — notify sender so request doesn't hang
+      try {
+        ws.send(buildTerminate(ch, "channel_not_found"));
+      } catch { /* sender also gone */ }
     }
 
     // Persist only if pending requests changed
@@ -573,6 +601,8 @@ export class ChannelDO extends DurableObject<Env> {
         this.walletPeerId = null;
         this.isReconnect = false;
         this.channelState = "waiting";
+        // Fix #5: Reset alarm to unpaired TTL since we're back to waiting
+        await this.ctx.storage.setAlarm(Date.now() + UNPAIRED_TTL_MS);
         await this.persistState();
       }
       return;
@@ -595,8 +625,8 @@ export class ChannelDO extends DurableObject<Env> {
     for (const ws of sockets) {
       const att = this.getAttachment(ws);
       if (att?.role === role) {
-        // Check if the WebSocket is still open (readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED)
-        if (ws.readyState <= 1) return ws;
+        // Fix #6: Only return OPEN sockets (readyState 1), not CONNECTING (0)
+        if (ws.readyState === 1) return ws;
         console.log(`[relay] findPeerWs(${role}): found but readyState=${ws.readyState}`);
       }
     }

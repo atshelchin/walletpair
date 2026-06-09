@@ -53,6 +53,16 @@ export async function saveConnectedWallet(wallet: ConnectedWallet | null): Promi
 
 // ── Per-origin permissions ──────────────────────────────────────────────
 
+// Fix #5: Serialize concurrent read-modify-write operations to prevent data loss
+let permissionMutex: Promise<void> = Promise.resolve();
+
+function withPermissionLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = permissionMutex;
+  let resolve: () => void;
+  permissionMutex = new Promise<void>((r) => { resolve = r; });
+  return prev.then(fn).finally(() => resolve!());
+}
+
 /** Get all origin permissions */
 export async function getPermissions(): Promise<Record<string, OriginPermission>> {
   const result = await chrome.storage.local.get(STORAGE_KEYS.PERMISSIONS);
@@ -60,17 +70,21 @@ export async function getPermissions(): Promise<Record<string, OriginPermission>
 }
 
 /** Grant permission for an origin */
-export async function grantPermission(origin: string): Promise<void> {
-  const perms = await getPermissions();
-  perms[origin] = { origin, granted: true, grantedAt: Date.now() };
-  await chrome.storage.local.set({ [STORAGE_KEYS.PERMISSIONS]: perms });
+export function grantPermission(origin: string): Promise<void> {
+  return withPermissionLock(async () => {
+    const perms = await getPermissions();
+    perms[origin] = { origin, granted: true, grantedAt: Date.now() };
+    await chrome.storage.local.set({ [STORAGE_KEYS.PERMISSIONS]: perms });
+  });
 }
 
 /** Revoke permission for an origin */
-export async function revokePermission(origin: string): Promise<void> {
-  const perms = await getPermissions();
-  delete perms[origin];
-  await chrome.storage.local.set({ [STORAGE_KEYS.PERMISSIONS]: perms });
+export function revokePermission(origin: string): Promise<void> {
+  return withPermissionLock(async () => {
+    const perms = await getPermissions();
+    delete perms[origin];
+    await chrome.storage.local.set({ [STORAGE_KEYS.PERMISSIONS]: perms });
+  });
 }
 
 /** Check if an origin is permitted */
@@ -101,25 +115,39 @@ export async function getConnectedAt(): Promise<number | null> {
 const ACTIVITY_KEY = 'activityLog';
 const MAX_ACTIVITY = 50;
 
+// Fix #5: Serialize activity log mutations to prevent data loss
+let activityMutex: Promise<void> = Promise.resolve();
+
+function withActivityLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = activityMutex;
+  let resolve: () => void;
+  activityMutex = new Promise<void>((r) => { resolve = r; });
+  return prev.then(fn).finally(() => resolve!());
+}
+
 export async function getActivityLog(): Promise<ActivityEntry[]> {
   const result = await chrome.storage.local.get(ACTIVITY_KEY);
   return result[ACTIVITY_KEY] ?? [];
 }
 
-export async function addActivityEntry(entry: ActivityEntry): Promise<void> {
-  const log = await getActivityLog();
-  log.unshift(entry); // newest first
-  if (log.length > MAX_ACTIVITY) log.length = MAX_ACTIVITY;
-  await chrome.storage.local.set({ [ACTIVITY_KEY]: log });
+export function addActivityEntry(entry: ActivityEntry): Promise<void> {
+  return withActivityLock(async () => {
+    const log = await getActivityLog();
+    log.unshift(entry); // newest first
+    if (log.length > MAX_ACTIVITY) log.length = MAX_ACTIVITY;
+    await chrome.storage.local.set({ [ACTIVITY_KEY]: log });
+  });
 }
 
-export async function updateActivityStatus(id: string, status: ActivityEntry['status']): Promise<void> {
-  const log = await getActivityLog();
-  const entry = log.find(e => e.id === id);
-  if (entry) {
-    entry.status = status;
-    await chrome.storage.local.set({ [ACTIVITY_KEY]: log });
-  }
+export function updateActivityStatus(id: string, status: ActivityEntry['status']): Promise<void> {
+  return withActivityLock(async () => {
+    const log = await getActivityLog();
+    const entry = log.find(e => e.id === id);
+    if (entry) {
+      entry.status = status;
+      await chrome.storage.local.set({ [ACTIVITY_KEY]: log });
+    }
+  });
 }
 
 export async function clearActivityLog(): Promise<void> {

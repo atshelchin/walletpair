@@ -91,6 +91,7 @@ interface PendingConfirmation {
   origin: string;
   resolve: (v: { result?: unknown; error?: { code: number; message: string } }) => void;
   windowId?: number;
+  timeoutTimer?: ReturnType<typeof setTimeout>;
 }
 const pendingConfirmations = new Map<string, PendingConfirmation>();
 
@@ -145,13 +146,26 @@ function addDeferredRequest(
 
 // ── Session Management ───────────────────────────────────────────────────
 
+// Track listener removers so we can clean up before re-attaching
+let cleanupSessionListeners: (() => void) | null = null;
+
 function attachSessionListeners(autoAccepted: boolean) {
   if (!session) return;
 
-  session.on('phase', (phase) => {
+  // Remove any previously attached listeners to avoid duplicates on reconnect
+  if (cleanupSessionListeners) {
+    cleanupSessionListeners();
+    cleanupSessionListeners = null;
+  }
+
+  const sessionRef = session;
+  const evmRef = evmProvider;
+
+  // Phase handler
+  const onPhase = (phase: string) => {
     switch (phase) {
       case 'waiting':
-        updateState({ phase: 'pairing', pairingUri: session!.pairingUri });
+        updateState({ phase: 'pairing', pairingUri: sessionRef.pairingUri });
         break;
       case 'pending_accept':
         updateState({ phase: 'pending_accept' });
@@ -160,10 +174,12 @@ function attachSessionListeners(autoAccepted: boolean) {
         updateState({ phase: 'connected' });
         pairingInProgress = false;
         resetReconnectBackoff();
-        saveSessionState(session!.serialize()).catch((e) => console.warn('[WalletPair]', e));
+        saveSessionState(sessionRef.serialize()).catch((e) => console.warn('[WalletPair]', e));
         saveConnectedAt(Date.now()).catch((e) => console.warn('[WalletPair]', e));
-        // Start keepalive alarm (survives SW termination)
-        chrome.alarms.create('walletpair-keepalive', { periodInMinutes: 0.33 });
+        // Clear any existing keepalive alarm before creating new one (Fix #11)
+        chrome.alarms.clear('walletpair-keepalive', () => {
+          chrome.alarms.create('walletpair-keepalive', { periodInMinutes: 0.33 });
+        });
         flushDeferredRequests();
         break;
       case 'disconnected':
@@ -174,51 +190,72 @@ function attachSessionListeners(autoAccepted: boolean) {
         handleSessionClosed();
         break;
     }
-  });
+  };
+  sessionRef.on('phase', onPhase);
 
-  session.on('sessionFingerprint', (code) => {
+  const onFingerprint = (code: unknown) => {
     updateState({ sessionFingerprint: code as string });
-  });
+  };
+  sessionRef.on('sessionFingerprint', onFingerprint);
 
-  session.on('walletJoined', ({ meta }) => {
+  const onWalletJoined = ({ meta }: { meta?: { name?: string; icon?: string } }) => {
     console.log('[WalletPair] walletJoined meta:', JSON.stringify(meta));
     updateState({ walletMeta: meta ? { name: meta.name, icon: meta.icon } : undefined });
-  });
+  };
+  sessionRef.on('walletJoined', onWalletJoined);
 
-  // Use the SDK provider's event handling to keep state in sync
-  if (evmProvider) {
-    evmProvider.on('accountsChanged', (accounts: string[]) => {
-      if (accounts.length > 0) {
-        connectedWallet = {
-          address: accounts[0]!,
-          chainId: connectedWallet?.chainId ?? 1,
-          name: session?.walletMeta?.name,
-          icon: session?.walletMeta?.icon,
-        };
-        saveConnectedWallet(connectedWallet).catch((e) => console.warn('[WalletPair]', e));
-        updateState({ wallet: { ...connectedWallet } });
-      }
-      broadcastEvent('accountsChanged', accounts);
-    });
+  // EVM provider event handlers
+  const onAccountsChanged = (accounts: string[]) => {
+    if (accounts.length > 0) {
+      connectedWallet = {
+        address: accounts[0]!,
+        chainId: connectedWallet?.chainId ?? 1,
+        name: sessionRef.walletMeta?.name,
+        icon: sessionRef.walletMeta?.icon,
+      };
+      saveConnectedWallet(connectedWallet).catch((e) => console.warn('[WalletPair]', e));
+      updateState({ wallet: { ...connectedWallet } });
+    }
+    broadcastEvent('accountsChanged', accounts);
+  };
 
-    evmProvider.on('chainChanged', (hexChainId: string) => {
-      const numericChainId = parseInt(hexChainId, 16);
-      if (connectedWallet) {
-        connectedWallet.chainId = numericChainId;
-        saveConnectedWallet(connectedWallet).catch((e) => console.warn('[WalletPair]', e));
-        updateState({ wallet: { ...connectedWallet } });
-      }
-      broadcastEvent('chainChanged', hexChainId);
-    });
+  const onChainChanged = (hexChainId: string) => {
+    const numericChainId = parseInt(hexChainId, 16);
+    if (connectedWallet) {
+      connectedWallet.chainId = numericChainId;
+      saveConnectedWallet(connectedWallet).catch((e) => console.warn('[WalletPair]', e));
+      updateState({ wallet: { ...connectedWallet } });
+    }
+    broadcastEvent('chainChanged', hexChainId);
+  };
 
-    evmProvider.on('disconnect', () => {
-      broadcastEvent('disconnect', undefined);
-    });
+  const onDisconnect = () => {
+    broadcastEvent('disconnect', undefined);
+  };
 
-    evmProvider.on('connect', (info: { chainId: string }) => {
-      broadcastEvent('connect', info);
-    });
+  const onConnect = (info: { chainId: string }) => {
+    broadcastEvent('connect', info);
+  };
+
+  if (evmRef) {
+    evmRef.on('accountsChanged', onAccountsChanged);
+    evmRef.on('chainChanged', onChainChanged);
+    evmRef.on('disconnect', onDisconnect);
+    evmRef.on('connect', onConnect);
   }
+
+  // Store cleanup function to remove all listeners before next attach
+  cleanupSessionListeners = () => {
+    sessionRef.off('phase', onPhase);
+    sessionRef.off('sessionFingerprint', onFingerprint);
+    sessionRef.off('walletJoined', onWalletJoined);
+    if (evmRef) {
+      evmRef.removeListener('accountsChanged', onAccountsChanged);
+      evmRef.removeListener('chainChanged', onChainChanged);
+      evmRef.removeListener('disconnect', onDisconnect);
+      evmRef.removeListener('connect', onConnect);
+    }
+  };
 }
 
 function handleSessionClosed() {
@@ -310,6 +347,9 @@ async function tryReconnect(): Promise<boolean> {
 
 // ── Confirmation Popup ──────────────────────────────────────────────────
 
+/** Confirmation popup timeout (5 minutes) */
+const CONFIRM_TIMEOUT_MS = 5 * 60 * 1000;
+
 function requestUserConfirmation(
   method: string,
   params: unknown,
@@ -320,7 +360,19 @@ function requestUserConfirmation(
   const confirmId = `confirm-${Array.from(buf, b => b.toString(16).padStart(2, '0')).join('')}`;
 
   return new Promise((resolve) => {
-    pendingConfirmations.set(confirmId, { id: confirmId, method, params, origin, resolve });
+    // Fix #8: Timeout so popups don't hang forever if user ignores them
+    const timeoutTimer = setTimeout(() => {
+      const pending = pendingConfirmations.get(confirmId);
+      if (pending) {
+        pendingConfirmations.delete(confirmId);
+        if (pending.windowId) {
+          chrome.windows.remove(pending.windowId).catch(() => {});
+        }
+        resolve({ error: { code: 4001, message: 'Confirmation timed out' } });
+      }
+    }, CONFIRM_TIMEOUT_MS);
+
+    pendingConfirmations.set(confirmId, { id: confirmId, method, params, origin, resolve, timeoutTimer });
 
     chrome.windows.create({
       url: chrome.runtime.getURL(`/confirm.html?id=${confirmId}`),
@@ -331,10 +383,12 @@ function requestUserConfirmation(
     }).then(
       (win: { id?: number }) => {
         const pending = pendingConfirmations.get(confirmId);
+        // Fix #9: If confirmation was already resolved (e.g. by timeout), skip
         if (pending) pending.windowId = win?.id;
       },
       () => {
         // If popup fails to open, reject the request
+        clearTimeout(timeoutTimer);
         pendingConfirmations.delete(confirmId);
         resolve({ error: { code: -32603, message: 'Failed to open confirmation popup' } });
       },
@@ -576,7 +630,7 @@ export default defineBackground(() => {
 
   // Handle messages from popup and fallback from content scripts
   chrome.runtime.onMessage.addListener((msg: BackgroundMessage, sender, sendResponse) => {
-    (async () => {
+    (async () => { try {
       switch (msg.action) {
         case 'get-state':
           sendResponse(state);
@@ -599,6 +653,18 @@ export default defineBackground(() => {
           break;
 
         case 'disconnect':
+          // Fix #7: Full cleanup on disconnect
+          if (cleanupSessionListeners) {
+            cleanupSessionListeners();
+            cleanupSessionListeners = null;
+          }
+          resetReconnectBackoff();
+          // Reject all pending confirmations
+          for (const [cid, pc] of pendingConfirmations) {
+            if (pc.timeoutTimer) clearTimeout(pc.timeoutTimer);
+            pc.resolve({ error: { code: 4001, message: 'Disconnected' } });
+            pendingConfirmations.delete(cid);
+          }
           if (session) {
             session.close();
             session = null;
@@ -649,6 +715,7 @@ export default defineBackground(() => {
           const pending = pendingConfirmations.get(msg.id);
           if (pending) {
             pendingConfirmations.delete(msg.id);
+            if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
             const response = await forwardToWallet(pending.method, pending.params as unknown[] | Record<string, unknown> | undefined);
             pending.resolve(response);
           }
@@ -660,6 +727,7 @@ export default defineBackground(() => {
           const pending = pendingConfirmations.get(msg.id);
           if (pending) {
             pendingConfirmations.delete(msg.id);
+            if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
             pending.resolve({ error: { code: 4001, message: 'User rejected the request' } });
             if (pending.windowId) {
               chrome.windows.remove(pending.windowId).catch((e) => console.warn('[WalletPair]', e));
@@ -672,7 +740,11 @@ export default defineBackground(() => {
         default:
           sendResponse({ error: 'Unknown action' });
       }
-    })();
+    } catch (err) {
+      // Fix #6: Catch unhandled errors so sendResponse is always called
+      console.error('[WalletPair] Unhandled error in message handler:', err);
+      sendResponse({ error: { code: -32603, message: 'Internal error' } });
+    } })();
     return true; // Keep channel open for async
   });
 
@@ -681,6 +753,7 @@ export default defineBackground(() => {
     for (const [id, pending] of pendingConfirmations) {
       if (pending.windowId === windowId) {
         pendingConfirmations.delete(id);
+        if (pending.timeoutTimer) clearTimeout(pending.timeoutTimer);
         pending.resolve({ error: { code: 4001, message: 'User rejected the request' } });
       }
     }
@@ -708,7 +781,7 @@ export default defineBackground(() => {
   tryReconnect().then((ok) => {
     if (ok) {
       console.log('[WalletPair] Session restored after SW wake');
-      chrome.alarms.create('walletpair-keepalive', { periodInMinutes: 0.33 });
+      // Alarm is already created in the 'connected' phase handler; no duplicate needed
     }
   });
 });
