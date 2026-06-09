@@ -87,7 +87,7 @@
       </div>
     {:else if state.phase === 'pairing'}
       <div class="animate-slide">
-        <QrPairing uri={state.pairingUri ?? ''} fingerprint={state.sessionFingerprint} />
+        <QrPairing uri={state.pairingUri ?? ''} fingerprint={state.sessionFingerprint} onCancel={disconnect} />
       </div>
     {:else if state.phase === 'pending_accept'}
       <PendingAccept

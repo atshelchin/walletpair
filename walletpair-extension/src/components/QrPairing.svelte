@@ -1,8 +1,8 @@
 <script lang="ts">
   import QRCode from 'qrcode';
-  import { Copy, Check } from 'lucide-svelte';
+  import { Copy, Check, ArrowLeft } from 'lucide-svelte';
 
-  let { uri, fingerprint }: { uri: string; fingerprint?: string } = $props();
+  let { uri, fingerprint, onCancel }: { uri: string; fingerprint?: string; onCancel?: () => void } = $props();
 
   let qrDataUrl = $state('');
   let copied = $state(false);
@@ -54,15 +54,24 @@
     </div>
   {/if}
 
-  <button class="copy-btn" onclick={copyUri}>
-    {#if copied}
-      <Check size={13} strokeWidth={2} color="var(--green)" />
-      Copied
-    {:else}
-      <Copy size={13} strokeWidth={1.5} />
-      Copy Link
-    {/if}
-  </button>
+  <div class="actions-row">
+    <button class="copy-btn" onclick={copyUri}>
+      {#if copied}
+        <Check size={13} strokeWidth={2} color="var(--green)" />
+        Copied
+      {:else}
+        <Copy size={13} strokeWidth={1.5} />
+        Copy Link
+      {/if}
+    </button>
+  </div>
+
+  {#if onCancel}
+    <button class="cancel-btn" onclick={onCancel}>
+      <ArrowLeft size={14} strokeWidth={1.5} />
+      Cancel
+    </button>
+  {/if}
 </div>
 
 <style>
@@ -168,6 +177,25 @@
   .copy-btn:hover {
     background: var(--bg-hover);
     color: var(--text);
+  }
+
+  .actions-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .cancel-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    color: var(--text-dimmer);
+    font-size: 12px;
+    padding: 6px 0;
+  }
+  .cancel-btn:hover {
+    color: var(--text-dim);
   }
 
   .spinner {
