@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      lucide-svelte:
+        specifier: ^1.0.1
+        version: 1.0.1(svelte@5.55.8)
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -1566,6 +1569,12 @@ packages:
   log-update@6.1.0:
     resolution: {integrity: sha512-9ie8ItPR6tjY5uYJh8K/Zrv/RMZ5VOlOWvtZdEHYSTFKZfIBPQa9tOAEeAWhd+AnIneLJ22w5fjOYtoutpWq5w==}
     engines: {node: '>=18'}
+
+  lucide-svelte@1.0.1:
+    resolution: {integrity: sha512-WvzZgk0pqzgda+AErLvgWxHkfg/+GgUwqKMRHvzt0IqyMdmyEDzDCk3Z+Wo/3y753oIgx8u9Q4eUbWkghFa8Jg==}
+    deprecated: Package deprecated. Please use @lucide/svelte instead.
+    peerDependencies:
+      svelte: ^3 || ^4 || ^5.0.0-next.42
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -3614,6 +3623,10 @@ snapshots:
       slice-ansi: 7.1.2
       strip-ansi: 7.2.0
       wrap-ansi: 9.0.2
+
+  lucide-svelte@1.0.1(svelte@5.55.8):
+    dependencies:
+      svelte: 5.55.8
 
   magic-string@0.30.21:
     dependencies:

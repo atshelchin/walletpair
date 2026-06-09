@@ -1,5 +1,6 @@
 <script lang="ts">
   import QRCode from 'qrcode';
+  import { Copy, Check } from 'lucide-svelte';
 
   let { uri, fingerprint }: { uri: string; fingerprint?: string } = $props();
 
@@ -55,12 +56,10 @@
 
   <button class="copy-btn" onclick={copyUri}>
     {#if copied}
-      <svg viewBox="0 0 16 16" width="13" height="13" fill="var(--green)"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+      <Check size={13} strokeWidth={2} color="var(--green)" />
       Copied
     {:else}
-      <svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">
-        <path d="M4 4v-2a1 1 0 011-1h7a1 1 0 011 1v8a1 1 0 01-1 1h-2v2a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1h1zm1 0h4a1 1 0 011 1v5h1V2H5v2z" />
-      </svg>
+      <Copy size={13} strokeWidth={1.5} />
       Copy Link
     {/if}
   </button>

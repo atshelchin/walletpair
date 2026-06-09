@@ -3,6 +3,7 @@
   import ActivityLog from './ActivityLog.svelte';
   import SigningToast from './SigningToast.svelte';
   import { getActivityLog } from '@/lib/storage';
+  import { Copy, Check } from 'lucide-svelte';
 
   let {
     wallet,
@@ -75,13 +76,9 @@
       <button class="address-btn" onclick={copyAddress} title="Copy address">
         <span class="address">{shortAddress}</span>
         {#if copied}
-          <svg viewBox="0 0 16 16" width="12" height="12" fill="var(--green)">
-            <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
-          </svg>
+          <Check size={12} strokeWidth={2} color="var(--green)" />
         {:else}
-          <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" opacity="0.5">
-            <path d="M4 4v-2a1 1 0 011-1h7a1 1 0 011 1v8a1 1 0 01-1 1h-2v2a1 1 0 01-1 1H3a1 1 0 01-1-1V5a1 1 0 011-1h1zm1 0h4a1 1 0 011 1v5h1V2H5v2z" />
-          </svg>
+          <Copy size={12} strokeWidth={1.5} />
         {/if}
       </button>
     </div>

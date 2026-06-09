@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getSettings, saveSettings } from '@/lib/storage';
   import { DEFAULT_RELAY_URL } from '@/lib/constants';
+  import { ArrowLeft, Info } from 'lucide-svelte';
 
   let { onBack }: { onBack: () => void } = $props();
 
@@ -27,18 +28,16 @@
 <div class="settings">
   <div class="settings-header">
     <button class="back-btn" onclick={onBack} aria-label="Back">
-      <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor">
-        <path d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.56 7.25h8.69a.75.75 0 010 1.5H4.56l3.22 3.22a.75.75 0 010 1.06z"/>
-      </svg>
+      <ArrowLeft size={16} strokeWidth={1.5} />
     </button>
     <span class="settings-title">Settings</span>
   </div>
 
   <div class="settings-body">
     <div class="info-card">
-      <svg viewBox="0 0 16 16" width="14" height="14" fill="var(--accent)" style="flex-shrink: 0; margin-top: 1px;">
-        <path d="M8 1a7 7 0 100 14A7 7 0 008 1zm-.75 3.75a.75.75 0 011.5 0v.5a.75.75 0 01-1.5 0v-.5zM8 7a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0v-3.5A.75.75 0 018 7z"/>
-      </svg>
+      <span style="flex-shrink: 0; margin-top: 1px; display: flex;">
+        <Info size={14} strokeWidth={2} color="var(--accent)" />
+      </span>
       <p>WalletPair is a transparent bridge. Signing and transaction confirmations happen in your wallet, not here.</p>
     </div>
 
