@@ -100,7 +100,7 @@
     gap: 10px;
     padding: 10px 14px;
     background: var(--accent-dim);
-    border: 1px solid rgba(99, 102, 241, 0.12);
+    border: 1px solid rgba(37, 99, 235, 0.12);
     border-radius: 10px;
     font-size: 12px;
     line-height: 1.5;
@@ -163,10 +163,10 @@
     border-radius: 10px;
     width: 100%;
     margin-top: auto;
-    box-shadow: 0 2px 10px rgba(99, 102, 241, 0.2);
+    box-shadow: 0 2px 10px rgba(37, 99, 235, 0.2);
   }
   .btn-save:hover {
     background: var(--accent-hover);
-    box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 4px 16px rgba(37, 99, 235, 0.3);
   }
 </style>

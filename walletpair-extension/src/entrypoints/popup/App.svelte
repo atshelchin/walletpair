@@ -49,9 +49,9 @@
     <div class="header-left">
       <div class="logo">
         <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
-          <rect width="24" height="24" rx="7" fill="#6366f1" />
+          <rect width="24" height="24" rx="7" fill="#2563eb" />
           <path d="M7 12L12 7L17 12L12 17Z" fill="white" opacity="0.9" />
-          <circle cx="12" cy="12" r="2" fill="#6366f1" />
+          <circle cx="12" cy="12" r="2" fill="#2563eb" />
         </svg>
       </div>
       <span class="header-title">WalletPair</span>
@@ -146,7 +146,7 @@
     justify-content: space-between;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
-    background: linear-gradient(180deg, rgba(99, 102, 241, 0.03) 0%, transparent 100%);
+    background: linear-gradient(180deg, rgba(37, 99, 235, 0.03) 0%, transparent 100%);
   }
 
   .header-left {
@@ -157,7 +157,7 @@
 
   .logo {
     display: flex;
-    filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.3));
+    filter: drop-shadow(0 0 6px rgba(37, 99, 235, 0.3));
   }
 
   .header-title {
@@ -205,7 +205,7 @@
     transform: translateX(-50%);
     width: 200px;
     height: 200px;
-    background: radial-gradient(circle, rgba(99, 102, 241, 0.08) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(37, 99, 235, 0.08) 0%, transparent 70%);
     pointer-events: none;
   }
 
@@ -266,11 +266,11 @@
     margin-top: 12px;
     position: relative;
     z-index: 1;
-    box-shadow: 0 2px 12px rgba(99, 102, 241, 0.25);
+    box-shadow: 0 2px 12px rgba(37, 99, 235, 0.25);
   }
   .btn-primary:hover:not(:disabled) {
     background: var(--accent-hover);
-    box-shadow: 0 4px 20px rgba(99, 102, 241, 0.35);
+    box-shadow: 0 4px 20px rgba(37, 99, 235, 0.35);
     transform: translateY(-1px);
   }
   .btn-primary:disabled {

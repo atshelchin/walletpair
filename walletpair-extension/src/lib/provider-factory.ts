@@ -273,7 +273,7 @@ export function createProvider(postMessage: PostMessageFn) {
 export const PROVIDER_ICON =
   'data:image/svg+xml,' +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="24" fill="#6366f1"/><path d="M27 48 L48 27 L69 48 L48 69Z" fill="white" opacity="0.9"/><circle cx="48" cy="48" r="9" fill="#6366f1"/></svg>`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96"><rect width="96" height="96" rx="24" fill="#2563eb"/><path d="M27 48 L48 27 L69 48 L48 69Z" fill="white" opacity="0.9"/><circle cx="48" cy="48" r="9" fill="#2563eb"/></svg>`,
   );
 
 export const PROVIDER_INFO = Object.freeze({

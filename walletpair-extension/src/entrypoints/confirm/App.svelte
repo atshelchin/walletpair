@@ -47,9 +47,9 @@
 <div class="confirm">
   <header class="header">
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
-      <rect width="24" height="24" rx="6" fill="#6366f1" />
+      <rect width="24" height="24" rx="6" fill="#2563eb" />
       <path d="M7 12L12 7L17 12L12 17Z" fill="white" opacity="0.9" />
-      <circle cx="12" cy="12" r="2.2" fill="#6366f1" />
+      <circle cx="12" cy="12" r="2.2" fill="#2563eb" />
     </svg>
     <span class="header-title">{formatMethod(method)}</span>
   </header>
