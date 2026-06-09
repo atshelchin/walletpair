@@ -2,6 +2,7 @@
   import type { ActivityEntry } from '@/lib/types';
 
   let { entries = [] }: { entries: ActivityEntry[] } = $props();
+  let expandedId = $state<string | null>(null);
 
   function relativeTime(ts: number): string {
     const diff = Math.floor((Date.now() - ts) / 1000);
@@ -28,6 +29,23 @@
   function shortOrigin(origin: string): string {
     try { return new URL(origin).hostname; } catch { return origin; }
   }
+
+  function formatJson(value: unknown): string {
+    if (value === undefined || value === null) return '—';
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function toggleExpand(id: string) {
+    expandedId = expandedId === id ? null : id;
+  }
+
+  function hasDetail(entry: ActivityEntry): boolean {
+    return entry.params !== undefined || entry.result !== undefined || entry.error !== undefined;
+  }
 </script>
 
 {#if entries.length > 0}
@@ -35,7 +53,13 @@
     <h4 class="activity-title">Activity</h4>
     <div class="activity-list">
       {#each entries.slice(0, 20) as entry}
-        <div class="activity-row">
+        <button
+          class="activity-row"
+          class:expandable={hasDetail(entry)}
+          class:expanded={expandedId === entry.id}
+          onclick={() => hasDetail(entry) && toggleExpand(entry.id)}
+          type="button"
+        >
           <div class="activity-left">
             <span class="badge {entry.category}">{categoryLabel(entry.category)}</span>
             <span class="method">{shortMethod(entry.method)}</span>
@@ -47,7 +71,37 @@
             </span>
             <span class="time">{relativeTime(entry.timestamp)}</span>
           </div>
-        </div>
+        </button>
+        {#if expandedId === entry.id}
+          <div class="detail-panel">
+            <div class="detail-field">
+              <span class="detail-label">Method</span>
+              <code class="detail-value">{entry.method}</code>
+            </div>
+            <div class="detail-field">
+              <span class="detail-label">Origin</span>
+              <code class="detail-value">{entry.origin}</code>
+            </div>
+            {#if entry.params !== undefined}
+              <div class="detail-field">
+                <span class="detail-label">Params</span>
+                <pre class="detail-pre">{formatJson(entry.params)}</pre>
+              </div>
+            {/if}
+            {#if entry.result !== undefined}
+              <div class="detail-field">
+                <span class="detail-label">Result</span>
+                <pre class="detail-pre result">{formatJson(entry.result)}</pre>
+              </div>
+            {/if}
+            {#if entry.error}
+              <div class="detail-field">
+                <span class="detail-label">Error</span>
+                <pre class="detail-pre error">{formatJson(entry.error)}</pre>
+              </div>
+            {/if}
+          </div>
+        {/if}
       {/each}
     </div>
   </div>
@@ -70,7 +124,7 @@
   }
 
   .activity-list {
-    max-height: 200px;
+    max-height: 320px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
@@ -87,6 +141,25 @@
     height: 28px;
     padding: 0 8px;
     font-size: 12px;
+    background: none;
+    border: none;
+    color: inherit;
+    width: 100%;
+    cursor: default;
+    text-align: left;
+    font-family: inherit;
+  }
+
+  .activity-row.expandable {
+    cursor: pointer;
+  }
+
+  .activity-row.expandable:hover {
+    background: var(--bg-hover, rgba(128, 128, 128, 0.06));
+  }
+
+  .activity-row.expanded {
+    background: var(--bg-hover, rgba(128, 128, 128, 0.06));
   }
 
   .activity-row:not(:last-child) {
@@ -183,6 +256,60 @@
     white-space: nowrap;
     min-width: 32px;
     text-align: right;
+  }
+
+  /* Detail panel */
+  .detail-panel {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-hover, rgba(128, 128, 128, 0.03));
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .detail-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .detail-label {
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-dimmer);
+  }
+
+  .detail-value {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    word-break: break-all;
+  }
+
+  .detail-pre {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 10px;
+    color: var(--text-dim);
+    margin: 0;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+
+  .detail-pre.result {
+    border-left: 2px solid var(--green);
+  }
+
+  .detail-pre.error {
+    border-left: 2px solid var(--red);
   }
 
   @keyframes pulse {

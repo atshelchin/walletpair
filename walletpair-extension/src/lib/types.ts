@@ -83,4 +83,7 @@ export interface ActivityEntry {
   method: string;
   category: 'read' | 'sign' | 'tx' | 'auth' | 'local';
   status: 'pending' | 'success' | 'rejected' | 'error';
+  params?: unknown;
+  result?: unknown;
+  error?: { code: number; message: string };
 }

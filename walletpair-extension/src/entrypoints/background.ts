@@ -441,6 +441,7 @@ async function handleRpcRequest(
       method,
       category,
       status: 'pending',
+      params,
     }).catch(() => {});
   }
 
@@ -480,11 +481,12 @@ async function handleRpcRequest(
     const chainId = connectedWallet?.chainId ?? 1;
     try {
       const result = await proxyRpcCall(chainId, method, params);
-      if (shouldLog) updateActivityStatus(activityId, 'success').catch(() => {});
+      if (shouldLog) updateActivityStatus(activityId, 'success', { result }).catch(() => {});
       return { result };
     } catch (err: any) {
-      if (shouldLog) updateActivityStatus(activityId, 'error').catch(() => {});
-      return { error: { code: err.code ?? -32603, message: err.message ?? 'RPC proxy error' } };
+      const error = { code: err.code ?? -32603, message: err.message ?? 'RPC proxy error' };
+      if (shouldLog) updateActivityStatus(activityId, 'error', { error }).catch(() => {});
+      return { error };
     }
   }
 
@@ -510,27 +512,30 @@ async function handleRpcRequest(
             grantPermission(origin).catch((e) => console.warn('[WalletPair]', e));
           }
           if (shouldLog) {
-            updateActivityStatus(activityId, response.error ? 'error' : 'success').catch(() => {});
+            updateActivityStatus(activityId, response.error ? 'error' : 'success', response).catch(() => {});
           }
           resolve(response);
         }, origin);
       });
     }
 
-    if (shouldLog) updateActivityStatus(activityId, 'error').catch(() => {});
+    const notConnectedError = { code: 4100, message: 'Not connected. Call eth_requestAccounts first.' };
+    if (shouldLog) updateActivityStatus(activityId, 'error', { error: notConnectedError }).catch(() => {});
     if (category === 'sign' || category === 'tx') updateState({ signingInProgress: undefined });
-    return { error: { code: 4100, message: 'Not connected. Call eth_requestAccounts first.' } };
+    return { error: notConnectedError };
   }
 
   // ── wallet_requestPermissions: trigger accounts request ───────────────
   if (method === 'wallet_requestPermissions') {
     try {
       await evmProvider!.request({ method: 'eth_requestAccounts', params: [] });
-      if (shouldLog) updateActivityStatus(activityId, 'success').catch(() => {});
-      return { result: [{ parentCapability: 'eth_accounts' }] };
+      const permResult = [{ parentCapability: 'eth_accounts' }];
+      if (shouldLog) updateActivityStatus(activityId, 'success', { result: permResult }).catch(() => {});
+      return { result: permResult };
     } catch (err: any) {
-      if (shouldLog) updateActivityStatus(activityId, 'error').catch(() => {});
-      return { error: { code: err.code ?? -32603, message: err.message ?? 'Request failed' } };
+      const error = { code: err.code ?? -32603, message: err.message ?? 'Request failed' };
+      if (shouldLog) updateActivityStatus(activityId, 'error', { error }).catch(() => {});
+      return { error };
     }
   }
 
@@ -538,9 +543,10 @@ async function handleRpcRequest(
   // Signing and transaction confirmation happens in the real wallet, not here.
   // The extension is a transparent bridge — it only forwards requests.
   if (!permitted && method !== 'eth_requestAccounts') {
-    if (shouldLog) updateActivityStatus(activityId, 'error').catch(() => {});
+    const notPermittedError = { code: 4100, message: 'Not permitted. Call eth_requestAccounts first.' };
+    if (shouldLog) updateActivityStatus(activityId, 'error', { error: notPermittedError }).catch(() => {});
     if (category === 'sign' || category === 'tx') updateState({ signingInProgress: undefined });
-    return { error: { code: 4100, message: 'Not permitted. Call eth_requestAccounts first.' } };
+    return { error: notPermittedError };
   }
   try {
     const result = await evmProvider!.request({ method, params });
@@ -562,18 +568,17 @@ async function handleRpcRequest(
       }
     }
 
-    if (shouldLog) updateActivityStatus(activityId, 'success').catch(() => {});
+    if (shouldLog) updateActivityStatus(activityId, 'success', { result }).catch(() => {});
     if (category === 'sign' || category === 'tx') updateState({ signingInProgress: undefined });
     return { result };
   } catch (err: any) {
+    const error = { code: err.code ?? -32603, message: err.message ?? 'Request failed' };
     if (shouldLog) {
       const status = err.code === 4001 ? 'rejected' : 'error';
-      updateActivityStatus(activityId, status).catch(() => {});
+      updateActivityStatus(activityId, status, { error }).catch(() => {});
     }
     if (category === 'sign' || category === 'tx') updateState({ signingInProgress: undefined });
-    return {
-      error: { code: err.code ?? -32603, message: err.message ?? 'Request failed' },
-    };
+    return { error };
   }
 }
 

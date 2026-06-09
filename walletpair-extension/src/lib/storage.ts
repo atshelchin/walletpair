@@ -139,12 +139,18 @@ export function addActivityEntry(entry: ActivityEntry): Promise<void> {
   });
 }
 
-export function updateActivityStatus(id: string, status: ActivityEntry['status']): Promise<void> {
+export function updateActivityStatus(
+  id: string,
+  status: ActivityEntry['status'],
+  response?: { result?: unknown; error?: { code: number; message: string } },
+): Promise<void> {
   return withActivityLock(async () => {
     const log = await getActivityLog();
     const entry = log.find(e => e.id === id);
     if (entry) {
       entry.status = status;
+      if (response?.result !== undefined) entry.result = response.result;
+      if (response?.error) entry.error = response.error;
       await chrome.storage.local.set({ [ACTIVITY_KEY]: log });
     }
   });
