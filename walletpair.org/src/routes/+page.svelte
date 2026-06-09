@@ -72,7 +72,6 @@ session.on('request', ({ id, method, params }) => {
 
 <!-- Hero -->
 <section class="hero">
-	<img src="/logo.png" alt="WalletPair" class="hero-logo" />
 	<h1 class="hero-title">WalletPair</h1>
 	<p class="hero-sub">
 		Connect dApps to wallets.<br />
@@ -140,13 +139,6 @@ session.on('request', ({ id, method, params }) => {
 		padding: var(--space-24) var(--space-6) var(--space-16);
 		max-width: var(--max-w-wide);
 		margin: 0 auto;
-	}
-
-	.hero-logo {
-		width: 72px;
-		height: 72px;
-		margin-bottom: var(--space-4);
-		border-radius: var(--radius-lg);
 	}
 
 	.hero-title {
