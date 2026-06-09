@@ -16,7 +16,7 @@
     "vitest": "latest",
     "zile": "latest"
   },
-  "packageManager": "npm@11.14.1",
+  "packageManager": "pnpm@10.12.1",
   "[!start-pkg]": "",
   "name": "walletpair-sdk",
   "type": "module",
