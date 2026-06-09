@@ -607,7 +607,16 @@ function flushDeferredRequests() {
   }
 }
 
-function openPopup() {
+async function openPopup() {
+  // Prefer side panel; fall back to popup window
+  try {
+    const win = await chrome.windows.getCurrent();
+    if (win.id != null) {
+      await (chrome.sidePanel as any).open({ windowId: win.id });
+      return;
+    }
+  } catch { /* side panel not available */ }
+
   chrome.action.openPopup().catch(() => {
     chrome.windows.create({
       url: chrome.runtime.getURL('/popup.html'),
@@ -615,13 +624,16 @@ function openPopup() {
       width: 380,
       height: 600,
       focused: true,
-    }).catch((e) => console.warn('[WalletPair]', e));
+    }).catch((e: any) => console.warn('[WalletPair]', e));
   });
 }
 
 // ── Port & Message Handlers ──────────────────────────────────────────────
 
 export default defineBackground(() => {
+  // Default to side panel mode: clicking the extension icon opens side panel
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+
   // Handle port connections from content scripts
   chrome.runtime.onConnect.addListener((port) => {
     if (port.name !== 'walletpair-content') return;

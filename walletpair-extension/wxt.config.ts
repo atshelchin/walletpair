@@ -18,4 +18,12 @@ export default defineConfig({
       },
     ],
   },
+  hooks: {
+    'build:manifestGenerated': (wxt, manifest) => {
+      // Remove default_popup so clicking the icon opens the side panel instead
+      if (manifest.action) {
+        delete (manifest.action as any).default_popup;
+      }
+    },
+  },
 });
