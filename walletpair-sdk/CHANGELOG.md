@@ -1,5 +1,11 @@
 # walletpair-sdk
 
+## 1.0.6
+
+### Patch Changes
+
+- Add rpcUrls to Capabilities for local read-only RPC proxying, and relax tx validation to only require chainId (type/value/data are optional per EIP-1559 dApp conventions)
+
 ## 1.0.5
 
 ### Patch Changes
