@@ -301,8 +301,22 @@ export class ChannelDO extends DurableObject<Env> {
       try {
         dappWs.send(rawText);
       } catch {
-        // dApp disconnected
+        // dApp WebSocket send failed — revert to waiting so wallet can retry
+        this.walletPeerId = null;
+        this.isReconnect = false;
+        this.channelState = "waiting";
+        this.sendAndClose(ws, buildTerminate(ch, "channel_not_found"));
+        await this.persistState();
+        return;
       }
+    } else {
+      // dApp WebSocket not found (e.g. closed during hibernation) — reject wallet
+      this.walletPeerId = null;
+      this.isReconnect = false;
+      this.channelState = "waiting";
+      this.sendAndClose(ws, buildTerminate(ch, "channel_not_found"));
+      await this.persistState();
+      return;
     }
 
     // Send ready.waiting to wallet
@@ -577,13 +591,16 @@ export class ChannelDO extends DurableObject<Env> {
   // --- Helpers ---
 
   private findPeerWs(role: Role): WebSocket | null {
-    for (const ws of this.ctx.getWebSockets()) {
+    const sockets = this.ctx.getWebSockets();
+    for (const ws of sockets) {
       const att = this.getAttachment(ws);
       if (att?.role === role) {
         // Check if the WebSocket is still open (readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED)
         if (ws.readyState <= 1) return ws;
+        console.log(`[relay] findPeerWs(${role}): found but readyState=${ws.readyState}`);
       }
     }
+    console.log(`[relay] findPeerWs(${role}): not found among ${sockets.length} sockets`);
     return null;
   }
 
