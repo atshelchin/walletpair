@@ -27,8 +27,8 @@ importers:
         specifier: ^1.5.4
         version: 1.5.4
       walletpair-sdk:
-        specifier: ^1.0.10
-        version: 1.0.10
+        specifier: ^1.1.0
+        version: 1.1.0
     devDependencies:
       '@eslint/compat':
         specifier: ^2.0.4
@@ -1701,8 +1701,8 @@ packages:
       jsdom:
         optional: true
 
-  walletpair-sdk@1.0.10:
-    resolution: {integrity: sha512-4uVzu3F+4YMtl1oLPEXWlofWs3L/kVa2tQNf9tY12i/oxFwgqPkXaN9QkxTu5Ek9D0PXhmYipGbEz9+doWggoA==}
+  walletpair-sdk@1.1.0:
+    resolution: {integrity: sha512-PKXBtqymvqKL5SEPblAhSu7aRykrrRtk4IDiKIAaPswWGsxEIpm8zYTJCrxU8vg59OmaQ1p0ama3eRMWJY+DVQ==}
     peerDependencies:
       '@wagmi/core': '>=2.0.0'
     peerDependenciesMeta:
@@ -3194,7 +3194,7 @@ snapshots:
     transitivePeerDependencies:
       - msw
 
-  walletpair-sdk@1.0.10:
+  walletpair-sdk@1.1.0:
     dependencies:
       '@noble/ciphers': 1.3.0
       '@noble/curves': 1.9.7
