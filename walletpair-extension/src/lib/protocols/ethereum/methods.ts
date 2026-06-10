@@ -2,6 +2,14 @@
  * EVM method constants — extracted from background.ts, rpc-proxy.ts, and provider-factory.ts.
  *
  * Single source of truth for which methods belong to which category.
+ *
+ * Methods NOT listed in any set below are forwarded to the wallet over the
+ * WalletPair channel by default. That includes the EIP-5792 extension methods
+ * `wallet_sendCalls` and `wallet_getCallsStatus` (only the wallet can submit /
+ * resolve a batch). EIP-2255 (`wallet_getPermissions` / `wallet_requestPermissions`)
+ * is NOT a protocol method — it is kept only as a thin compatibility shim
+ * (getPermissions answered locally; requestPermissions mapped to
+ * eth_requestAccounts) and is never advertised in capabilities.
  */
 
 /** Methods that require user confirmation popup before forwarding to wallet */

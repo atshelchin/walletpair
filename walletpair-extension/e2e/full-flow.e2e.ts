@@ -434,6 +434,28 @@ async function runTests() {
     assert(accounts[0].startsWith('0x'), `first account is ${accounts[0]}`);
   });
 
+  await test('B.11b eth_getCode returns smart-wallet bytecode (counterfactual)', async () => {
+    // The wallet advertised contractBytecode in its capabilities, so even though
+    // the smart account isn't deployed on-chain yet, eth_getCode for the account
+    // MUST return non-empty code — otherwise dApps treat it as an EOA and pick
+    // the wrong (ECDSA) signature-verification path instead of EIP-1271.
+    const r = await dappPage.evaluate(async () => {
+      try {
+        const accounts = await (window as any).dappE2E.getAccounts();
+        const code = await (window as any).dappE2E.getCode(accounts[0]);
+        return { ok: true, code };
+      } catch (e: any) {
+        return { ok: false, e: e.message };
+      }
+    });
+    assert((r as any).ok, `getCode failed: ${(r as any).e}`);
+    const code = (r as any).code;
+    assert(
+      typeof code === 'string' && code !== '0x' && code.length > 2,
+      `expected non-empty code so the account is detected as a contract, got ${code}`,
+    );
+  });
+
   // =================================================================
   //  Section C: Message Signing (tests 12-15)
   // =================================================================

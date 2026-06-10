@@ -561,8 +561,8 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
       )
       return
     }
-    const { _method: _, ...rest } = payload
-    const params: unknown = rest
+    const { _method: _, _params, ...rest } = payload as { _method: string; _params?: unknown } & Record<string, unknown>
+    const params: unknown = _params !== undefined ? _params : rest
     const paramsHash = sha256Hex(plaintext)
 
     const cachedBroadcast = this.broadcastResponseCache.get(requestId)
@@ -772,6 +772,14 @@ export class WalletSession extends Emitter<WalletSessionEvents> {
     }
     const result: Capabilities = { methods: base.methods, events: base.events, chains: base.chains }
     if (base.version != null) result.version = base.version
+    // Pass-through wallet metadata — these are not scope-negotiated and the dApp
+    // side depends on them: rpcUrls (local read-only proxy), walletCapabilities
+    // (wallet_getCapabilities / EIP-5792), and contractBytecode (eth_getCode for
+    // a counterfactual smart contract wallet). Dropping them silently breaks all
+    // three on the dApp side.
+    if (base.rpcUrls != null) result.rpcUrls = base.rpcUrls
+    if (base.walletCapabilities != null) result.walletCapabilities = base.walletCapabilities
+    if (base.contractBytecode != null) result.contractBytecode = base.contractBytecode
     return result
   }
 

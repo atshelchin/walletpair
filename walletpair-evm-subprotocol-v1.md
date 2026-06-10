@@ -70,6 +70,22 @@ signers cannot broadcast). The dApp MUST check `capabilities.methods`
 before calling `wallet_sendTransaction` and fall back to
 `wallet_signTransaction` if it is not granted.
 
+**Optional extension methods.** Beyond the six core methods, a wallet
+MAY declare optional extension methods in `capabilities.methods` to
+advertise EIP-5792 batched calls (see Section 6.7): `wallet_sendCalls`
+and `wallet_getCallsStatus`. A dApp MUST check `capabilities.methods`
+before calling either. These are distinct from EIP-1193 provider-local
+methods (e.g. `eth_chainId`, `wallet_getCapabilities`), which are
+answered by the provider and are NEVER declared here (see Section 9).
+
+This sub-protocol does NOT define EIP-2255 permission methods
+(`wallet_requestPermissions`, `wallet_getPermissions`,
+`wallet_revokePermissions`). Session authorization is established at
+pairing and is managed via the `accountsChanged` and `disconnect`
+events. A provider MAY expose thin EIP-2255 compatibility shims for
+dApps that still call them (Section 9.2), but they are not protocol
+methods and MUST NOT appear in `capabilities.methods`.
+
 ## 5. Data Encoding
 
 | Data type | Encoding |
@@ -276,6 +292,27 @@ Wallet MUST also emit `chainChanged`.
 
 **Errors:** `user_rejected`, `unsupported_chain`, `internal_error`
 
+### 6.7 Optional Extension Methods (EIP-5792)
+
+These methods are OPTIONAL. A wallet that supports one MUST declare it
+in `capabilities.methods`; a dApp MUST NOT call one unless it is
+declared. Both travel over the WalletPair channel — they broadcast or
+poll batched calls, so they cannot be answered provider-locally.
+
+| Method | Spec | User confirmation | Notes |
+|--------|------|-------------------|-------|
+| `wallet_sendCalls` | EIP-5792 | **Required** | Batched atomic calls. Equivalent to sending a transaction; MUST confirm. Params and result follow EIP-5792. |
+| `wallet_getCallsStatus` | EIP-5792 | **None** | Polls the status of a prior `wallet_sendCalls` batch by its returned ID. Read-only over the channel; MUST NOT prompt. |
+
+`wallet_sendCalls` MUST display a confirmation UI (Section 10.1).
+`wallet_getCallsStatus` MUST NOT prompt, but still travels over the
+channel because only the wallet (which submitted the batch) can resolve
+the batch status.
+
+`wallet_getCallsStatus` returns the EIP-5792 status object
+(`{ version, id, chainId, status, atomic, receipts }`). For an unknown
+batch ID the wallet MUST reject with `invalid_params`.
+
 ## 7. Events
 
 Decrypted content: `{ "_event": "<name>", ...data }`.
@@ -327,32 +364,222 @@ On receipt, the dApp MUST NOT send further requests.
 
 Wallets MAY define namespaced extensions (e.g., `metamask:snap_error`).
 
-## 9. RPC Method Routing
+## 9. EIP-1193 Provider Method Coverage
 
-WalletPair only transports **wallet operations** (signing, accounts,
-chain switching). Read-only RPC methods (`eth_call`, `eth_getBalance`,
-`eth_blockNumber`, `eth_getTransactionReceipt`, `eth_estimateGas`,
-etc.) MUST NOT be sent through the WalletPair channel — they do not
-require wallet authorization and would add unnecessary latency over
-a cross-device encrypted relay.
+Most EVM dApps interact with wallets exclusively through the EIP-1193
+`window.ethereum` provider. They do **not** maintain their own RPC
+connections — they rely on the provider for everything from signing to
+`eth_call` and `eth_getBalance`. A WalletPair implementation that
+exposes an EIP-1193 provider (browser extension, SDK adapter) MUST
+therefore handle **all** standard methods, not just wallet operations.
 
-SDK implementations that provide an EIP-1193 adapter MUST route
-methods as follows:
+### 9.1 Method Routing Architecture
 
-| Category | Methods | Route |
-|----------|---------|-------|
-| **Wallet** | `eth_accounts`, `personal_sign`, `eth_signTypedData_v4`, `eth_sendTransaction`, `eth_signTransaction`, `wallet_switchEthereumChain` | WalletPair channel |
-| **Local** | `eth_chainId`, `net_version` | Provider-local state |
-| **Read-only RPC** | Everything else | dApp's own RPC provider |
+The provider operates on two layers:
 
-The adapter SHOULD accept an optional `rpcProvider` parameter. If
-provided, unknown methods are forwarded to it. If not provided,
-unknown methods MUST be rejected with code `4200`
-(`unsupported_method`), not silently sent to the wallet.
+1. **WalletPair channel** (extension ↔ wallet, encrypted relay):
+   Only methods that require private key access or user approval.
+2. **Local / RPC proxy** (extension-side, no relay round-trip):
+   Everything else — local state queries and read-only RPC calls.
 
-DApps that integrate WalletPair directly (without the EIP-1193
-adapter) MUST use their own RPC connection for read-only queries and
-only send `wallet_*` methods through WalletPair.
+```
+  dApp (window.ethereum.request)
+        │
+        ▼
+  ┌─────────────────────────────┐
+  │  EIP-1193 Provider (ext.)   │
+  │                             │
+  │  ┌────────────┐  ┌────────┐ │
+  │  │  Wallet    │  │ Local  │ │
+  │  │  methods   │  │ state  │ │
+  │  │  ──────►   │  │        │ │
+  │  │  WalletPair│  └────────┘ │
+  │  │  channel   │  ┌────────┐ │
+  │  └────────────┘  │ RPC    │ │
+  │                  │ proxy  │ │
+  │                  └────────┘ │
+  └─────────────────────────────┘
+```
+
+### 9.2 Full Method Table
+
+| Category | Methods | Route | Notes |
+|----------|---------|-------|-------|
+| **Auth** | `eth_requestAccounts` | WalletPair channel | Opens pairing / approval UI |
+| **Permissions (compat)** | `wallet_requestPermissions` | WalletPair channel | EIP-2255 compat shim — mapped to `eth_requestAccounts`. Not a protocol method |
+| **Signing** | `personal_sign`, `eth_signTypedData_v4`, `eth_signTypedData_v3` | WalletPair channel | Requires user confirmation |
+| **Transaction** | `eth_sendTransaction`, `eth_signTransaction`, `wallet_sendCalls` (EIP-5792) | WalletPair channel | Requires user confirmation |
+| **Chain switch** | `wallet_switchEthereumChain` | Local + event | Updates local state, emits `chainChanged` |
+| **Local state** | `eth_chainId`, `net_version`, `eth_accounts`, `web3_clientVersion` | Provider-local | Answered from cached session state |
+| **Permissions (compat)** | `wallet_getPermissions` | Provider-local | EIP-2255 compat shim — derives from current accounts. Not a protocol method |
+| **Capabilities** | `wallet_getCapabilities` (EIP-5792) | Provider-local | Returns wallet-declared smart account capabilities |
+| **Batch status** | `wallet_getCallsStatus` (EIP-5792) | WalletPair channel | Polls `wallet_sendCalls` batch status. No prompt |
+| **Read-only RPC** | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getLogs`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_feeHistory`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_newFilter`, `eth_newBlockFilter`, `eth_getFilterChanges`, `eth_uninstallFilter`, `eth_sendRawTransaction`, `eth_syncing` | RPC proxy | Forwarded to public RPC node |
+| **Unsupported** | `eth_getEncryptionPublicKey`, `eth_decrypt`, `eth_sign`, `wallet_addEthereumChain` | Reject | Return code `4200` (`unsupported_method`) |
+| **Unknown** | Any method not listed above | RPC proxy (best-effort) | Forward to RPC; reject with `-32601` on failure |
+
+Implementations MUST support **every method in the Auth, Signing,
+Transaction, Chain switch, Local state, and Read-only RPC categories**.
+A provider that only handles wallet methods will break the majority of
+production dApps (Uniswap, Aave, OpenSea, etc.) which depend on the
+provider for `eth_call`, `eth_estimateGas`, and `eth_getBalance`.
+
+**Active-chain synchronization.** `eth_chainId` and `net_version` are
+answered from cached session state — but that cache is authoritative
+ONLY while it is kept in sync. On session establishment and on resume,
+the provider MUST synchronize the active chain from the wallet before
+answering `eth_chainId` / `net_version` from cache. Thereafter it MUST
+update the cache on every `chainChanged` event (Section 7.2). The
+provider MUST NOT assume a default chain. The session chain remains the
+wallet's to define; the cache merely mirrors it, and the wallet still
+re-validates `chainId` at sign time (Sections 5, 6.2, 10).
+
+### 9.3 Read-Only RPC Proxy
+
+The provider MUST proxy read-only methods to a JSON-RPC endpoint
+for the active chain. The RPC endpoint is resolved in priority order:
+
+1. **Wallet-provided RPC**: The wallet MAY declare per-chain RPC URLs
+   in its capabilities during session establishment (see Section 9.4).
+2. **Built-in defaults**: The provider SHOULD ship a default RPC
+   endpoint table for commonly used chains.
+3. **Fallback discovery**: If both (1) and (2) are unavailable for a
+   chain, the provider MAY attempt to discover an RPC endpoint from a
+   public chain registry (e.g., `ethereum-lists/chains`).
+4. **Rejection**: If no RPC can be found, reject with
+   `{ code: -32603, message: "No RPC available for chain <id>" }`.
+
+Requirements:
+
+- The proxy MUST enforce a request timeout (RECOMMENDED: 30 seconds).
+- The proxy MUST enforce a maximum response size (RECOMMENDED: 2 MB).
+- The proxy MUST NOT cache responses unless the method is explicitly
+  cacheable (e.g., `eth_chainId` for a known chain).
+- The proxy SHOULD handle RPC failures gracefully — if the primary
+  RPC returns an error, try a fallback before returning an error to
+  the dApp.
+
+### 9.4 Wallet-Provided RPC URLs
+
+During session establishment (capabilities exchange), the wallet MAY
+include an `rpcUrls` map in its capabilities:
+
+```json
+{
+  "capabilities": {
+    "version": { "evm": 1 },
+    "methods": ["..."],
+    "chains": ["eip155:1", "eip155:137"],
+    "rpcUrls": {
+      "1": "https://eth-mainnet.g.alchemy.com/v2/...",
+      "137": "https://polygon-mainnet.g.alchemy.com/v2/..."
+    }
+  }
+}
+```
+
+Keys are decimal chain ID strings. Values are JSON-RPC endpoint URLs.
+The provider MUST prefer wallet-provided URLs over built-in defaults
+because the wallet user may have a premium RPC subscription with
+higher rate limits and lower latency.
+
+### 9.5 Chain ID Inference from Requests
+
+Many dApps embed a chain ID in the request payload (e.g.,
+`typedData.domain.chainId` in `eth_signTypedData_v4`, `tx.chainId`
+in `eth_sendTransaction`, `payload.chainId` in `wallet_sendCalls`).
+
+When the provider or wallet receives a signing/transaction request
+with an embedded chain ID that differs from the current session
+chain, it SHOULD:
+
+1. Check whether the wallet supports the embedded chain
+   (`capabilities.chains`).
+2. If supported, auto-switch the session chain and proceed.
+3. If unsupported, reject with error code `4902`
+   (EIP-3085: unrecognized chain ID).
+
+This avoids the common failure where a dApp operates on chain X but
+the wallet session is stuck on chain Y, producing invalid signatures
+(wrong chain in EIP-712 domain hash, wrong Safe message hash, etc.).
+
+### 9.6 Direct Connection (No Extension)
+
+When a dApp connects directly to the wallet via the WalletPair SDK
+— without a browser extension in between — the SDK uses a two-tier
+fallback for read-only methods:
+
+```
+  dApp ─► SDK EIP-1193 Provider
+              │
+              ├─ Has local RPC? ──► proxy locally (fastest)
+              │  (rpcProvider or wallet rpcUrls)
+              │
+              └─ No local RPC ──► forward through relay ──► Wallet
+                                                              │
+                                                              └─► Wallet's own RPC
+```
+
+**Tier 1 — Local RPC proxy (preferred):**
+If the dApp supplies an `rpcProvider`, or the wallet declared
+`rpcUrls` in capabilities (Section 9.4), the SDK intercepts
+read-only methods locally — zero relay latency.
+
+**Tier 2 — Relay forwarding to wallet:**
+If no local RPC is available for the active chain, the SDK forwards
+the method through the WalletPair encrypted channel. The wallet
+receives it, forwards to its own RPC node, and returns the result.
+This adds relay round-trip latency but guarantees the call succeeds.
+
+**Requirements for wallet-side RPC handling (Tier 2):**
+
+The session layer enforces a capability allowlist (protocol §7.1):
+requests whose method is not in `capabilities.methods` are rejected
+with `unsupported_method` before they reach the wallet application. A
+wallet that accepts read-only methods over the channel therefore MUST
+declare those methods in `capabilities.methods` during capability
+negotiation. Explicit declaration is preferred over implicit
+pass-through: the dApp can see exactly what the wallet will serve.
+
+1. The wallet MUST maintain a working RPC endpoint for each chain in
+   `capabilities.chains`.
+2. On receiving a read-only method (`eth_call`, `eth_getBalance`,
+   etc.), the wallet MUST forward it to the appropriate chain's RPC
+   and return the result.
+3. The wallet MUST enforce a timeout (RECOMMENDED: 30 seconds) and
+   a response size limit (RECOMMENDED: 2 MB).
+4. If the wallet cannot handle a method, it MUST reject with
+   `{ code: -32601, message: "Method not supported" }` rather than
+   silently dropping the request.
+
+**Array params serialization:** Read-only methods use JSON-RPC array
+params (e.g., `[{to, data}, "latest"]` for `eth_call`). When sending
+through the WalletPair channel, array params MUST be wrapped as
+`{ _params: [...] }` in the sealed payload (not spread as object
+keys). The receiving side MUST unwrap `_params` if present.
+
+**Method classification for wallet-side routing:**
+
+| Category | Route | Methods |
+|----------|-------|---------|
+| **Requires key/auth** | User approval or batch op, over channel | `personal_sign`, `eth_signTypedData_v4`, `eth_signTypedData_v3`, `eth_sendTransaction`, `eth_signTransaction`, `eth_requestAccounts`, `wallet_requestPermissions` (compat), `wallet_sendCalls`, `wallet_getCallsStatus` |
+| **Session mgmt** | Local state | `eth_accounts`, `eth_chainId`, `net_version`, `wallet_switchEthereumChain`, `wallet_getPermissions` (compat), `wallet_getCapabilities` |
+| **Read-only RPC** | Forward to RPC | `eth_call`, `eth_estimateGas`, `eth_getBalance`, `eth_getCode`, `eth_getStorageAt`, `eth_getTransactionCount`, `eth_getTransactionByHash`, `eth_getTransactionReceipt`, `eth_getLogs`, `eth_blockNumber`, `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_feeHistory`, `eth_gasPrice`, `eth_maxPriorityFeePerGas`, `eth_newFilter`, `eth_newBlockFilter`, `eth_getFilterChanges`, `eth_uninstallFilter`, `eth_sendRawTransaction`, `eth_syncing` |
+| **Unknown** | Best-effort RPC forward | Any unlisted method |
+
+### 9.7 Path Comparison
+
+| | **Path 1: Extension** | **Path 2: SDK Direct** |
+|---|---|---|
+| **Signing methods** | Relay → Wallet | Relay → Wallet |
+| **Local state** | Extension-local | SDK-local |
+| **Read-only RPC (has RPC)** | Extension RPC proxy | SDK local proxy |
+| **Read-only RPC (no RPC)** | Fallback discovery | Relay → Wallet RPC |
+| **Latency (read-only)** | ~50-200ms | Tier 1: ~50-200ms, Tier 2: ~300-800ms |
+
+Both paths provide full EIP-1193 coverage. Path 1 has no relay
+overhead for read-only methods. Path 2 prefers local proxy when
+possible, with relay fallback ensuring no method ever fails silently.
 
 ## 10. Security Requirements
 

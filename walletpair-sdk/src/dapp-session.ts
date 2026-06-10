@@ -240,7 +240,7 @@ export class DAppSession extends Emitter<DAppSessionEvents> {
       const hdr = { type: 'req' as const, from: this.pubKeyB64, id }
       const sealedParams = {
         _method: method,
-        ...(params && typeof params === 'object'
+        ...(params && typeof params === 'object' && !Array.isArray(params)
           ? (params as Record<string, unknown>)
           : { _params: params ?? {} }),
       }

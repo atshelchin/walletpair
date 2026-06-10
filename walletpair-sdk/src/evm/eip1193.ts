@@ -132,6 +132,12 @@ const defaultMapper: MethodMapper = {
         const p = params as [Record<string, unknown>] | undefined
         return { method: 'wallet_sendCalls', params: p?.[0] ?? {} }
       }
+      case 'wallet_getCallsStatus': {
+        // EIP-5792: params[0] = batch id. Only the wallet that submitted the
+        // batch can resolve its status, so forward over the channel as-is.
+        const p = params as [string] | undefined
+        return { method: 'wallet_getCallsStatus', params: p?.[0] }
+      }
       case 'wallet_addEthereumChain':
         return null // unsupported — mapRequest returning null triggers unsupported_method error
       default:
@@ -183,10 +189,12 @@ const WALLET_METHODS = new Set([
   'eth_signTransaction',
   'wallet_switchEthereumChain',
   'wallet_addEthereumChain',
+  'wallet_sendCalls',
+  'wallet_getCallsStatus',
 ])
 
 /** Methods handled locally by the provider (no RPC or WalletPair needed). */
-const LOCAL_METHODS = new Set(['eth_chainId', 'net_version'])
+const LOCAL_METHODS = new Set(['eth_chainId', 'net_version', 'wallet_getCapabilities'])
 
 /**
  * An RPC provider that handles read-only Ethereum JSON-RPC calls.
@@ -194,6 +202,41 @@ const LOCAL_METHODS = new Set(['eth_chainId', 'net_version'])
  */
 export interface RpcProvider {
   request(args: EIP1193RequestArgs): Promise<unknown>
+}
+
+// ---------------------------------------------------------------------------
+// Built-in JSON-RPC proxy (used when no external rpcProvider is supplied)
+// ---------------------------------------------------------------------------
+
+const RPC_TIMEOUT_MS = 30_000
+const RPC_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+
+async function jsonRpcFetch(
+  url: string,
+  method: string,
+  params: unknown,
+): Promise<unknown> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), RPC_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: params ?? [] }),
+      signal: controller.signal,
+    })
+    const contentLength = res.headers.get('content-length')
+    if (contentLength && Number.parseInt(contentLength, 10) > RPC_MAX_RESPONSE_BYTES) {
+      throw new Error('RPC response too large')
+    }
+    const json = (await res.json()) as { result?: unknown; error?: { code: number; message: string } }
+    if (json.error) {
+      throw Object.assign(new Error(json.error.message), { code: json.error.code })
+    }
+    return json.result
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,6 +273,15 @@ export class WalletPairProvider implements EIP1193Provider {
     this.mapper = options.mapper ?? defaultMapper
     this.rpcProvider = options.rpcProvider
     this.chainId = options.chainId ?? 1
+
+    // Auto-construct RPC proxy from wallet-provided rpcUrls when no explicit rpcProvider
+    if (!this.rpcProvider) {
+      this.session.on('walletJoined', ({ capabilities }) => {
+        if (capabilities?.rpcUrls && !this.rpcProvider) {
+          this.rpcProvider = this.buildAutoRpcProvider(capabilities.rpcUrls)
+        }
+      })
+    }
 
     this.session.on('phase', (phase) => {
       if (phase === 'connected' && !this.connected) {
@@ -307,16 +359,39 @@ export class WalletPairProvider implements EIP1193Provider {
     if (method === 'net_version') {
       return String(this.chainId)
     }
+    if (method === 'wallet_getCapabilities') {
+      return this.session.walletCapabilities?.walletCapabilities ?? {}
+    }
 
-    // Route non-wallet methods to RPC provider if available
+    // Counterfactual smart-account override: if the wallet advertised
+    // contractBytecode and the dApp queries eth_getCode for the connected
+    // account, return that bytecode when the account isn't deployed yet, so
+    // dApps detect a smart contract wallet (EIP-1271) instead of an EOA.
+    if (method === 'eth_getCode') {
+      const caps = this.session.walletCapabilities as unknown as { contractBytecode?: string } | undefined
+      const target = (params as [string] | undefined)?.[0]?.toLowerCase()
+      const self = this.accounts[0]?.toLowerCase()
+      if (caps?.contractBytecode && target && self && target === self) {
+        let real: unknown
+        try {
+          real = this.rpcProvider
+            ? await this.rpcProvider.request(args)
+            : await this.session.request(method, params ?? [])
+        } catch {
+          real = '0x'
+        }
+        if (typeof real === 'string' && real !== '0x' && real.length > 2) return real
+        return caps.contractBytecode
+      }
+    }
+
+    // Route non-wallet methods: try local RPC, then relay to wallet
     if (!WALLET_METHODS.has(method) && !LOCAL_METHODS.has(method)) {
       if (this.rpcProvider) {
         return this.rpcProvider.request(args)
       }
-      throw Object.assign(
-        new Error(`Unsupported method: ${method}. Pass rpcProvider to handle read-only RPC calls.`),
-        { code: 4200 },
-      )
+      // No local RPC — forward through relay to wallet
+      return this.session.request(method, params ?? [])
     }
 
     const mapped = this.mapper.mapRequest(method, params)
@@ -377,5 +452,22 @@ export class WalletPairProvider implements EIP1193Provider {
 
   getSession(): DAppSession {
     return this.session
+  }
+
+  /**
+   * Build an RPC provider from wallet-provided rpcUrls.
+   * Resolves the RPC URL dynamically based on current chainId.
+   */
+  private buildAutoRpcProvider(rpcUrls: Record<string, string>): RpcProvider {
+    return {
+      request: async (requestArgs: EIP1193RequestArgs) => {
+        const url = rpcUrls[String(this.chainId)] ?? rpcUrls[`eip155:${this.chainId}`]
+        if (!url) {
+          // No RPC for this chain — fall through to relay
+          return this.session.request(requestArgs.method, requestArgs.params ?? [])
+        }
+        return jsonRpcFetch(url, requestArgs.method, requestArgs.params)
+      },
+    }
   }
 }

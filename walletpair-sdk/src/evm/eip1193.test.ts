@@ -432,12 +432,135 @@ describe('WalletPairProvider', () => {
       expect(result).toBe('0x1234')
     })
 
-    it('throws for read-only methods without rpcProvider', async () => {
+    it('forwards read-only methods through relay when no rpcProvider', async () => {
       await setupConnectedSession()
 
-      await expect(
-        provider.request({ method: 'eth_getBalance', params: ['0x123', 'latest'] }),
-      ).rejects.toThrow('Unsupported method: eth_getBalance')
+      const promise = provider.request({ method: 'eth_getBalance', params: ['0x123', 'latest'] })
+      await flushMicrotasks()
+
+      // Wallet responds through the relay
+      respondToLatestReq('0xde0b6b3a7640000')
+      const result = await promise
+      expect(result).toBe('0xde0b6b3a7640000')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // eth_getCode — counterfactual smart-account override
+  // -----------------------------------------------------------------------
+
+  describe('eth_getCode (counterfactual smart account)', () => {
+    const RUNTIME = '0x363d3d373d3d3d363d73deadbeefcafebabe000000000000000000005af43d82803e903d91602b57fd5bf3'
+
+    async function connectWithAccount(addr = '0xAbC123', contractBytecode?: string) {
+      await setupConnectedSession()
+      if (contractBytecode !== undefined) {
+        ;(session as any).walletCapabilities = {
+          ...(session as any).walletCapabilities,
+          contractBytecode,
+        }
+      }
+      const p = provider.request({ method: 'eth_requestAccounts' })
+      await flushMicrotasks()
+      respondToLatestReq([addr])
+      await p
+    }
+
+    it('returns wallet contractBytecode for an undeployed own account (relay path)', async () => {
+      await connectWithAccount('0xAbC123', RUNTIME)
+
+      const promise = provider.request({ method: 'eth_getCode', params: ['0xabc123', 'latest'] })
+      await flushMicrotasks()
+      // Real on-chain code is empty (counterfactual)
+      respondToLatestReq('0x')
+      const result = await promise
+      expect(result).toBe(RUNTIME)
+    })
+
+    it('returns the real code once the account is deployed (relay path)', async () => {
+      await connectWithAccount('0xAbC123', RUNTIME)
+
+      const promise = provider.request({ method: 'eth_getCode', params: ['0xabc123', 'latest'] })
+      await flushMicrotasks()
+      respondToLatestReq('0x6080604052deployed')
+      const result = await promise
+      expect(result).toBe('0x6080604052deployed')
+    })
+
+    it('does NOT override eth_getCode for a different address', async () => {
+      await connectWithAccount('0xAbC123', RUNTIME)
+
+      const promise = provider.request({ method: 'eth_getCode', params: ['0xsomeOtherContract', 'latest'] })
+      await flushMicrotasks()
+      respondToLatestReq('0x')
+      const result = await promise
+      // Passes through untouched — NOT replaced with the wallet bytecode
+      expect(result).toBe('0x')
+    })
+
+    it('does not override when the wallet advertised no contractBytecode', async () => {
+      await connectWithAccount('0xAbC123') // no bytecode
+
+      const promise = provider.request({ method: 'eth_getCode', params: ['0xabc123', 'latest'] })
+      await flushMicrotasks()
+      respondToLatestReq('0x')
+      const result = await promise
+      expect(result).toBe('0x')
+    })
+
+    it('falls back to bytecode when a local rpcProvider returns 0x', async () => {
+      await connectWithAccount('0xAbC123', RUNTIME)
+      const rpcProvider = { request: vi.fn().mockResolvedValue('0x') }
+      ;(provider as any).rpcProvider = rpcProvider
+
+      const result = await provider.request({ method: 'eth_getCode', params: ['0xabc123', 'latest'] })
+      expect(rpcProvider.request).toHaveBeenCalled()
+      expect(result).toBe(RUNTIME)
+    })
+
+    it('returns real code from a local rpcProvider when deployed', async () => {
+      await connectWithAccount('0xAbC123', RUNTIME)
+      const rpcProvider = { request: vi.fn().mockResolvedValue('0x6080604052deployed') }
+      ;(provider as any).rpcProvider = rpcProvider
+
+      const result = await provider.request({ method: 'eth_getCode', params: ['0xabc123', 'latest'] })
+      expect(result).toBe('0x6080604052deployed')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // wallet_getCallsStatus (EIP-5792)
+  // -----------------------------------------------------------------------
+
+  describe('wallet_getCallsStatus (EIP-5792)', () => {
+    it('forwards to the wallet over the channel and returns the status object', async () => {
+      await setupConnectedSession()
+      const status = {
+        version: '2.0.0',
+        id: '0xbatch',
+        chainId: '0x1',
+        status: 200,
+        atomic: true,
+        receipts: [],
+      }
+
+      const promise = provider.request({ method: 'wallet_getCallsStatus', params: ['0xbatch'] })
+      await flushMicrotasks()
+      respondToLatestReq(status)
+      const result = await promise
+      expect(result).toEqual(status)
+    })
+
+    it('never routes to a local rpcProvider (only the wallet can resolve a batch)', async () => {
+      await setupConnectedSession()
+      const rpcProvider = { request: vi.fn() }
+      ;(provider as any).rpcProvider = rpcProvider
+
+      const promise = provider.request({ method: 'wallet_getCallsStatus', params: ['0xbatch'] })
+      await flushMicrotasks()
+      respondToLatestReq({ status: 100 })
+      await promise
+      expect(rpcProvider.request).not.toHaveBeenCalled()
     })
   })
 })

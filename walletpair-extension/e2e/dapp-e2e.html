@@ -204,6 +204,11 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: 
       return await provider.request({ method: 'eth_getBalance', params: [addr, 'latest'] });
     },
 
+    getCode: async function(addr) {
+      if (!provider) throw new Error('No provider available');
+      return await provider.request({ method: 'eth_getCode', params: [addr, 'latest'] });
+    },
+
     signMessage: async function(msg) {
       if (!provider) throw new Error('No provider available');
       if (connectedAccounts.length === 0) throw new Error('Not connected');
