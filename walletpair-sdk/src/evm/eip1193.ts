@@ -97,6 +97,11 @@ const defaultMapper: MethodMapper = {
         }
         return { method: 'wallet_signMessage', params: { message: text, address: p?.[1] } }
       }
+      // v4 is a superset of v3; both map to wallet_signTypedData (params:
+      // [address, typedDataJSON]). The wallet renders/validates per its own
+      // rules. Mapping v3 here removes the inconsistency of declaring it in
+      // WALLET_METHODS but returning null (which threw 4200 Unsupported).
+      case 'eth_signTypedData_v3':
       case 'eth_signTypedData_v4': {
         // params: [address, typedDataJSON]
         const p = params as [string, string] | undefined
@@ -166,7 +171,11 @@ const defaultMapper: MethodMapper = {
       if (r?.signedTx) return r.signedTx
     }
     // Unwrap signature results
-    if (method === 'personal_sign' || method === 'eth_signTypedData_v4') {
+    if (
+      method === 'personal_sign' ||
+      method === 'eth_signTypedData_v4' ||
+      method === 'eth_signTypedData_v3'
+    ) {
       const r = result as { signature?: string } | undefined
       if (r?.signature) return r.signature
     }
@@ -248,6 +257,14 @@ const DEFAULT_ETHEREUM_DATA_URL = 'https://ethereum-data.awesometools.dev'
 
 /** Cap how many endpoints we try per read-only call to bound revert/failure latency. */
 const MAX_RPC_FAILOVER_ENDPOINTS = 4
+
+/**
+ * JSON-RPC error codes that warrant trying another endpoint rather than treating
+ * the error as definitive: rate limits (-32005) and transient server/internal
+ * errors. Every other coded error (e.g. execution revert code 3, invalid params)
+ * is a definitive node answer and must NOT be masked by failover.
+ */
+const TRANSIENT_RPC_CODES = new Set([-32005, -32603, -32097, -32098, 429])
 
 /** Parse a chain-id key in numeric, 0x-hex, or CAIP-2 'eip155:N' form. */
 function parseChainKey(key: string): number | null {
@@ -339,9 +356,11 @@ async function jsonRpcFetchFailover(
       return await jsonRpcFetch(url, method, params)
     } catch (err) {
       const code = err && typeof err === 'object' && 'code' in err ? (err as { code?: unknown }).code : undefined
-      const msg = err instanceof Error ? err.message : String(err)
-      // Deterministic execution-level answers must not be retried/masked.
-      if (code === 3 || /revert|reverted|execution|insufficient funds|out of gas/i.test(msg)) {
+      // A JSON-RPC error carrying a numeric code is a definitive node answer
+      // (e.g. an execution revert) and must not be masked by trying another
+      // endpoint — unless it is a known transient/rate-limit code. Errors with no
+      // code are transport failures (timeout, bad gateway, DNS) → try the next.
+      if (typeof code === 'number' && !TRANSIENT_RPC_CODES.has(code)) {
         throw err
       }
       lastErr = err
@@ -483,6 +502,16 @@ export class WalletPairProvider implements EIP1193Provider {
 
     const { method, params } = args
 
+    // eth_sign is deprecated and dangerous (signs arbitrary 32-byte digests).
+    // Reject it explicitly with 4200 instead of relaying it to the wallet, where
+    // it has no mapping and would hang until the request timeout.
+    if (method === 'eth_sign') {
+      throw Object.assign(
+        new Error('eth_sign is unsupported (deprecated/unsafe); use personal_sign or eth_signTypedData_v4'),
+        { code: 4200 },
+      )
+    }
+
     if (method === 'eth_chainId') {
       return `0x${this.chainId.toString(16)}`
     }
@@ -496,16 +525,27 @@ export class WalletPairProvider implements EIP1193Provider {
       const all = this.session.walletCapabilities?.walletCapabilities ?? {}
       const filter = (params as [unknown, unknown] | undefined)?.[1]
       if (Array.isArray(filter) && filter.length > 0) {
+        // Filter values may arrive as numbers, hex strings, or decimal strings;
+        // normalize all of them (and the hex capability keys) to a numeric chainId.
         const wanted = new Set(
-          filter.map((c) => Number.parseInt(String(c), 16)).filter((n) => !Number.isNaN(n)),
+          filter.map((c) => parseChainKey(String(c))).filter((n): n is number => n != null),
         )
         const out: Record<string, unknown> = {}
         for (const [key, value] of Object.entries(all)) {
-          if (wanted.has(Number.parseInt(key, 16))) out[key] = value
+          const cid = parseChainKey(key)
+          if (cid != null && wanted.has(cid)) out[key] = value
         }
         return out
       }
       return all
+    }
+
+    // eth_accounts returns already-authorized accounts; serve from the local cache
+    // (kept fresh by accountsChanged + eth_requestAccounts) so dApps that poll it
+    // don't occupy the wallet's request channel. Falls through to the wallet on a
+    // cold cache so the first read is always authoritative.
+    if (method === 'eth_accounts' && this.accounts.length > 0) {
+      return this.accounts
     }
 
     // Counterfactual smart-account override: if the wallet advertised
@@ -692,7 +732,9 @@ export class WalletPairProvider implements EIP1193Provider {
     if (!inflight) {
       inflight = this.fetchEthereumDataRpc(chainId)
         .then((urls) => {
-          this.rpcUrlCache.set(chainId, urls)
+          // Only cache a non-empty result — caching [] from a transient outage
+          // would permanently disable this chain's fallback.
+          if (urls.length > 0) this.rpcUrlCache.set(chainId, urls)
           this.rpcFetchInFlight.delete(chainId)
           return urls
         })

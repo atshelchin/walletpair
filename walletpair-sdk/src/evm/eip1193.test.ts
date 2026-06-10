@@ -626,6 +626,100 @@ describe('WalletPairProvider', () => {
       expect(await promise).toBe('0xrelayed')
       expect(countRelayReqs()).toBe(1)
     })
+
+    it('serves eth_accounts from the local cache after authorization (no extra relay)', async () => {
+      await setupConnectedSession(1)
+      const p = provider.request({ method: 'eth_requestAccounts' })
+      await flushMicrotasks()
+      respondToLatestReq(['0xcached'])
+      await p
+
+      const before = countRelayReqs();
+      const accounts = await provider.request({ method: 'eth_accounts' })
+
+      expect(accounts).toEqual(['0xcached'])
+      expect(countRelayReqs()).toBe(before) // answered from cache, no new channel req
+    })
+
+    it('matches a decimal chain filter in wallet_getCapabilities', async () => {
+      await setupConnectedSession(1)
+      ;(session as any).walletCapabilities = {
+        ...(session as any).walletCapabilities,
+        walletCapabilities: { '0x1': { foo: true }, '0x89': { bar: true } },
+      }
+      const out = await provider.request({ method: 'wallet_getCapabilities', params: ['0xaddr', [137]] })
+      expect(out).toEqual({ '0x89': { bar: true } })
+    })
+
+    it('retries the ethereum-data lookup after a transient empty result (no cache poisoning)', async () => {
+      await setupConnectedSession(1)
+      const edProvider = new WalletPairProvider({ session, chainId: 137 })
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, headers: { get: () => null }, json: async () => ({}) })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: { get: () => null },
+          json: async () => ({ rpc: ['https://poly.ok.test'] }),
+        })
+        .mockResolvedValueOnce(rpcResult('0xblock'))
+      vi.stubGlobal('fetch', fetchMock)
+
+      // 1st read: ethereum-data fails → no endpoints → relay
+      const p1 = edProvider.request({ method: 'eth_blockNumber', params: [] })
+      await flushMicrotasks()
+      respondToLatestReq('0xrelayed')
+      expect(await p1).toBe('0xrelayed')
+
+      // 2nd read: lookup is retried (empty result was NOT cached) → served via RPC
+      expect(await edProvider.request({ method: 'eth_blockNumber', params: [] })).toBe('0xblock')
+      const chainLookups = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/chains/'))
+      expect(chainLookups.length).toBe(2)
+    })
+
+    it('fails over past a rate-limit (-32005) to the next endpoint', async () => {
+      await setupConnectedSession(1)
+      const edProvider = new WalletPairProvider({
+        session,
+        chainId: 1,
+        ethereumDataUrl: null,
+        rpcUrls: { 1: ['https://a.test', 'https://b.test'] },
+      })
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: { get: () => null },
+          json: async () => ({ error: { code: -32005, message: 'rate limited' } }),
+        })
+        .mockResolvedValueOnce(rpcResult('0xok'))
+      vi.stubGlobal('fetch', fetchMock)
+
+      expect(await edProvider.request({ method: 'eth_call', params: [{}, 'latest'] })).toBe('0xok')
+      expect(fetchMock).toHaveBeenCalledTimes(2) // failed over to the second endpoint
+    })
+
+    it('rethrows a definitive coded error (-32602) without failover or relay', async () => {
+      await setupConnectedSession(1)
+      const edProvider = new WalletPairProvider({
+        session,
+        chainId: 1,
+        ethereumDataUrl: null,
+        rpcUrls: { 1: ['https://a.test', 'https://b.test'] },
+      })
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: { get: () => null },
+        json: async () => ({ error: { code: -32602, message: 'invalid params' } }),
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      await expect(
+        edProvider.request({ method: 'eth_call', params: [{}, 'latest'] }),
+      ).rejects.toThrow('invalid params')
+      expect(fetchMock).toHaveBeenCalledTimes(1) // definitive → no failover, no relay
+      expect(countRelayReqs()).toBe(0)
+    })
   })
 
   // -----------------------------------------------------------------------
