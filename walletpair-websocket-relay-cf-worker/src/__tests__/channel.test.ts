@@ -4,6 +4,7 @@
  */
 import { env, createExecutionContext, SELF } from "cloudflare:test";
 import { describe, it, expect, beforeEach } from "vitest";
+import { PENDING_REQUEST_LIMIT } from "../channel";
 
 const CH = "a".repeat(64);
 const DAPP_KEY = "HJ_Yj0VgbZMqgMcYJK4VHRXXPnfeOOjgAIUuYU-ucBk";
@@ -335,15 +336,15 @@ describe("ChannelDO — pending request limit", () => {
     dappWs.send(msg("accept", DAPP_KEY, { target: WALLET_KEY }));
     await new Promise((r) => setTimeout(r, 50));
 
-    // Send 32 requests (all should succeed)
-    for (let i = 0; i < 32; i++) {
+    // Fill the pending-request window (all should succeed)
+    for (let i = 0; i < PENDING_REQUEST_LIMIT; i++) {
       dappWs.send(msg("req", DAPP_KEY, { id: `r-${i}`, sealed: "data" }));
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 300));
 
-    // 33rd should be rejected
-    dappWs.send(msg("req", DAPP_KEY, { id: "r-32", sealed: "data" }));
-    await new Promise((r) => setTimeout(r, 50));
+    // One past the limit should be rejected with rate_limited
+    dappWs.send(msg("req", DAPP_KEY, { id: `r-${PENDING_REQUEST_LIMIT}`, sealed: "data" }));
+    await new Promise((r) => setTimeout(r, 100));
 
     const lastMsg = parse(dappMsgs[dappMsgs.length - 1]);
     expect(lastMsg.t).toBe("terminate");

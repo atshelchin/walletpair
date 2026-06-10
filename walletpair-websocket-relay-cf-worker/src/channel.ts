@@ -21,7 +21,13 @@ import {
 
 // --- Constants (parity with Rust relay) ---
 const MAX_MESSAGE_BYTES = 65_536; // 64 KB
-const PENDING_REQUEST_LIMIT = 32;
+/**
+ * Max simultaneously-unanswered requests before the sender is rate-limited.
+ * Raised from 32: dApps using wagmi/viem can legitimately have many requests
+ * in flight, and hitting this terminated the connection. A Set of short ids is
+ * negligible memory. (Keep the Rust relay's limit in sync for parity.)
+ */
+export const PENDING_REQUEST_LIMIT = 256;
 const UNPAIRED_TTL_MS = 5 * 60 * 1000; // 5 minutes
 const CONNECTED_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -139,15 +145,27 @@ export class ChannelDO extends DurableObject<Env> {
   async webSocketClose(
     ws: WebSocket,
     code: number,
-    _reason: string,
-    _wasClean: boolean,
+    reason: string,
+    wasClean: boolean,
   ): Promise<void> {
     await this.ensureInitialized();
+    this.logEvent("ws_close", {
+      role: this.getAttachment(ws)?.role ?? null,
+      code,
+      reason: reason || undefined,
+      wasClean,
+      state: this.channelState,
+    });
     await this.handleDisconnect(ws);
   }
 
-  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+  async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
     await this.ensureInitialized();
+    this.logEvent("ws_error", {
+      role: this.getAttachment(ws)?.role ?? null,
+      error: String(error),
+      state: this.channelState,
+    });
     await this.handleDisconnect(ws);
   }
 
@@ -491,6 +509,7 @@ export class ChannelDO extends DurableObject<Env> {
     // Pending request tracking
     if (msgType === "req" && reqId !== undefined) {
       if (this.pendingRequests.size >= PENDING_REQUEST_LIMIT) {
+        this.logEvent("rate_limited", { role: senderRole, pending: this.pendingRequests.size });
         this.sendAndClose(ws, buildTerminate(ch, "rate_limited"));
         return;
       }
@@ -501,23 +520,32 @@ export class ChannelDO extends DurableObject<Env> {
       this.pendingRequests.delete(reqId);
     }
 
-    // Forward to other peer
+    // Forward to other peer.
     const otherRole: Role = senderRole === "dapp" ? "wallet" : "dapp";
     const otherWs = this.findPeerWs(otherRole);
     if (otherWs) {
       try {
         otherWs.send(rawText);
-      } catch {
-        // Fix #3: Notify sender that peer is unreachable instead of silent drop
-        try {
-          ws.send(buildTerminate(ch, "channel_not_found"));
-        } catch { /* sender also gone */ }
+      } catch (err) {
+        // Peer socket errored mid-send. Keep the channel alive (the peer may
+        // reconnect) and do NOT terminate the sender — terminating a healthy
+        // sender on a transient peer blip was a major source of unrecoverable
+        // disconnects. Drop this frame; an unanswered req is bounded by the
+        // client's own request timeout.
+        this.logEvent("forward_failed", { role: senderRole, msgType, error: String(err) });
       }
-    } else if (msgType === "req") {
-      // Fix #3: Peer not connected — notify sender so request doesn't hang
-      try {
-        ws.send(buildTerminate(ch, "channel_not_found"));
-      } catch { /* sender also gone */ }
+    } else {
+      // Target peer is transiently absent in a connected channel (e.g. a mobile
+      // wallet was backgrounded — it reconnects shortly). We used to reply
+      // `channel_not_found`, which made the sender tear down its own healthy
+      // connection on every blip. Now we keep both links intact and just drop
+      // the frame; the peer reconnects and the client's request timeout covers
+      // an unanswered req.
+      this.logEvent("peer_absent_drop", {
+        role: senderRole,
+        msgType,
+        pending: this.pendingRequests.size,
+      });
     }
 
     // Persist only if pending requests changed
@@ -648,11 +676,33 @@ export class ChannelDO extends DurableObject<Env> {
   }
 
   private sendAndClose(ws: WebSocket, message: string): void {
+    // Developer-only disconnect diagnostics: record the terminate reason that
+    // caused this close (visible via `wrangler tail` / dashboard logs).
+    let reason: unknown;
+    try {
+      reason = (JSON.parse(message) as { body?: { reason?: unknown } })?.body?.reason;
+    } catch {
+      /* not JSON */
+    }
+    this.logEvent("terminate_sent", { reason, state: this.channelState });
     try {
       ws.send(message);
       ws.close(1000, "rejected");
     } catch {
       // Already closed
+    }
+  }
+
+  /**
+   * Developer-only structured log for disconnect diagnostics. Emitted to the
+   * Worker console (queryable via `wrangler tail` / the dashboard). Never sent
+   * to clients or surfaced to end users.
+   */
+  private logEvent(event: string, fields: Record<string, unknown>): void {
+    try {
+      console.log(JSON.stringify({ relay: event, ch: this.channelId, ...fields }));
+    } catch {
+      console.log("[relay]", event, this.channelId, fields);
     }
   }
 
