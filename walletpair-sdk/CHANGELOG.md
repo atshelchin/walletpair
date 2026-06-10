@@ -1,5 +1,18 @@
 # walletpair-sdk
 
+## 1.0.9
+
+### Patch Changes
+
+- EVM sub-protocol improvements:
+
+  - Add `wallet_getCallsStatus` (EIP-5792) relay mapping so dApps can poll batch status from the submitting wallet.
+  - Handle `wallet_getCapabilities` locally, returning the wallet-advertised `walletCapabilities`.
+  - Counterfactual smart-account support: `eth_getCode` for the connected account returns the wallet's `contractBytecode` when the account isn't deployed yet, so dApps detect an EIP-1271 smart contract wallet instead of an EOA.
+  - Auto-build a read-only RPC proxy from wallet-provided `rpcUrls` when no explicit `rpcProvider` is supplied (with timeout and response-size limits); unsupported methods now fall through to the wallet over the relay instead of throwing.
+  - Pass through `rpcUrls`, `walletCapabilities`, and `contractBytecode` in negotiated capabilities (previously dropped, breaking all three on the dApp side).
+  - Fix array-typed JSON-RPC `params` being silently coerced to an object across the relay; arrays now round-trip correctly via `_params`.
+
 ## 1.0.8
 
 ### Patch Changes
